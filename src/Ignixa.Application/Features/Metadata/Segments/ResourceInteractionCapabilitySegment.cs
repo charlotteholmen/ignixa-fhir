@@ -44,10 +44,9 @@ public class ResourceInteractionCapabilitySegment : ICapabilitySegment
         // Get manager for this FHIR version
         var manager = await _searchParamManager.GetManagerForVersionAsync(context.FhirVersion, cancellationToken);
 
-        // Get all resource types from search parameters
-        var resourceTypes = manager.AllSearchParameters
-            .SelectMany(sp => sp.BaseResourceTypes ?? Enumerable.Empty<string>())
-            .Distinct()
+        // Get all resource types from search parameter manager
+        // (ResourceTypeNames is already expanded from abstract base types at initialization)
+        var resourceTypes = manager.ResourceTypeNames
             .OrderBy(rt => rt)
             .ToList();
 
@@ -86,7 +85,7 @@ public class ResourceInteractionCapabilitySegment : ICapabilitySegment
                 SearchParam = new List<SearchParamJsonNode>(), // Will be populated by SearchParameterCapabilitySegment
             };
 
-            restComponent.Resource!.Add(resourceComponent);
+            restComponent.AddResource(resourceComponent);
         }
 
         // Add system-level interactions
@@ -102,9 +101,7 @@ public class ResourceInteractionCapabilitySegment : ICapabilitySegment
         // Hash is based on FHIR version + sorted resource type list
         var manager = await _searchParamManager.GetManagerForVersionAsync(context.FhirVersion, cancellationToken);
 
-        var resourceTypes = manager.AllSearchParameters
-            .SelectMany(sp => sp.BaseResourceTypes ?? Enumerable.Empty<string>())
-            .Distinct()
+        var resourceTypes = manager.ResourceTypeNames
             .OrderBy(rt => rt)
             .ToList();
 
@@ -114,7 +111,7 @@ public class ResourceInteractionCapabilitySegment : ICapabilitySegment
         return Convert.ToBase64String(hashBytes);
     }
 
-    private IList<ResourceInteractionJsonNode> BuildResourceInteractions(string resourceType)
+    private IReadOnlyList<ResourceInteractionJsonNode> BuildResourceInteractions(string resourceType)
     {
         var interactions = new List<ResourceInteractionJsonNode>
         {
@@ -133,7 +130,7 @@ public class ResourceInteractionCapabilitySegment : ICapabilitySegment
         return interactions;
     }
 
-    private IList<SystemInteractionJsonNode> BuildSystemInteractions()
+    private IReadOnlyList<SystemInteractionJsonNode> BuildSystemInteractions()
     {
         return new List<SystemInteractionJsonNode>
         {
