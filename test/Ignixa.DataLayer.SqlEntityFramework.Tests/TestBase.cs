@@ -59,7 +59,8 @@ public abstract class TestBase : IDisposable
             new SearchParamEntity { SearchParamId = 2, Uri = "http://hl7.org/fhir/SearchParameter/Patient-organization" },
             new SearchParamEntity { SearchParamId = 3, Uri = "http://hl7.org/fhir/SearchParameter/Observation-patient" },
             new SearchParamEntity { SearchParamId = 4, Uri = "http://hl7.org/fhir/SearchParameter/Observation-code" },
-            new SearchParamEntity { SearchParamId = 5, Uri = "http://hl7.org/fhir/SearchParameter/Organization-name" }
+            new SearchParamEntity { SearchParamId = 5, Uri = "http://hl7.org/fhir/SearchParameter/Organization-name" },
+            new SearchParamEntity { SearchParamId = 6, Uri = "http://hl7.org/fhir/SearchParameter/Encounter-subject" }
         );
 
         Context.SaveChanges();
@@ -70,6 +71,12 @@ public abstract class TestBase : IDisposable
     /// </summary>
     protected ResourceEntity CreateResource(short resourceTypeId, string resourceId, int version = 1, bool isHistory = false, bool isDeleted = false)
     {
+        // Create minimal RawResource JSON
+        var compressor = new Ignixa.DataLayer.SqlEntityFramework.Compression.GzipResourceCompressor();
+        var minimalJson = @"{""resourceType"":""Resource"",""id"":""" + resourceId + @"""}";
+        var jsonBytes = System.Text.Encoding.UTF8.GetBytes(minimalJson);
+        var compressedBytes = compressor.CompressBytes(jsonBytes);
+
         var resource = new ResourceEntity
         {
             ResourceTypeId = resourceTypeId,
@@ -77,7 +84,8 @@ public abstract class TestBase : IDisposable
             Version = version,
             IsHistory = isHistory,
             IsDeleted = isDeleted,
-            ResourceSurrogateId = GenerateSurrogateId()
+            ResourceSurrogateId = GenerateSurrogateId(),
+            RawResource = compressedBytes
         };
 
         Context.Resources.Add(resource);
@@ -102,8 +110,7 @@ public abstract class TestBase : IDisposable
             ResourceSurrogateId = sourceSurrogateId,
             SearchParamId = searchParamId,
             ReferenceResourceTypeId = targetTypeId,
-            ReferenceResourceId = targetResourceId,
-            IsHistory = false
+            ReferenceResourceId = targetResourceId
         };
 
         Context.ReferenceSearchParams.Add(reference);
@@ -121,7 +128,8 @@ public abstract class TestBase : IDisposable
             ResourceSurrogateId = resourceSurrogateId,
             SearchParamId = searchParamId,
             Text = text,
-            IsHistory = false
+            IsMin = false,
+            IsMax = false
         };
 
         Context.StringSearchParams.Add(param);

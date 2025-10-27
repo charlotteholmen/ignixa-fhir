@@ -7,6 +7,7 @@ using System.Data;
 using Ignixa.Domain.Models;
 using Ignixa.Search.Indexing;
 using Ignixa.Search.Indexing.SearchValues;
+using Microsoft.Data.SqlClient.Server;
 
 namespace Ignixa.DataLayer.SqlEntityFramework.RowGenerators;
 
@@ -18,27 +19,23 @@ public class TokenStringCompositeRowGenerator : ISearchParameterRowGenerator
 {
     private const int StringColumnMaxLength = 128;
 
-    public DataTable CreateDataTable()
-    {
-        var table = new DataTable();
-        table.Columns.Add("ResourceTypeId", typeof(short));
-        table.Columns.Add("ResourceSurrogateId", typeof(long));
-        table.Columns.Add("SearchParamId", typeof(short));
-        table.Columns.Add("SystemId1", typeof(int));
-        table.Columns.Add("Code1", typeof(string));
-        table.Columns.Add("CodeOverflow1", typeof(string));
-        table.Columns.Add("Text2", typeof(string));
-        table.Columns.Add("TextOverflow2", typeof(string));
-        return table;
-    }
-
-    public DataTable GenerateRows(
+    public IEnumerable<SqlDataRecord> GenerateSqlDataRecords(
         IReadOnlyList<ResourceWrapper> resources,
         IReadOnlyDictionary<string, short> resourceTypeIdMap,
         IReadOnlyDictionary<string, short> searchParameterIdMap,
         IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
     {
-        var table = CreateDataTable();
+        var metadata = new[]
+        {
+            new SqlMetaData("ResourceTypeId", SqlDbType.SmallInt),
+            new SqlMetaData("ResourceSurrogateId", SqlDbType.BigInt),
+            new SqlMetaData("SearchParamId", SqlDbType.SmallInt),
+            new SqlMetaData("SystemId1", SqlDbType.Int),
+            new SqlMetaData("Code1", SqlDbType.VarChar, 128),
+            new SqlMetaData("CodeOverflow1", SqlDbType.VarChar, -1),
+            new SqlMetaData("Text2", SqlDbType.NVarChar, 128),
+            new SqlMetaData("TextOverflow2", SqlDbType.NVarChar, -1),
+        };
 
         foreach (var resource in resources)
         {
@@ -48,26 +45,22 @@ public class TokenStringCompositeRowGenerator : ISearchParameterRowGenerator
             if (!resourceTypeIdMap.TryGetValue(resource.ResourceType, out var resourceTypeId))
                 continue;
 
-            // Look up surrogate ID from map
             if (!resourceSurrogateIdMap.TryGetValue(resource, out var surrogateId))
-                continue; // Skip if not found in map
+                continue;
 
-            // Extract all composite search indices with Token|String components
             foreach (var searchIndex in resource.SearchIndices.OfType<SearchIndexEntry>())
             {
                 if (searchIndex.Value is not CompositeSearchValue compositeValue)
                     continue;
 
-                if (!searchParameterIdMap.TryGetValue(searchIndex.SearchParameter.Code, out var searchParamId))
+                if (!searchParameterIdMap.TryGetValue(searchIndex.SearchParameter.Url.ToString(), out var searchParamId))
                     continue;
 
-                // For each combination of components
                 foreach (var componentGroup in compositeValue.Components)
                 {
                     TokenSearchValue? tokenComponent = null;
                     StringSearchValue? stringComponent = null;
 
-                    // Extract Token and String components from this group
                     foreach (var component in componentGroup)
                     {
                         if (component is TokenSearchValue tokenVal && tokenComponent == null)
@@ -76,47 +69,50 @@ public class TokenStringCompositeRowGenerator : ISearchParameterRowGenerator
                             stringComponent = stringVal;
                     }
 
-                    // Skip if we don't have both components
                     if (tokenComponent == null || stringComponent == null)
                         continue;
 
-                    var row = table.NewRow();
-                    row["ResourceTypeId"] = resourceTypeId;
-                    row["ResourceSurrogateId"] = surrogateId;
-                    row["SearchParamId"] = searchParamId;
+                    var record = new SqlDataRecord(metadata);
+                    record.SetInt16(0, resourceTypeId);
+                    record.SetInt64(1, surrogateId);
+                    record.SetInt16(2, searchParamId);
 
                     // Token component (component 1)
-                    row["SystemId1"] = string.IsNullOrEmpty(tokenComponent.System) ? 0 : tokenComponent.System.GetHashCode(StringComparison.Ordinal);
+                    record.SetInt32(3, string.IsNullOrEmpty(tokenComponent.System) ? 0 : tokenComponent.System.GetHashCode(StringComparison.Ordinal));
 
                     if (tokenComponent.Code != null && tokenComponent.Code.Length > 128)
                     {
-                        row["Code1"] = tokenComponent.Code.Substring(0, 128);
-                        row["CodeOverflow1"] = tokenComponent.Code.Substring(128);
+                        record.SetString(4, tokenComponent.Code.Substring(0, 128));
+                        record.SetString(5, tokenComponent.Code.Substring(128));
                     }
                     else
                     {
-                        row["Code1"] = tokenComponent.Code ?? (object)DBNull.Value;
-                        row["CodeOverflow1"] = DBNull.Value;
+                        if (tokenComponent.Code != null)
+                            record.SetString(4, tokenComponent.Code);
+                        else
+                            record.SetDBNull(4);
+                        record.SetDBNull(5);
                     }
 
                     // String component (component 2)
                     var textValue = stringComponent.String;
                     if (textValue != null && textValue.Length > StringColumnMaxLength)
                     {
-                        row["Text2"] = textValue.Substring(0, StringColumnMaxLength);
-                        row["TextOverflow2"] = textValue.Substring(StringColumnMaxLength);
+                        record.SetString(6, textValue.Substring(0, StringColumnMaxLength));
+                        record.SetString(7, textValue.Substring(StringColumnMaxLength));
                     }
                     else
                     {
-                        row["Text2"] = textValue ?? (object)DBNull.Value;
-                        row["TextOverflow2"] = DBNull.Value;
+                        if (textValue != null)
+                            record.SetString(6, textValue);
+                        else
+                            record.SetDBNull(6);
+                        record.SetDBNull(7);
                     }
 
-                    table.Rows.Add(row);
+                    yield return record;
                 }
             }
         }
-
-        return table;
     }
 }

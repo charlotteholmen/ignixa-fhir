@@ -4,10 +4,13 @@
 // -------------------------------------------------------------------------------------------------
 
 using System.Data;
+using System.Collections;
+using System.Diagnostics;
 using Ignixa.DataLayer.SqlEntityFramework.Compression;
 using Ignixa.DataLayer.SqlEntityFramework.RowGenerators;
 using Ignixa.Domain.Models;
 using Microsoft.Data.SqlClient;
+using Microsoft.Data.SqlClient.Server;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -22,6 +25,8 @@ public class SqlMergeRepository
     private readonly FhirDbContext _context;
     private readonly GzipResourceCompressor _compressor;
     private readonly ILogger<SqlMergeRepository> _logger;
+    private readonly ResourceRowGenerator _resourceRowGenerator;
+    private readonly ResourceWriteClaimRowGenerator _resourceWriteClaimRowGenerator;
     private readonly ISearchParameterRowGenerator _tokenRowGenerator;
     private readonly ISearchParameterRowGenerator _referenceRowGenerator;
     private readonly ISearchParameterRowGenerator _stringRowGenerator;
@@ -53,6 +58,8 @@ public class SqlMergeRepository
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
         // Initialize row generators (will be injected in Phase 3 via DI container)
+        _resourceRowGenerator = new ResourceRowGenerator(compressor);
+        _resourceWriteClaimRowGenerator = new ResourceWriteClaimRowGenerator();
         _tokenRowGenerator = new TokenSearchParameterRowGenerator();
         _referenceRowGenerator = new ReferenceSearchParameterRowGenerator();
         _stringRowGenerator = new StringSearchParameterRowGenerator();
@@ -157,120 +164,132 @@ public class SqlMergeRepository
         // Build surrogate ID map (transactionId + entryIndex for each resource)
         var resourceSurrogateIdMap = BuildResourceSurrogateIdMap(transactionId, resources, entryIndices);
 
-        // Build TVP parameters (Phase 2: Using row generators)
-        var resourceTable = BuildResourceTable(transactionId, resources, resourceTypeIdMap, entryIndices);
-        var resourceWriteClaimsTable = BuildResourceWriteClaimsTable(); // Stub for Phase 1
-        var referenceSearchParamsTable = BuildReferenceSearchParamsTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-        var tokenSearchParamsTable = BuildTokenSearchParamsTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-        var tokenTextsTable = BuildTokenTextsTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-        var stringSearchParamsTable = BuildStringSearchParamsTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-        var uriSearchParamsTable = BuildUriSearchParamsTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-        var numberSearchParamsTable = BuildNumberSearchParamsTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-        var quantitySearchParamsTable = BuildQuantitySearchParamsTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-        var dateTimeSearchParamsTable = BuildDateTimeSearchParamsTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
+        // Generate TVP parameters using row generators
+        // Resource TVP is always required (never null), so materialize to List directly
+        var resourceRecords = _resourceRowGenerator.GenerateSqlDataRecords(transactionId, resources, resourceTypeIdMap, entryIndices).ToList();
+        var resourceWriteClaimRecords = MaterializeIfNotEmpty(_resourceWriteClaimRowGenerator.GenerateSqlDataRecords(resources, resourceSurrogateIdMap));
 
-        // Build composite search param TVPs (Phase 2: Using row generators)
-        var refTokenCompositeTable = BuildRefTokenCompositeTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-        var tokenTokenCompositeTable = BuildTokenTokenCompositeTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-        var tokenDateTimeCompositeTable = BuildTokenDateTimeCompositeTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-        var tokenQuantityCompositeTable = BuildTokenQuantityCompositeTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-        var tokenStringCompositeTable = BuildTokenStringCompositeTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-        var tokenNumberNumberCompositeTable = BuildTokenNumberNumberCompositeTable(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
+        // Generate SqlDataRecord streams directly (eliminates DataTable intermediate step)
+        // Materialize and check for empty - SQL Client requires NULL (not empty) for TVPs
+        var referenceSearchParams = MaterializeIfNotEmpty(_referenceRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+        _logger.LogInformation("ReferenceSearchParams count: {Count}", referenceSearchParams?.Count ?? 0);
+        var tokenSearchParams = MaterializeIfNotEmpty(_tokenRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+        _logger.LogInformation("TokenSearchParams count: {Count}", tokenSearchParams?.Count ?? 0);
+        var tokenTexts = MaterializeIfNotEmpty(_tokenTextRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+        var stringSearchParams = MaterializeIfNotEmpty(_stringRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+        var uriSearchParams = MaterializeIfNotEmpty(_uriRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+        var numberSearchParams = MaterializeIfNotEmpty(_numberRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+        var quantitySearchParams = MaterializeIfNotEmpty(_quantityRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+        var dateTimeSearchParams = MaterializeIfNotEmpty(_dateTimeRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+
+        // Generate composite search param SqlDataRecord streams (Phase 2: Using row generators with direct streaming)
+        // Materialize and check for empty - SQL Client requires NULL (not empty) for TVPs
+        var refTokenCompositeParams = MaterializeIfNotEmpty(_refTokenCompositeRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+        var tokenTokenCompositeParams = MaterializeIfNotEmpty(_tokenTokenCompositeRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+        var tokenDateTimeCompositeParams = MaterializeIfNotEmpty(_tokenDateTimeCompositeRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+        var tokenQuantityCompositeParams = MaterializeIfNotEmpty(_tokenQuantityCompositeRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+        var tokenStringCompositeParams = MaterializeIfNotEmpty(_tokenStringCompositeRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
+        var tokenNumberNumberCompositeParams = MaterializeIfNotEmpty(_tokenNumberNumberCompositeRowGenerator.GenerateSqlDataRecords(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap));
 
         // Create stored procedure parameters
-        // NOTE: Using old-style Microsoft FHIR Server TVP type names (no TableType suffix)
+        // NOTE: Using SqlDataRecord streaming (proper TVP pattern) instead of DataTable
+        // SqlDataRecord provides better performance and guaranteed column ordering
         // IMPORTANT: Parameter order must match stored procedure signature exactly
+        
+        var affectedRowsParam = new SqlParameter("@AffectedRows", SqlDbType.Int) { Direction = ParameterDirection.Output };
+        
         var parameters = new[]
         {
-            new SqlParameter("@AffectedRows", SqlDbType.Int) { Direction = ParameterDirection.Output },
+            affectedRowsParam,
             new SqlParameter("@RaiseExceptionOnConflict", SqlDbType.Bit) { Value = true },
             new SqlParameter("@IsResourceChangeCaptureEnabled", SqlDbType.Bit) { Value = false },
             new SqlParameter("@TransactionId", SqlDbType.BigInt) { Value = transactionId },
+            //new SqlParameter("@TransactionId", SqlDbType.BigInt) { Value = DBNull.Value },
             new SqlParameter("@SingleTransaction", SqlDbType.Bit) { Value = singleTransaction },
             new SqlParameter("@Resources", SqlDbType.Structured)
             {
                 TypeName = "dbo.ResourceList",
-                Value = resourceTable
+                Value = resourceRecords
             },
             new SqlParameter("@ResourceWriteClaims", SqlDbType.Structured)
             {
                 TypeName = "dbo.ResourceWriteClaimList",
-                Value = resourceWriteClaimsTable
+                Value = resourceWriteClaimRecords
             },
             new SqlParameter("@ReferenceSearchParams", SqlDbType.Structured)
             {
                 TypeName = "dbo.ReferenceSearchParamList",
-                Value = referenceSearchParamsTable
+                Value = referenceSearchParams
             },
             new SqlParameter("@TokenSearchParams", SqlDbType.Structured)
             {
                 TypeName = "dbo.TokenSearchParamList",
-                Value = tokenSearchParamsTable
+                Value = tokenSearchParams
             },
             new SqlParameter("@TokenTexts", SqlDbType.Structured)
             {
                 TypeName = "dbo.TokenTextList",
-                Value = tokenTextsTable
+                Value = tokenTexts
             },
             new SqlParameter("@StringSearchParams", SqlDbType.Structured)
             {
                 TypeName = "dbo.StringSearchParamList",
-                Value = stringSearchParamsTable
+                Value = stringSearchParams
             },
             new SqlParameter("@UriSearchParams", SqlDbType.Structured)
             {
                 TypeName = "dbo.UriSearchParamList",
-                Value = uriSearchParamsTable
+                Value = uriSearchParams
             },
             new SqlParameter("@NumberSearchParams", SqlDbType.Structured)
             {
                 TypeName = "dbo.NumberSearchParamList",
-                Value = numberSearchParamsTable
+                Value = numberSearchParams
             },
             new SqlParameter("@QuantitySearchParams", SqlDbType.Structured)
             {
                 TypeName = "dbo.QuantitySearchParamList",
-                Value = quantitySearchParamsTable
+                Value = quantitySearchParams
             },
             new SqlParameter("@DateTimeSearchParms", SqlDbType.Structured)
             {
                 TypeName = "dbo.DateTimeSearchParamList",
-                Value = dateTimeSearchParamsTable
+                Value = dateTimeSearchParams
             },
             new SqlParameter("@ReferenceTokenCompositeSearchParams", SqlDbType.Structured)
             {
                 TypeName = "dbo.ReferenceTokenCompositeSearchParamList",
-                Value = refTokenCompositeTable
+                Value = refTokenCompositeParams
             },
             new SqlParameter("@TokenTokenCompositeSearchParams", SqlDbType.Structured)
             {
                 TypeName = "dbo.TokenTokenCompositeSearchParamList",
-                Value = tokenTokenCompositeTable
+                Value = tokenTokenCompositeParams
             },
             new SqlParameter("@TokenDateTimeCompositeSearchParams", SqlDbType.Structured)
             {
                 TypeName = "dbo.TokenDateTimeCompositeSearchParamList",
-                Value = tokenDateTimeCompositeTable
+                Value = tokenDateTimeCompositeParams
             },
             new SqlParameter("@TokenQuantityCompositeSearchParams", SqlDbType.Structured)
             {
                 TypeName = "dbo.TokenQuantityCompositeSearchParamList",
-                Value = tokenQuantityCompositeTable
+                Value = tokenQuantityCompositeParams
             },
             new SqlParameter("@TokenStringCompositeSearchParams", SqlDbType.Structured)
             {
                 TypeName = "dbo.TokenStringCompositeSearchParamList",
-                Value = tokenStringCompositeTable
+                Value = tokenStringCompositeParams
             },
             new SqlParameter("@TokenNumberNumberCompositeSearchParams", SqlDbType.Structured)
             {
                 TypeName = "dbo.TokenNumberNumberCompositeSearchParamList",
-                Value = tokenNumberNumberCompositeTable
+                Value = tokenNumberNumberCompositeParams
             }
         };
 
         // Execute merge stored procedure
-        var affectedRows = await _context.Database.ExecuteSqlRawAsync(
+        await _context.Database.ExecuteSqlRawAsync(
             "EXEC dbo.MergeResources @AffectedRows OUTPUT, @RaiseExceptionOnConflict, @IsResourceChangeCaptureEnabled, " +
             "@TransactionId, @SingleTransaction, @Resources, @ResourceWriteClaims, " +
             "@ReferenceSearchParams, @TokenSearchParams, @TokenTexts, @StringSearchParams, @UriSearchParams, " +
@@ -280,6 +299,9 @@ public class SqlMergeRepository
             "@TokenNumberNumberCompositeSearchParams",
             parameters,
             cancellationToken);
+
+        var affectedRows = Convert.ToInt32(affectedRowsParam.Value);
+        Debug.Assert(affectedRows > 0);
 
         _logger.LogInformation(
             "Merged {ResourceCount} resources, {AffectedRows} rows affected",
@@ -344,6 +366,17 @@ public class SqlMergeRepository
             cancellationToken);
     }
 
+    /// <summary>
+    /// Materializes enumerable to list or null if empty.
+    /// SqlClient requires NULL (not empty IEnumerable) for TVPs.
+    /// This prevents "There are no records in the SqlDataRecord enumeration" error.
+    /// </summary>
+    private static IList<SqlDataRecord>? MaterializeIfNotEmpty(IEnumerable<SqlDataRecord> records)
+    {
+        var list = records as IList<SqlDataRecord> ?? records.ToList();
+        return list.Count > 0 ? list : null;
+    }
+
     #region Lookup Tables (Phase 3: Database lookup methods)
 
     /// <summary>
@@ -362,9 +395,10 @@ public class SqlMergeRepository
     }
 
     /// <summary>
-    /// Gets the mapping from search parameter code to search parameter ID.
-    /// Phase 3: Queries SearchParam table and extracts code from Uri.
-    /// Search parameter URIs follow the pattern: http://hl7.org/fhir/SearchParameter/{Code}
+    /// Gets the mapping from search parameter URI to search parameter ID.
+    /// Phase 3: Queries SearchParam table and uses full URI as key.
+    /// URIs are unique (e.g., "http://hl7.org/fhir/SearchParameter/Patient-name" vs "http://hl7.org/fhir/SearchParameter/Encounter-name").
+    /// NOTE: Codes alone are NOT unique - "subject" appears in 46 different resource-specific search parameters.
     /// </summary>
     private async Task<IReadOnlyDictionary<string, short>> GetSearchParameterIdMapAsync(CancellationToken cancellationToken)
     {
@@ -372,15 +406,13 @@ public class SqlMergeRepository
             .AsNoTracking()
             .ToListAsync(cancellationToken);
 
-        var map = new Dictionary<string, short>();
+        var map = new Dictionary<string, short>(searchParams.Count);
 
         foreach (var param in searchParams)
         {
-            // Extract code from URI: "http://hl7.org/fhir/SearchParameter/Patient-name" → "name"
-            var code = ExtractCodeFromSearchParameterUri(param.Uri);
-            if (!string.IsNullOrEmpty(code) && !map.ContainsKey(code))
+            if (!string.IsNullOrEmpty(param.Uri))
             {
-                map[code] = param.SearchParamId;
+                map[param.Uri] = param.SearchParamId;
             }
         }
 
@@ -466,333 +498,9 @@ public class SqlMergeRepository
         return map;
     }
 
-    /// <summary>
-    /// Builds ResourceListTableType DataTable from ResourceWrapper list.
-    /// Phase 3: Uses lookup table to map ResourceType name to ResourceTypeId.
-    ///
-    /// ResourceSurrogateId Assignment:
-    /// - Each resource gets a unique surrogate ID from the allocated sequence range
-    /// - Formula: transactionId + entryIndex (where entryIndex = bundle entry position)
-    /// - This matches Microsoft FHIR Server's surrogate ID allocation strategy
-    /// </summary>
-    private DataTable BuildResourceTable(
-        long transactionId,
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyList<int> entryIndices)
-    {
-        var table = new DataTable();
-        // Column order MUST match dbo.ResourceList SQL type definition exactly
-        table.Columns.Add("ResourceTypeId", typeof(short));
-        table.Columns.Add("ResourceSurrogateId", typeof(long));
-        table.Columns.Add("ResourceId", typeof(string));
-        table.Columns.Add("Version", typeof(int));
-        table.Columns.Add("HasVersionToCompare", typeof(bool));
-        table.Columns.Add("IsDeleted", typeof(bool));
-        table.Columns.Add("IsHistory", typeof(bool));
-        table.Columns.Add("KeepHistory", typeof(bool));
-        table.Columns.Add("RawResource", typeof(byte[]));
-        table.Columns.Add("IsRawResourceMetaSet", typeof(bool));
-        table.Columns.Add("RequestMethod", typeof(string));
-        table.Columns.Add("SearchParamHash", typeof(string));
-
-        int index = 0;
-        foreach (var resource in resources)
-        {
-            // Phase 3: Look up ResourceTypeId from map
-            if (!resourceTypeIdMap.TryGetValue(resource.ResourceType, out var resourceTypeId))
-            {
-                _logger.LogWarning(
-                    "ResourceType '{ResourceType}' not found in lookup table, skipping resource {ResourceId}",
-                    resource.ResourceType,
-                    resource.ResourceId);
-                continue;
-            }
-
-            var row = table.NewRow();
-
-            row["ResourceTypeId"] = resourceTypeId;
-            // Allocate surrogate ID from the reserved sequence range
-            // Pattern: transactionId + entryIndex (bundle entry position)
-            // CRITICAL: Use entryIndices[index] NOT loop index to ensure unique IDs across bundle batches
-            row["ResourceSurrogateId"] = transactionId + entryIndices[index];
-            row["ResourceId"] = resource.ResourceId;
-
-            var version = int.Parse(resource.VersionId);
-            row["Version"] = version;
-            // HasVersionToCompare logic:
-            // - POST: Always false (creates never compare versions)
-            // - PUT with version = 1: False (new resource)
-            // - PUT with version > 1: True (updating existing resource)
-            var isPost = string.Equals(resource.Request.Method, "POST", StringComparison.OrdinalIgnoreCase);
-            row["HasVersionToCompare"] = !isPost && version > 1;
-            row["IsDeleted"] = resource.IsDeleted;
-            row["IsHistory"] = false; // False for current version, true for history entries
-            row["KeepHistory"] = true; // Always keep history (configurable in production)
-            row["RawResource"] = _compressor.SerializeAndCompress(resource.Resource);
-            row["IsRawResourceMetaSet"] = true;
-            row["RequestMethod"] = resource.Request.Method.ToString();
-            row["SearchParamHash"] = DBNull.Value; // TODO Phase 2: Calculate hash
-
-            table.Rows.Add(row);
-            index++;
-        }
-
-        return table;
-    }
-
-    /// <summary>
-    /// Builds empty ResourceWriteClaimListTableType (stub for Phase 1).
-    /// </summary>
-    private static DataTable BuildResourceWriteClaimsTable()
-    {
-        var table = new DataTable();
-        table.Columns.Add("ResourceSurrogateId", typeof(long));
-        table.Columns.Add("ClaimTypeId", typeof(byte)); // tinyint = byte in .NET
-        table.Columns.Add("ClaimValue", typeof(string));
-        return table; // Empty for Phase 1
-    }
-
-    /// <summary>
-    /// Builds ReferenceSearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables for resource type and search parameter mapping.
-    /// </summary>
-    private DataTable BuildReferenceSearchParamsTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            // Return empty table structure using generator
-            return _referenceRowGenerator.CreateDataTable();
-        }
-
-        // Use row generator with populated maps
-        return _referenceRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds TokenSearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildTokenSearchParamsTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _tokenRowGenerator.CreateDataTable();
-        }
-        return _tokenRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds TokenTextListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildTokenTextsTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _tokenTextRowGenerator.CreateDataTable();
-        }
-        return _tokenTextRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds StringSearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildStringSearchParamsTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _stringRowGenerator.CreateDataTable();
-        }
-        return _stringRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds UriSearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildUriSearchParamsTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _uriRowGenerator.CreateDataTable();
-        }
-        return _uriRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds NumberSearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildNumberSearchParamsTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _numberRowGenerator.CreateDataTable();
-        }
-        return _numberRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds QuantitySearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildQuantitySearchParamsTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _quantityRowGenerator.CreateDataTable();
-        }
-        return _quantityRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds DateTimeSearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildDateTimeSearchParamsTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _dateTimeRowGenerator.CreateDataTable();
-        }
-        return _dateTimeRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds ReferenceTokenCompositeSearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildRefTokenCompositeTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _refTokenCompositeRowGenerator.CreateDataTable();
-        }
-        return _refTokenCompositeRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds TokenTokenCompositeSearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildTokenTokenCompositeTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _tokenTokenCompositeRowGenerator.CreateDataTable();
-        }
-        return _tokenTokenCompositeRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds TokenDateTimeCompositeSearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildTokenDateTimeCompositeTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _tokenDateTimeCompositeRowGenerator.CreateDataTable();
-        }
-        return _tokenDateTimeCompositeRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds TokenQuantityCompositeSearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildTokenQuantityCompositeTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _tokenQuantityCompositeRowGenerator.CreateDataTable();
-        }
-        return _tokenQuantityCompositeRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds TokenStringCompositeSearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildTokenStringCompositeTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _tokenStringCompositeRowGenerator.CreateDataTable();
-        }
-        return _tokenStringCompositeRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
-
-    /// <summary>
-    /// Builds TokenNumberNumberCompositeSearchParamListTableType using the row generator.
-    /// Phase 3: Uses provided lookup tables.
-    /// </summary>
-    private DataTable BuildTokenNumberNumberCompositeTable(
-        IReadOnlyList<ResourceWrapper> resources,
-        IReadOnlyDictionary<string, short> resourceTypeIdMap,
-        IReadOnlyDictionary<string, short> searchParameterIdMap,
-        IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
-    {
-        if (resources == null || resources.Count == 0)
-        {
-            return _tokenNumberNumberCompositeRowGenerator.CreateDataTable();
-        }
-        return _tokenNumberNumberCompositeRowGenerator.GenerateRows(resources, resourceTypeIdMap, searchParameterIdMap, resourceSurrogateIdMap);
-    }
+    // NOTE: All TVP generation now uses row generators that stream SqlDataRecord directly
+    // All 16 generators (Resource + ResourceWriteClaim + 8 simple search params + 6 composite search params)
+    // use GenerateSqlDataRecords() for efficient TVP streaming without intermediate DataTable allocation
 
     #endregion
 }

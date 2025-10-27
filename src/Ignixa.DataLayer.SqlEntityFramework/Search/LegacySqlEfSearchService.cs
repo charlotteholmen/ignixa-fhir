@@ -11,6 +11,7 @@ using Ignixa.Domain.Abstractions;
 using Ignixa.Domain.Models;
 using Ignixa.Search.Expressions;
 using Ignixa.Search.Models;
+using SearchParamType = Ignixa.Specification.ValueSets.Normative.SearchParamType;
 
 namespace Ignixa.DataLayer.SqlEntityFramework.Search;
 
@@ -130,26 +131,68 @@ public class SqlEntityFrameworkSearchService : ISearchService
 
         _logger.LogInformation("Executing streaming query for {ResourceType}\n{SQL}", options.ResourceType, query.ToQueryString());
 
-        // Stream results - buffer for include processing
-        var mainResults = new List<SearchEntryResult>();
+        // Phase 1: Stream main results (NO buffering - zero memory for large result sets)
         await foreach (var entity in query
             .Include(x => x.Transaction)
             .AsAsyncEnumerable().WithCancellation(ct))
         {
             var searchResult = MapResourceEntityToSearchResult(entity, options.ResourceType);
-            mainResults.Add(searchResult);
-            yield return searchResult;  // Stream immediately
+            yield return searchResult;  // Stream immediately to client
         }
 
-        // Process includes/revincludes if requested
-        if (options.Include.Count > 0 || options.RevInclude.Count > 0)
+        // Phase 2: Stream included resources (if _include parameters exist)
+        if (options.Include.Count > 0)
         {
-            var includedResources = await ProcessIncludesAndRevIncludesAsync(mainResults, options, ct);
-            foreach (var included in includedResources)
+            _logger.LogDebug("Processing {IncludeCount} _include expressions", options.Include.Count);
+
+            foreach (var includeExpr in options.Include)
             {
-                // Mark included resources with Include mode instead of Match
-                yield return included with { SearchMode = SearchEntryMode.Include };
+                var includeQuery = BuildIncludeQuery(options, includeExpr, resourceTypeId.Value);
+
+                _logger.LogDebug("Executing include query for parameter {ParamCode}", includeExpr.ReferenceSearchParameter?.Code);
+
+                // Stream each included resource directly to client
+                await foreach (var entity in includeQuery
+                    .AsAsyncEnumerable().WithCancellation(ct))
+                {
+                    var searchResult = MapResourceEntityToSearchResult(entity, includeExpr.TargetResourceType);
+                    searchResult = searchResult with { SearchMode = SearchEntryMode.Include };
+                    yield return searchResult;
+                }
             }
+
+            _logger.LogDebug("Include processing completed");
+        }
+
+        // Phase 3: Stream reverse-included resources (if _revinclude parameters exist)
+        if (options.RevInclude.Count > 0)
+        {
+            _logger.LogDebug("Processing {RevIncludeCount} _revinclude expressions", options.RevInclude.Count);
+
+            foreach (var revIncludeExpr in options.RevInclude)
+            {
+                var revIncludeQuery = BuildRevIncludeQuery(options, revIncludeExpr, resourceTypeId.Value);
+
+                _logger.LogDebug("Executing revinclude query for parameter {ParamCode} with {Sql}", revIncludeExpr.ReferenceSearchParameter?.Code, revIncludeQuery.ToQueryString());
+
+                // Stream each reverse-included resource directly to client
+                await foreach (var entity in revIncludeQuery
+                    .AsAsyncEnumerable().WithCancellation(ct))
+                {
+                    // Determine resource type from entity
+                    var resourceTypeName = revIncludeExpr.SourceResourceType ?? _context.ResourceTypes
+                        .AsNoTracking()
+                        .Where(rt => rt.ResourceTypeId == entity.ResourceTypeId)
+                        .Select(rt => rt.Name)
+                        .First();
+
+                    var searchResult = MapResourceEntityToSearchResult(entity, resourceTypeName);
+                    searchResult = searchResult with { SearchMode = SearchEntryMode.Include };
+                    yield return searchResult;
+                }
+            }
+
+            _logger.LogDebug("RevInclude processing completed");
         }
     }
 
@@ -322,7 +365,30 @@ public class SqlEntityFrameworkSearchService : ISearchService
         }
 
         // Apply sorting
-        return ApplySorting(filteredQuery, options.Sort);
+        var sortedQuery = ApplySorting(filteredQuery, options.Sort);
+
+        // Apply pagination: parse continuation token or use _count parameter
+        int offset = 0;
+        int pageSize = options.MaxItemCount;
+
+        if (!string.IsNullOrWhiteSpace(options.ContinuationToken))
+        {
+            // Decode continuation token to get offset
+            if (Ignixa.Search.Models.ContinuationToken.TryDecode(
+                options.ContinuationToken, out int tokenOffset, out int tokenCount))
+            {
+                offset = tokenOffset;
+                pageSize = tokenCount; // Use count from token for consistency
+                _logger.LogDebug("Using continuation token: offset={Offset}, count={Count}", offset, pageSize);
+            }
+            else
+            {
+                _logger.LogWarning("Invalid continuation token, using offset=0");
+            }
+        }
+
+        // Apply Skip/Take for pagination (limit results to pageSize + 1 to detect if more results exist)
+        return sortedQuery.Skip(offset).Take(pageSize + 1);
     }
 
     private IOrderedQueryable<ResourceEntity> ApplySorting(
@@ -335,10 +401,436 @@ public class SqlEntityFrameworkSearchService : ISearchService
             return query.OrderByDescending(r => r.ResourceSurrogateId);
         }
 
-        // TODO: Implement search parameter-based sorting
-        // For now, use default sort
-        _logger.LogWarning("Custom sorting not yet implemented, using default sort");
-        return query.OrderByDescending(r => r.ResourceSurrogateId);
+        // Apply primary sort
+        var firstSort = sortOptions[0];
+        IOrderedQueryable<ResourceEntity> orderedQuery = ApplySort(query, firstSort, isPrimary: true);
+
+        // Apply secondary sorts (ThenBy/ThenByDescending)
+        for (int i = 1; i < sortOptions.Count; i++)
+        {
+            orderedQuery = ApplyThenBy(orderedQuery, sortOptions[i]);
+        }
+
+        return orderedQuery;
+    }
+
+    private IOrderedQueryable<ResourceEntity> ApplySort(
+        IQueryable<ResourceEntity> query,
+        SortExpression sortExpr,
+        bool isPrimary)
+    {
+        bool isDescending = sortExpr.SortOrder == SortOrder.Descending;
+
+        // Handle common sorts: _id, _lastUpdated
+        if (sortExpr.Parameter.Code == "_id")
+        {
+            return isDescending
+                ? query.OrderByDescending(r => r.ResourceId)
+                : query.OrderBy(r => r.ResourceId);
+        }
+
+        if (sortExpr.Parameter.Code == "_lastUpdated")
+        {
+            return isDescending
+                ? query.OrderByDescending(r => r.Transaction!.CreateDate)
+                : query.OrderBy(r => r.Transaction!.CreateDate);
+        }
+
+        // Search parameter-based sorting
+        // Use LEFT JOIN with subqueries to handle resources without the parameter (nulls sort last)
+        var paramType = sortExpr.Parameter.Type;
+
+        switch (paramType)
+        {
+            case SearchParamType.String:
+                // LEFT JOIN with StringSearchParam, use MIN/MAX aggregation for multi-value parameters
+                // Nulls (resources without this parameter) sort last
+                return isDescending
+                    ? query.OrderByDescending(r =>
+                        _context.StringSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.Text)
+                            .Max())
+                    : query.OrderBy(r =>
+                        _context.StringSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.Text)
+                            .Min());
+
+            case SearchParamType.Date:
+                // LEFT JOIN with DateTimeSearchParam
+                return isDescending
+                    ? query.OrderByDescending(r =>
+                        _context.DateTimeSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.StartDateTime)
+                            .Max())
+                    : query.OrderBy(r =>
+                        _context.DateTimeSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.StartDateTime)
+                            .Min());
+
+            case SearchParamType.Token:
+                // LEFT JOIN with TokenSearchParam, sort by Code
+                return isDescending
+                    ? query.OrderByDescending(r =>
+                        _context.TokenSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.Code)
+                            .Max())
+                    : query.OrderBy(r =>
+                        _context.TokenSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.Code)
+                            .Min());
+
+            case SearchParamType.Number:
+                // LEFT JOIN with NumberSearchParam
+                return isDescending
+                    ? query.OrderByDescending(r =>
+                        _context.NumberSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.LowValue)
+                            .Max())
+                    : query.OrderBy(r =>
+                        _context.NumberSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.LowValue)
+                            .Min());
+
+            case SearchParamType.Quantity:
+                // LEFT JOIN with QuantitySearchParam
+                return isDescending
+                    ? query.OrderByDescending(r =>
+                        _context.QuantitySearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.LowValue)
+                            .Max())
+                    : query.OrderBy(r =>
+                        _context.QuantitySearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.LowValue)
+                            .Min());
+
+            case SearchParamType.Reference:
+                // LEFT JOIN with ReferenceSearchParam, sort by ReferenceResourceId
+                return isDescending
+                    ? query.OrderByDescending(r =>
+                        _context.ReferenceSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.ReferenceResourceId)
+                            .Max())
+                    : query.OrderBy(r =>
+                        _context.ReferenceSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.ReferenceResourceId)
+                            .Min());
+
+            case SearchParamType.Uri:
+                // LEFT JOIN with UriSearchParam
+                return isDescending
+                    ? query.OrderByDescending(r =>
+                        _context.UriSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.Uri)
+                            .Max())
+                    : query.OrderBy(r =>
+                        _context.UriSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.Uri)
+                            .Min());
+
+            default:
+                // Unsupported parameter type: silently fall back to default sort (lenient error handling per FHIR spec)
+                _logger.LogWarning(
+                    "Sorting not supported for parameter type {Type} ({Parameter}), using default sort",
+                    paramType,
+                    sortExpr.Parameter.Code);
+                return query.OrderByDescending(r => r.ResourceSurrogateId);
+        }
+    }
+
+    /// <summary>
+    /// Helper method to get search parameter ID from URL.
+    /// Uses synchronous cache lookup. Parameter IDs are pre-cached during startup by IndexLoaderService.
+    /// For missing parameters, returns 0 (no matches - lenient fallback).
+    /// </summary>
+    private short GetSearchParamIdFromUrl(Uri url)
+    {
+        if (url == null)
+        {
+            _logger.LogWarning("SearchParam URL is null, sort will have no effect");
+            return 0;
+        }
+
+        // Convert Uri to string for database query
+        string urlString = url.ToString();
+
+        // Query SearchParam table synchronously (EF Core handles this efficiently with caching)
+        // Note: This executes once per sort parameter, cached at SQL Server level
+        var searchParam = _context.SearchParams
+            .AsNoTracking()
+            .FirstOrDefault(sp => sp.Uri == urlString);
+
+        if (searchParam == null)
+        {
+            _logger.LogWarning("SearchParam not found for URL: {Url}, sort will have no effect", urlString);
+            return 0; // Return 0 - no matches (lenient behavior)
+        }
+
+        return searchParam.SearchParamId;
+    }
+
+    private IOrderedQueryable<ResourceEntity> ApplyThenBy(
+        IOrderedQueryable<ResourceEntity> query,
+        SortExpression sortExpr)
+    {
+        bool isDescending = sortExpr.SortOrder == SortOrder.Descending;
+
+        // Handle common sorts: _id, _lastUpdated
+        if (sortExpr.Parameter.Code == "_id")
+        {
+            return isDescending
+                ? query.ThenByDescending(r => r.ResourceId)
+                : query.ThenBy(r => r.ResourceId);
+        }
+
+        if (sortExpr.Parameter.Code == "_lastUpdated")
+        {
+            // Sort by Transaction.CreateDate
+            return isDescending
+                ? query.ThenByDescending(r => r.Transaction!.CreateDate)
+                : query.ThenBy(r => r.Transaction!.CreateDate);
+        }
+
+        // Search parameter-based secondary sorting
+        // Use LEFT JOIN with subqueries, similar to primary sort
+        var paramType = sortExpr.Parameter.Type;
+
+        switch (paramType)
+        {
+            case SearchParamType.String:
+                // LEFT JOIN with StringSearchParam, use MIN/MAX aggregation for multi-value parameters
+                return isDescending
+                    ? query.ThenByDescending(r =>
+                        _context.StringSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.Text)
+                            .Max())
+                    : query.ThenBy(r =>
+                        _context.StringSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.Text)
+                            .Min());
+
+            case SearchParamType.Date:
+                // LEFT JOIN with DateTimeSearchParam
+                return isDescending
+                    ? query.ThenByDescending(r =>
+                        _context.DateTimeSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.StartDateTime)
+                            .Max())
+                    : query.ThenBy(r =>
+                        _context.DateTimeSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.StartDateTime)
+                            .Min());
+
+            case SearchParamType.Token:
+                // LEFT JOIN with TokenSearchParam, sort by Code
+                return isDescending
+                    ? query.ThenByDescending(r =>
+                        _context.TokenSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.Code)
+                            .Max())
+                    : query.ThenBy(r =>
+                        _context.TokenSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.Code)
+                            .Min());
+
+            case SearchParamType.Number:
+                // LEFT JOIN with NumberSearchParam
+                return isDescending
+                    ? query.ThenByDescending(r =>
+                        _context.NumberSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.LowValue)
+                            .Max())
+                    : query.ThenBy(r =>
+                        _context.NumberSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.LowValue)
+                            .Min());
+
+            case SearchParamType.Quantity:
+                // LEFT JOIN with QuantitySearchParam
+                return isDescending
+                    ? query.ThenByDescending(r =>
+                        _context.QuantitySearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.LowValue)
+                            .Max())
+                    : query.ThenBy(r =>
+                        _context.QuantitySearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.LowValue)
+                            .Min());
+
+            case SearchParamType.Reference:
+                // LEFT JOIN with ReferenceSearchParam, sort by ReferenceResourceId
+                return isDescending
+                    ? query.ThenByDescending(r =>
+                        _context.ReferenceSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.ReferenceResourceId)
+                            .Max())
+                    : query.ThenBy(r =>
+                        _context.ReferenceSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.ReferenceResourceId)
+                            .Min());
+
+            case SearchParamType.Uri:
+                // LEFT JOIN with UriSearchParam
+                return isDescending
+                    ? query.ThenByDescending(r =>
+                        _context.UriSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.Uri)
+                            .Max())
+                    : query.ThenBy(r =>
+                        _context.UriSearchParams
+                            .Where(sp => sp.ResourceSurrogateId == r.ResourceSurrogateId
+                                      && sp.SearchParamId == GetSearchParamIdFromUrl(sortExpr.Parameter.Url))
+                            .Select(sp => sp.Uri)
+                            .Min());
+
+            default:
+                // Unsupported parameter type: silently return unchanged query (lenient behavior)
+                _logger.LogWarning(
+                    "Secondary sort not supported for parameter type {Type} ({Parameter}), skipping",
+                    paramType,
+                    sortExpr.Parameter.Code);
+                return query;
+        }
+    }
+
+    /// <summary>
+    /// Builds a CTE-based include query that replicates the main query filters without buffering IDs.
+    /// Uses SQL Common Table Expression (CTE) pattern to find resources referenced by main results.
+    /// Implements DISTINCT to deduplicate resources referenced by multiple main results.
+    /// </summary>
+    private IQueryable<ResourceEntity> BuildIncludeQuery(
+        SearchOptions options,
+        IncludeExpression includeExpr,
+        short resourceTypeId)
+    {
+        // Get SearchParamId from the reference search parameter URL
+        short searchParamId = GetSearchParamIdFromUrl(includeExpr.ReferenceSearchParameter.Url);
+        if (searchParamId == 0)
+        {
+            _logger.LogWarning("Search parameter not found for include: {Parameter}", includeExpr.ReferenceSearchParameter.Code);
+            return _context.Resources.Where(r => false);  // Return empty
+        }
+
+        // Step 1: Build main query as CTE (replicate filters, sort, and pagination)
+        // Get the base query with same filters as main search
+        IQueryable<ResourceEntity> baseQuery = BuildQueryAsync(options, resourceTypeId, CancellationToken.None).GetAwaiter().GetResult();
+
+        // Find resources referenced by these main results using a subquery
+        // This keeps everything in the database query (no client-side materialization)
+        var referencedTypeAndIds = _context.ReferenceSearchParams
+            .Where(rsp => baseQuery.Select(r => r.ResourceSurrogateId).Contains(rsp.ResourceSurrogateId) && rsp.SearchParamId == searchParamId)
+            .Select(rsp => new { rsp.ReferenceResourceTypeId, rsp.ReferenceResourceId })
+            .Distinct();
+
+        // Get actual resources for these references using subquery join
+        return _context.Resources
+            .Where(r => !r.IsHistory && !r.IsDeleted &&
+                        referencedTypeAndIds.Any(x => x.ReferenceResourceTypeId == r.ResourceTypeId && x.ReferenceResourceId == r.ResourceId))
+            .Include(r => r.Transaction)
+            .Distinct()
+            .OrderBy(r => r.ResourceSurrogateId);  // Stable order for deduplication
+    }
+
+    /// <summary>
+    /// Builds a CTE-based revinclude query that finds resources referencing the main results.
+    /// Uses SQL Common Table Expression (CTE) pattern.
+    /// Implements DISTINCT to deduplicate resources that reference multiple main results.
+    /// </summary>
+    private IQueryable<ResourceEntity> BuildRevIncludeQuery(
+        SearchOptions options,
+        IncludeExpression revIncludeExpr,
+        short resourceTypeId)
+    {
+        // Get source resource type ID (e.g., Encounter for _revinclude=Encounter:subject)
+        short? sourceResourceTypeId = GetResourceTypeIdAsync(revIncludeExpr.SourceResourceType, CancellationToken.None)
+            .AsTask().GetAwaiter().GetResult();
+        if (!sourceResourceTypeId.HasValue)
+        {
+            _logger.LogWarning("Source resource type not found for revinclude: {SourceType}", revIncludeExpr.SourceResourceType);
+            return _context.Resources.Where(r => false);  // Return empty
+        }
+
+        // Get SearchParamId from the reference search parameter URL
+        short searchParamId = GetSearchParamIdFromUrl(revIncludeExpr.ReferenceSearchParameter.Url);
+        if (searchParamId == 0)
+        {
+            _logger.LogWarning("Search parameter not found for revinclude: {Parameter}", revIncludeExpr.ReferenceSearchParameter.Code);
+            return _context.Resources.Where(r => false);  // Return empty
+        }
+
+        // Build main query using BuildQueryAsync (already includes filters, sorting, pagination)
+        IQueryable<ResourceEntity> baseQuery = BuildQueryAsync(options, resourceTypeId, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        // Find resources that reference these main results using a subquery
+        // Filter by source resource type (e.g., Encounter), search parameter, and reference target
+        // This keeps everything in the database query (no client-side materialization)
+        var referencingRsps = _context.ReferenceSearchParams
+            .Where(rsp => rsp.ResourceTypeId == sourceResourceTypeId.Value &&
+                          rsp.SearchParamId == searchParamId &&
+                          baseQuery.Any(mr => mr.ResourceTypeId == rsp.ReferenceResourceTypeId && mr.ResourceId == rsp.ReferenceResourceId))
+            .Select(rsp => rsp.ResourceSurrogateId)
+            .Distinct();
+
+        // Get the actual resources using subquery containment
+        return _context.Resources
+            .Where(r => referencingRsps.Contains(r.ResourceSurrogateId) && !r.IsHistory && !r.IsDeleted)
+            .Include(r => r.Transaction)
+            .Distinct()
+            .OrderBy(r => r.ResourceSurrogateId);  // Stable order for streaming
     }
 
     private async ValueTask<short?> GetResourceTypeIdAsync(string resourceType, CancellationToken ct)

@@ -7,6 +7,7 @@ using System.Data;
 using Ignixa.Domain.Models;
 using Ignixa.Search.Indexing;
 using Ignixa.Search.Indexing.SearchValues;
+using Microsoft.Data.SqlClient.Server;
 
 namespace Ignixa.DataLayer.SqlEntityFramework.RowGenerators;
 
@@ -17,61 +18,63 @@ namespace Ignixa.DataLayer.SqlEntityFramework.RowGenerators;
 /// </summary>
 public class QuantityCodeRowGenerator : ISearchParameterRowGenerator
 {
-    public DataTable CreateDataTable()
-    {
-        var table = new DataTable();
-        table.Columns.Add("ResourceSurrogateId", typeof(long));
-        table.Columns.Add("QuantityCodeId", typeof(int));
-        table.Columns.Add("SystemId", typeof(int));
-        table.Columns.Add("Code", typeof(string));
-        return table;
-    }
-
-    public DataTable GenerateRows(
+    public IEnumerable<SqlDataRecord> GenerateSqlDataRecords(
         IReadOnlyList<ResourceWrapper> resources,
         IReadOnlyDictionary<string, short> resourceTypeIdMap,
         IReadOnlyDictionary<string, short> searchParameterIdMap,
         IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
     {
-        var table = CreateDataTable();
+        var metadata = new[]
+        {
+            new SqlMetaData("ResourceSurrogateId", SqlDbType.BigInt),
+            new SqlMetaData("QuantityCodeId", SqlDbType.Int),
+            new SqlMetaData("SystemId", SqlDbType.Int),
+            new SqlMetaData("Code", SqlDbType.VarChar, 256),
+        };
 
         foreach (var resource in resources)
         {
             if (resource.SearchIndices == null || resource.SearchIndices.Count == 0)
                 continue;
 
-            // Look up surrogate ID from map
             if (!resourceSurrogateIdMap.TryGetValue(resource, out var surrogateId))
-                continue; // Skip if not found in map
+                continue;
 
-            // Extract all quantity search indices
             foreach (var searchIndex in resource.SearchIndices.OfType<SearchIndexEntry>())
             {
                 if (searchIndex.Value is not QuantitySearchValue quantityValue)
                     continue;
 
-                var row = table.NewRow();
-                row["ResourceSurrogateId"] = surrogateId;
+                var record = new SqlDataRecord(metadata);
+                record.SetInt64(0, surrogateId);
 
                 // QuantityCodeId lookup would be implemented in Phase 3
                 // For now, use hash of code string as placeholder
-                row["QuantityCodeId"] = string.IsNullOrEmpty(quantityValue.Code) ? 0 : quantityValue.Code.GetHashCode(StringComparison.Ordinal);
+                record.SetInt32(1, string.IsNullOrEmpty(quantityValue.Code) ? 0 : quantityValue.Code.GetHashCode(StringComparison.Ordinal));
 
                 // SystemId lookup would be implemented in Phase 3
                 // For now, use hash of system string as placeholder, or DBNull if null
-                row["SystemId"] = string.IsNullOrEmpty(quantityValue.System)
-                    ? (object)DBNull.Value
-                    : quantityValue.System.GetHashCode(StringComparison.Ordinal);
+                if (string.IsNullOrEmpty(quantityValue.System))
+                {
+                    record.SetDBNull(2);
+                }
+                else
+                {
+                    record.SetInt32(2, quantityValue.System.GetHashCode(StringComparison.Ordinal));
+                }
 
                 // Code is the actual code value
-                row["Code"] = string.IsNullOrEmpty(quantityValue.Code)
-                    ? (object)DBNull.Value
-                    : quantityValue.Code;
+                if (string.IsNullOrEmpty(quantityValue.Code))
+                {
+                    record.SetDBNull(3);
+                }
+                else
+                {
+                    record.SetString(3, quantityValue.Code);
+                }
 
-                table.Rows.Add(row);
+                yield return record;
             }
         }
-
-        return table;
     }
 }

@@ -7,35 +7,34 @@ using System.Data;
 using Ignixa.Domain.Models;
 using Ignixa.Search.Indexing;
 using Ignixa.Search.Indexing.SearchValues;
+using Microsoft.Data.SqlClient.Server;
 
 namespace Ignixa.DataLayer.SqlEntityFramework.RowGenerators;
 
 /// <summary>
-/// Generates ReferenceSearchParamListTableType DataTable rows from reference search values.
+/// Generates ReferenceSearchParamList TVP SqlDataRecord rows from reference search values.
 /// Reference search parameters store references to other resources (e.g., "Patient/123").
 /// </summary>
 public class ReferenceSearchParameterRowGenerator : ISearchParameterRowGenerator
 {
-    public DataTable CreateDataTable()
-    {
-        var table = new DataTable();
-        table.Columns.Add("ResourceTypeId", typeof(short));
-        table.Columns.Add("ResourceSurrogateId", typeof(long));
-        table.Columns.Add("SearchParamId", typeof(short));
-        table.Columns.Add("BaseUri", typeof(string));
-        table.Columns.Add("ReferenceResourceTypeId", typeof(short));
-        table.Columns.Add("ReferenceResourceId", typeof(string));
-        table.Columns.Add("ReferenceResourceVersion", typeof(int));
-        return table;
-    }
+    private int _recordCount;
 
-    public DataTable GenerateRows(
+    public IEnumerable<SqlDataRecord> GenerateSqlDataRecords(
         IReadOnlyList<ResourceWrapper> resources,
         IReadOnlyDictionary<string, short> resourceTypeIdMap,
         IReadOnlyDictionary<string, short> searchParameterIdMap,
         IReadOnlyDictionary<ResourceWrapper, long> resourceSurrogateIdMap)
     {
-        var table = CreateDataTable();
+        var metadata = new[]
+        {
+            new SqlMetaData("ResourceTypeId", SqlDbType.SmallInt),
+            new SqlMetaData("ResourceSurrogateId", SqlDbType.BigInt),
+            new SqlMetaData("SearchParamId", SqlDbType.SmallInt),
+            new SqlMetaData("BaseUri", SqlDbType.VarChar, 128),
+            new SqlMetaData("ReferenceResourceTypeId", SqlDbType.SmallInt),
+            new SqlMetaData("ReferenceResourceId", SqlDbType.VarChar, 64),
+            new SqlMetaData("ReferenceResourceVersion", SqlDbType.Int),
+        };
 
         foreach (var resource in resources)
         {
@@ -45,46 +44,51 @@ public class ReferenceSearchParameterRowGenerator : ISearchParameterRowGenerator
             if (!resourceTypeIdMap.TryGetValue(resource.ResourceType, out var resourceTypeId))
                 continue;
 
-            // Look up surrogate ID from map
             if (!resourceSurrogateIdMap.TryGetValue(resource, out var surrogateId))
-                continue; // Skip if not found in map
+                continue;
 
-            // Extract all reference search indices
             foreach (var searchIndex in resource.SearchIndices.OfType<SearchIndexEntry>())
             {
                 if (searchIndex.Value is not ReferenceSearchValue refValue)
                     continue;
 
-                if (!searchParameterIdMap.TryGetValue(searchIndex.SearchParameter.Code, out var searchParamId))
+                var searchParamUrl = searchIndex.SearchParameter.Url.ToString();
+                if (!searchParameterIdMap.TryGetValue(searchParamUrl, out var searchParamId))
+                {
+                    System.Diagnostics.Debug.WriteLine($"ReferenceSearchParameterRowGenerator: WARNING - SearchParam URL not found in map: {searchParamUrl} for resource {resource.ResourceType}/{resource.ResourceId}");
                     continue;
+                }
 
-                var row = table.NewRow();
-                row["ResourceTypeId"] = resourceTypeId;
-                row["ResourceSurrogateId"] = surrogateId;
-                row["SearchParamId"] = searchParamId;
+                System.Diagnostics.Debug.WriteLine($"ReferenceSearchParameterRowGenerator: Matched URL={searchParamUrl} → SearchParamId={searchParamId} for {resource.ResourceType}/{resource.ResourceId}");
+
+                var record = new SqlDataRecord(metadata);
+                record.SetInt16(0, resourceTypeId);
+                record.SetInt64(1, surrogateId);
+                record.SetInt16(2, searchParamId);
 
                 // BaseUri is optional for local references
-                row["BaseUri"] = refValue.BaseUri?.ToString() ?? (object)DBNull.Value;
-
-                // ReferenceResourceTypeId lookup would be implemented in Phase 3
-                if (!string.IsNullOrEmpty(refValue.ResourceType) && resourceTypeIdMap.TryGetValue(refValue.ResourceType, out var refResourceTypeId))
-                {
-                    row["ReferenceResourceTypeId"] = refResourceTypeId;
-                }
+                if (refValue.BaseUri != null)
+                    record.SetString(3, refValue.BaseUri.ToString());
                 else
-                {
-                    row["ReferenceResourceTypeId"] = DBNull.Value;
-                }
+                    record.SetDBNull(3);
 
-                row["ReferenceResourceId"] = refValue.ResourceId;
+                // ReferenceResourceTypeId lookup
+                if (!string.IsNullOrEmpty(refValue.ResourceType) && resourceTypeIdMap.TryGetValue(refValue.ResourceType, out var refResourceTypeId))
+                    record.SetInt16(4, refResourceTypeId);
+                else
+                    record.SetDBNull(4);
+
+                record.SetString(5, refValue.ResourceId);
 
                 // Version is optional
-                row["ReferenceResourceVersion"] = DBNull.Value; // TODO Phase 3: Extract version if available
+                record.SetDBNull(6); // TODO Phase 3: Extract version if available
 
-                table.Rows.Add(row);
+                _recordCount++;
+                System.Diagnostics.Debug.WriteLine($"ReferenceSearchParameterRowGenerator: Yielding record #{_recordCount} - ResourceType={resourceTypeId}, SearchParam={searchParamId}, RefResourceType={record.GetInt16(4)}, RefResourceId={refValue.ResourceId}");
+                yield return record;
             }
         }
 
-        return table;
+        System.Diagnostics.Debug.WriteLine($"ReferenceSearchParameterRowGenerator: Total records generated: {_recordCount}");
     }
 }
