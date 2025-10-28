@@ -94,6 +94,12 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Setup", "Setup", "{4E79045F
 		deploy\azure\README.md = deploy\azure\README.md
 	EndProjectSection
 EndProject
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Compatibility", "Compatibility", "{46974937-533F-4386-A813-2C69018FCE31}"
+	ProjectSection(SolutionItems) = preProject
+		run-compat-tests.ps1 = run-compat-tests.ps1
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -362,5 +368,6 @@ Global
 		{C0A088E4-9B1E-40F1-80FC-C22AE3BCAEA1} = {AD2040B0-EAE8-450D-A625-57E825C7F297}
 		{F450B9BC-9675-4940-A8F0-C8C75241091F} = {D52A6C36-F517-47E3-AD4E-C8F0CDAC3678}
 		{4E79045F-F848-4683-88EE-9AF17228E267} = {AD2040B0-EAE8-450D-A625-57E825C7F297}
+		{46974937-533F-4386-A813-2C69018FCE31} = {AD2040B0-EAE8-450D-A625-57E825C7F297}
 	EndGlobalSection
 EndGlobal

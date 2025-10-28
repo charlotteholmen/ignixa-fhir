@@ -67,6 +67,16 @@ public class ConditionalCreateHandler : IRequestHandler<ConditionalCreateCommand
         // 1. Parse If-None-Exist query string
         var queryParameters = _queryParser.Parse(request.IfNoneExist);
 
+        // Validate that search criteria is selective enough (has at least one parameter)
+        if (queryParameters.Count == 0)
+        {
+            _logger.LogWarning(
+                "Conditional create rejected: search criteria not selective enough for {ResourceType}",
+                request.ResourceType);
+            throw new Domain.Exceptions.BadRequestException(
+                string.Format(Search.Resources.ConditionalOperationNotSelectiveEnough, request.ResourceType));
+        }
+
         // 2. Get FHIR version from context
         var fhirVersion = FhirVersionExtractor.ExtractFhirVersion(_httpContextAccessor.HttpContext);
         var searchOptionsBuilder = _searchOptionsBuilderFactory.Create(fhirVersion);
@@ -105,7 +115,7 @@ public class ConditionalCreateHandler : IRequestHandler<ConditionalCreateCommand
 
             var resource = await CreateNewResourceAsync(
                 request.ResourceType,
-                request.RequestBody,
+                request.JsonNode,
                 request.TenantId,
                 cancellationToken);
 
@@ -140,7 +150,7 @@ public class ConditionalCreateHandler : IRequestHandler<ConditionalCreateCommand
                 // Treat as 0 matches and create new resource
                 var resource = await CreateNewResourceAsync(
                     request.ResourceType,
-                    request.RequestBody,
+                    request.JsonNode,
                     request.TenantId,
                     cancellationToken);
 
@@ -182,20 +192,10 @@ public class ConditionalCreateHandler : IRequestHandler<ConditionalCreateCommand
     /// </summary>
     private async Task<ResourceWrapper> CreateNewResourceAsync(
         string resourceType,
-        string requestBody,
+        ResourceJsonNode jsonNode,
         int tenantId,
         CancellationToken cancellationToken)
     {
-        // Parse request body to ResourceJsonNode
-        ResourceJsonNode jsonNode;
-        await using (var memoryStream = _memoryStreamManager.GetStream("conditional-create-request"))
-        {
-            var bytes = System.Text.Encoding.UTF8.GetBytes(requestBody);
-            await memoryStream.WriteAsync(bytes, cancellationToken);
-            memoryStream.Position = 0;
-            jsonNode = await JsonSourceNodeFactory.Parse(memoryStream);
-        }
-
         // Check if we're in a bundle context with a pre-assigned ID
         // This is used for bundles with urn:uuid references to maintain referential integrity
         string? bundleAssignedId = null;
@@ -222,16 +222,19 @@ public class ConditionalCreateHandler : IRequestHandler<ConditionalCreateCommand
             HttpMethod: System.Net.Http.HttpMethod.Post,
             Coordinator: null); // No bundle context for conditional create
 
-        var resourceKey = await _mediator.SendAsync(createCommand, cancellationToken);
+        var updateResult = await _mediator.SendAsync(createCommand, cancellationToken);
 
-        // Get the created resource to return
-        var repository = await _repositoryFactory.GetRepositoryAsync(tenantId, cancellationToken);
-        var createdEntry = await repository.GetAsync(resourceKey, cancellationToken);
-
-        if (createdEntry == null)
+        // Convert UpdateResult to SearchEntryResult for ConvertSearchEntryToWrapper
+        var createdEntry = new SearchEntryResult(
+            ResourceType: updateResult.Key.ResourceType,
+            ResourceId: updateResult.Key.Id,
+            VersionId: updateResult.Key.VersionId ?? "1",
+            LastModified: updateResult.LastModified,
+            ResourceBytes: updateResult.ResourceBytes.ToArray())
         {
-            throw new InvalidOperationException($"Failed to retrieve created resource {resourceType}/{resourceKey.Id}");
-        }
+            TenantId = updateResult.Key.TenantId,
+            Request = updateResult.Request
+        };
 
         // Convert SearchEntryResult to ResourceWrapper
         return ConvertSearchEntryToWrapper(createdEntry);

@@ -114,7 +114,7 @@ public class SqlEntityFrameworkRepository : IFhirRepository
     }
 
     /// <inheritdoc/>
-    public async ValueTask<ResourceKey> CreateOrUpdateAsync(ResourceWrapper resource, CancellationToken ct = default)
+    public async ValueTask<UpdateResult> CreateOrUpdateAsync(ResourceWrapper resource, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(resource);
         ArgumentException.ThrowIfNullOrEmpty(resource.ResourceType);
@@ -142,7 +142,23 @@ public class SqlEntityFrameworkRepository : IFhirRepository
 
         _logger.LogInformation("Created resource {ResourceType}/{ResourceId} version {Version}", resource.ResourceType, resource.ResourceId, newVersion);
 
-        return new ResourceKey(resource.ResourceType, resource.ResourceId, newVersion.ToString(), resource.TenantId);
+        // Return UpdateResult with ResourceKey + raw bytes (only deserialize if needed)
+        var compressedData = entity.RawResource;
+        var lastModified = entity.Transaction?.CreateDate ?? resource.Resource.Meta.LastUpdated ?? DateTimeOffset.UtcNow;
+
+        var key = new ResourceKey(
+            ResourceType: resource.ResourceType,
+            Id: resource.ResourceId,
+            VersionId: newVersion.ToString(),
+            TenantId: resource.TenantId);
+
+        return new UpdateResult(
+            Key: key,
+            ResourceBytes: _compressor.DecompressBytes(compressedData),
+            LastModified: lastModified)
+        {
+            Request = resource.Request
+        };
     }
 
     /// <inheritdoc/>
@@ -200,7 +216,7 @@ public class SqlEntityFrameworkRepository : IFhirRepository
 
         // Mark old version as history
         currentEntity.IsHistory = true;
-        // TODO: Set HistoryTransactionId if needed
+        currentEntity.HistoryTransactionId = transactionId?.Value;
 
         // Create minimal tombstone JSON (FHIR spec: id and meta only)
         var tombstoneJsonNode = new ResourceJsonNode
@@ -354,7 +370,6 @@ public class SqlEntityFrameworkRepository : IFhirRepository
 
             // Update the JsonNode meta to reflect the calculated version
             // This ensures the stored JSON has the correct meta.versionId and meta.lastUpdated
-            var lastModified = DateTimeOffset.UtcNow;
             resource.Meta.VersionId = newVersion.ToString();
             resource.Meta.LastUpdated = transactionId.Value.ToDate();
 
@@ -362,7 +377,7 @@ public class SqlEntityFrameworkRepository : IFhirRepository
                 ResourceType: resourceType,
                 ResourceId: resourceId,
                 VersionId: newVersion.ToString(),
-                LastModified: lastModified,
+                LastModified: resource.Meta.LastUpdated.Value,
                 Resource: resource,
                 Request: new ResourceRequest(httpMethod, $"{resourceType}/{resourceId}"),
                 IsDeleted: false)
@@ -594,7 +609,19 @@ public class SqlEntityFrameworkRepository : IFhirRepository
         if (currentEntity != null)
         {
             currentEntity.IsHistory = true;
-            // TODO: Set HistoryTransactionId
+            currentEntity.HistoryTransactionId = transactionId;
+        }
+
+        // Update resource metadata with version and lastUpdated
+        // This ensures the stored JSON has the correct meta.versionId and meta.lastUpdated
+        resource.Meta.VersionId = newVersion.ToString();
+        if (transactionId.HasValue)
+        {
+            resource.Meta.LastUpdated = transactionId.Value.ToDate();
+        }
+        else
+        {
+            resource.Meta.LastUpdated = DateTimeOffset.UtcNow;
         }
 
         // Compress JSON
@@ -802,7 +829,7 @@ public class SqlEntityFrameworkRepository : IFhirRepository
             : query.OrderByDescending(r => r.Transaction!.CreateDate).ThenByDescending(r => r.ResourceSurrogateId);
 
         // Apply pagination
-        query = query.Skip(parameters.Offset).Take(parameters.Count);
+        query = query.Skip(parameters.Offset).Take(parameters.Count+1);
 
         // Stream results incrementally using AsAsyncEnumerable
         await foreach (var entity in query.AsAsyncEnumerable().WithCancellation(ct))
@@ -812,13 +839,13 @@ public class SqlEntityFrameworkRepository : IFhirRepository
             try
             {
                 // Decompress resource bytes
-                var resourceBytes = _compressor.DecompressBytes(entity.RawResource);
+                ReadOnlyMemory<byte> resourceBytes = _compressor.DecompressBytes(entity.RawResource);
 
-                // Determine resource type name (may need to load ResourceType entity if not included)
+                // Determine the resource type name (may need to load ResourceType entity if not included)
                 var resourceTypeName = entity.ResourceType?.Name;
                 if (string.IsNullOrEmpty(resourceTypeName))
                 {
-                    var resourceType = await _context.ResourceTypes
+                    ResourceTypeEntity? resourceType = await _context.ResourceTypes
                         .Where(rt => rt.ResourceTypeId == entity.ResourceTypeId)
                         .FirstOrDefaultAsync(ct);
                     resourceTypeName = resourceType?.Name ?? "Unknown";
@@ -828,7 +855,7 @@ public class SqlEntityFrameworkRepository : IFhirRepository
                     ResourceType: resourceTypeName,
                     ResourceId: entity.ResourceId,
                     VersionId: entity.Version.ToString(),
-                    LastModified: entity.Transaction?.CreateDate.ToUniversalTime() ?? DateTimeOffset.UtcNow,
+                    LastModified: entity.ResourceSurrogateId.ToDate(),
                     ResourceBytes: resourceBytes)
                 {
                     IsDeleted = entity.IsDeleted,

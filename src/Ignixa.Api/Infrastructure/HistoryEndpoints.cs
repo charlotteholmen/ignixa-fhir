@@ -3,10 +3,13 @@
 // Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // -------------------------------------------------------------------------------------------------
 
-using Medino;
-using Microsoft.AspNetCore.Mvc;
+using Ignixa.Api.Extensions;
+using Ignixa.Api.Http;
 using Ignixa.Application.Features.Bundle.Serialization;
 using Ignixa.Application.Features.History;
+using Ignixa.Domain.Models;
+using Medino;
+using Microsoft.AspNetCore.Mvc;
 
 namespace Ignixa.Api.Infrastructure;
 
@@ -16,7 +19,6 @@ namespace Ignixa.Api.Infrastructure;
 /// </summary>
 public static class HistoryEndpoints
 {
-    private const string ContentTypeApplicationFhirJson = "application/fhir+json";
 
     /// <summary>
     /// Registers FHIR _history endpoints.
@@ -74,7 +76,7 @@ public static class HistoryEndpoints
         // GET /{resourceType}/{id}/_history - Instance-level history (agnostic)
         endpoints.MapGet("/{resourceType}/{id}/_history", (HttpContext context, string resourceType, string id,
             [FromServices] IMediator mediator, CancellationToken ct) =>
-            HandleGetResourceHistory(context, ExtractTenantId(context), resourceType, id, mediator, ct))
+            HandleGetResourceHistory(context, context.GetTenantId(), resourceType, id, mediator, ct))
             .WithName("GetResourceHistoryAgnostic")
             .Produces(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status404NotFound)
@@ -83,7 +85,7 @@ public static class HistoryEndpoints
         // GET /{resourceType}/_history - Type-level history (agnostic)
         endpoints.MapGet("/{resourceType}/_history", (HttpContext context, string resourceType,
             [FromServices] IMediator mediator, CancellationToken ct) =>
-            HandleGetTypeHistory(context, ExtractTenantId(context), resourceType, mediator, ct))
+            HandleGetTypeHistory(context, context.GetTenantId(), resourceType, mediator, ct))
             .WithName("GetTypeHistoryAgnostic")
             .Produces(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest);
@@ -91,25 +93,12 @@ public static class HistoryEndpoints
         // GET /_history - System-level history (agnostic)
         endpoints.MapGet("/_history", (HttpContext context,
             [FromServices] IMediator mediator, CancellationToken ct) =>
-            HandleGetSystemHistory(context, ExtractTenantId(context), mediator, ct))
+            HandleGetSystemHistory(context, context.GetTenantId(), mediator, ct))
             .WithName("GetSystemHistoryAgnostic")
             .Produces(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status400BadRequest);
 
         return endpoints;
-    }
-
-    /// <summary>
-    /// Extracts tenant ID from HttpContext.Items (populated by TenantResolutionMiddleware).
-    /// </summary>
-    private static int ExtractTenantId(HttpContext context)
-    {
-        if (!context.Items.TryGetValue("TenantId", out var tenantIdObj) || tenantIdObj is not int tenantId)
-        {
-            throw new InvalidOperationException(
-                "TenantId not found in HttpContext.Items. TenantResolutionMiddleware may not have run.");
-        }
-        return tenantId;
     }
 
     /// <summary>
@@ -145,7 +134,7 @@ public static class HistoryEndpoints
         var result = await mediator.SendAsync(query, ct);
 
         // Set response content type
-        context.Response.ContentType = ContentTypeApplicationFhirJson + "; charset=utf-8";
+        context.Response.ContentType = KnownContentTypes.ApplicationFhirJsonUtf8;
 
         // Stream history bundle directly to response
         await StreamingBundleSerializer.SerializeHistoryAsync(
@@ -155,6 +144,7 @@ public static class HistoryEndpoints
             entries: result.Entries,
             links: result.Links,
             pretty: false,
+            pageSize: parameters.Count,
             cancellationToken: ct);
 
         // Response already written to stream
@@ -174,7 +164,7 @@ public static class HistoryEndpoints
         CancellationToken ct)
     {
         // Parse query parameters
-        var parameters = HistoryQueryParametersParser.Parse(context.Request.Query);
+        HistoryQueryParameters parameters = HistoryQueryParametersParser.Parse(context.Request.Query);
 
         // Build URLs for pagination
         var baseUrl = $"{context.Request.Scheme}://{context.Request.Host}";
@@ -192,7 +182,7 @@ public static class HistoryEndpoints
         var result = await mediator.SendAsync(query, ct);
 
         // Set response content type
-        context.Response.ContentType = ContentTypeApplicationFhirJson + "; charset=utf-8";
+        context.Response.ContentType = KnownContentTypes.ApplicationFhirJsonUtf8;
 
         // Stream history bundle directly to response
         await StreamingBundleSerializer.SerializeHistoryAsync(
@@ -202,6 +192,7 @@ public static class HistoryEndpoints
             entries: result.Entries,
             links: result.Links,
             pretty: false,
+            pageSize: parameters.Count,
             cancellationToken: ct);
 
         // Response already written to stream
@@ -237,7 +228,7 @@ public static class HistoryEndpoints
         var result = await mediator.SendAsync(query, ct);
 
         // Set response content type
-        context.Response.ContentType = ContentTypeApplicationFhirJson + "; charset=utf-8";
+        context.Response.ContentType = KnownContentTypes.ApplicationFhirJsonUtf8;
 
         // Stream history bundle directly to response
         await StreamingBundleSerializer.SerializeHistoryAsync(
@@ -247,6 +238,7 @@ public static class HistoryEndpoints
             entries: result.Entries,
             links: result.Links,
             pretty: false,
+            pageSize: parameters.Count,
             cancellationToken: ct);
 
         // Response already written to stream

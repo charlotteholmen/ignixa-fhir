@@ -160,6 +160,9 @@ public class FhirPathEvaluator
             "children" => EvaluateChildren(focusElements),
             "descendants" => EvaluateDescendants(focusElements),
 
+            // FHIR-specific functions
+            "extension" => EvaluateExtension(focusElements, func.Arguments, context),
+
             // Utility functions
             "trace" => EvaluateTrace(focusElements, func.Arguments, context),
             "now" => EvaluateNow(),
@@ -1025,6 +1028,42 @@ public class FhirPathEvaluator
         return result;
     }
 
+    // FHIR-specific functions
+    private IEnumerable<ITypedElement> EvaluateExtension(IEnumerable<ITypedElement> focus, IReadOnlyList<Expression> arguments, EvaluationContext context)
+    {
+        // extension(url : string) : collection
+        // Filters the input collection for items named "extension" with the given url
+        // Equivalent to: .extension.where(url = <urlValue>)
+
+        if (arguments.Count == 0)
+            throw new ArgumentException("extension() requires a url argument");
+
+        // Evaluate the url argument to get the string value
+        var urlArgument = arguments[0];
+        var urlResult = EvaluateExpression(focus, urlArgument, context).FirstOrDefault();
+
+        if (urlResult == null)
+            yield break;
+
+        var urlValue = urlResult.Value?.ToString();
+        if (string.IsNullOrEmpty(urlValue))
+            yield break;
+
+        // Navigate to "extension" children and filter by url
+        foreach (var element in focus)
+        {
+            foreach (var extension in element.Children("extension"))
+            {
+                // Check if this extension has a url child with matching value
+                var urlChild = extension.Children("url").FirstOrDefault();
+                if (urlChild != null && urlChild.Value?.ToString() == urlValue)
+                {
+                    yield return extension;
+                }
+            }
+        }
+    }
+
     // Utility functions
     private IEnumerable<ITypedElement> EvaluateTrace(IEnumerable<ITypedElement> focus, IReadOnlyList<Expression> arguments, EvaluationContext context)
     {
@@ -1257,13 +1296,24 @@ public class FhirPathEvaluator
         if (left.Count != 1)
             return Enumerable.Empty<ITypedElement>();
 
-        // Extract type name from identifier expression
-        if (typeExpr is not IdentifierExpression idExpr)
+        // Extract type name from identifier or function call expression
+        // NOTE: Parser treats bare identifiers as function calls (e.g., "integer" = "integer()")
+        string? typeName = null;
+        if (typeExpr is IdentifierExpression idExpr)
+        {
+            typeName = idExpr.Name;
+        }
+        else if (typeExpr is FunctionCallExpression funcExpr)
+        {
+            typeName = funcExpr.FunctionName;
+        }
+
+        if (typeName == null)
             return Enumerable.Empty<ITypedElement>();
 
         // FhirPath type names are lowercase, ToLowerInvariant is intentional
 #pragma warning disable CA1308 // Normalize strings to uppercase
-        var typeName = idExpr.Name.ToLowerInvariant();
+        typeName = typeName.ToLowerInvariant();
         var elementType = left[0].InstanceType?.ToLowerInvariant() ?? string.Empty;
 #pragma warning restore CA1308 // Normalize strings to uppercase
 
@@ -1276,12 +1326,24 @@ public class FhirPathEvaluator
         if (left.Count != 1)
             return Enumerable.Empty<ITypedElement>();
 
-        if (typeExpr is not IdentifierExpression idExpr)
+        // Extract type name from identifier or function call expression
+        // NOTE: Parser treats bare identifiers as function calls (e.g., "integer" = "integer()")
+        string? typeName = null;
+        if (typeExpr is IdentifierExpression idExpr)
+        {
+            typeName = idExpr.Name;
+        }
+        else if (typeExpr is FunctionCallExpression funcExpr)
+        {
+            typeName = funcExpr.FunctionName;
+        }
+
+        if (typeName == null)
             return Enumerable.Empty<ITypedElement>();
 
         // FhirPath type names are lowercase, ToLowerInvariant is intentional
 #pragma warning disable CA1308 // Normalize strings to uppercase
-        var typeName = idExpr.Name.ToLowerInvariant();
+        typeName = typeName.ToLowerInvariant();
         var elementType = left[0].InstanceType?.ToLowerInvariant() ?? string.Empty;
 #pragma warning restore CA1308 // Normalize strings to uppercase
 

@@ -6,7 +6,6 @@
 using Medino;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
-using Microsoft.IO;
 using Ignixa.Application.Features.Resource;
 using Ignixa.Application.Infrastructure;
 using Ignixa.Domain.Abstractions;
@@ -33,7 +32,6 @@ public class ConditionalUpdateHandler : IRequestHandler<ConditionalUpdateCommand
     private readonly IFhirRepositoryFactory _repositoryFactory;
     private readonly IQueryParameterParser _queryParser;
     private readonly ISearchOptionsBuilderFactory _searchOptionsBuilderFactory;
-    private readonly RecyclableMemoryStreamManager _memoryStreamManager;
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly ILogger<ConditionalUpdateHandler> _logger;
 
@@ -42,7 +40,6 @@ public class ConditionalUpdateHandler : IRequestHandler<ConditionalUpdateCommand
         IFhirRepositoryFactory repositoryFactory,
         IQueryParameterParser queryParser,
         ISearchOptionsBuilderFactory searchOptionsBuilderFactory,
-        RecyclableMemoryStreamManager memoryStreamManager,
         IHttpContextAccessor httpContextAccessor,
         ILogger<ConditionalUpdateHandler> logger)
     {
@@ -50,7 +47,6 @@ public class ConditionalUpdateHandler : IRequestHandler<ConditionalUpdateCommand
         _repositoryFactory = repositoryFactory ?? throw new ArgumentNullException(nameof(repositoryFactory));
         _queryParser = queryParser ?? throw new ArgumentNullException(nameof(queryParser));
         _searchOptionsBuilderFactory = searchOptionsBuilderFactory ?? throw new ArgumentNullException(nameof(searchOptionsBuilderFactory));
-        _memoryStreamManager = memoryStreamManager ?? throw new ArgumentNullException(nameof(memoryStreamManager));
         _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
@@ -105,7 +101,7 @@ public class ConditionalUpdateHandler : IRequestHandler<ConditionalUpdateCommand
 
             var resource = await CreateNewResourceAsync(
                 request.ResourceType,
-                request.RequestBody,
+                request.JsonNode,
                 request.TenantId,
                 cancellationToken);
 
@@ -131,7 +127,7 @@ public class ConditionalUpdateHandler : IRequestHandler<ConditionalUpdateCommand
                 request.ResourceType,
                 existingId,
                 existingVersionId,
-                request.RequestBody,
+                request.JsonNode,
                 request.TenantId,
                 cancellationToken);
 
@@ -158,25 +154,15 @@ public class ConditionalUpdateHandler : IRequestHandler<ConditionalUpdateCommand
     }
 
     /// <summary>
-    /// Creates a new resource from the request body.
+    /// Creates a new resource from the parsed JSON.
     /// Used when 0 matches are found (conditional update creates new resource).
     /// </summary>
     private async Task<ResourceWrapper> CreateNewResourceAsync(
         string resourceType,
-        string requestBody,
+        ResourceJsonNode jsonNode,
         int tenantId,
         CancellationToken cancellationToken)
     {
-        // Parse request body to ResourceJsonNode
-        ResourceJsonNode jsonNode;
-        await using (var memoryStream = _memoryStreamManager.GetStream("conditional-update-request"))
-        {
-            var bytes = System.Text.Encoding.UTF8.GetBytes(requestBody);
-            await memoryStream.WriteAsync(bytes, cancellationToken);
-            memoryStream.Position = 0;
-            jsonNode = await JsonSourceNodeFactory.Parse(memoryStream);
-        }
-
         // Generate new ID (server-assigned)
         var newId = Guid.NewGuid().ToString("N");
 
@@ -193,23 +179,26 @@ public class ConditionalUpdateHandler : IRequestHandler<ConditionalUpdateCommand
             HttpMethod: System.Net.Http.HttpMethod.Put,
             Coordinator: null); // No bundle context for conditional update
 
-        var resourceKey = await _mediator.SendAsync(createCommand, cancellationToken);
+        var updateResult = await _mediator.SendAsync(createCommand, cancellationToken);
 
-        // Get the created resource to return
-        var repository = await _repositoryFactory.GetRepositoryAsync(tenantId, cancellationToken);
-        var createdEntry = await repository.GetAsync(resourceKey, cancellationToken);
-
-        if (createdEntry == null)
+        // Convert UpdateResult to SearchEntryResult for ConvertSearchEntryToWrapper
+        var createdEntry = new SearchEntryResult(
+            ResourceType: updateResult.Key.ResourceType,
+            ResourceId: updateResult.Key.Id,
+            VersionId: updateResult.Key.VersionId ?? "1",
+            LastModified: updateResult.LastModified,
+            ResourceBytes: updateResult.ResourceBytes.ToArray())
         {
-            throw new InvalidOperationException($"Failed to retrieve created resource {resourceType}/{resourceKey.Id}");
-        }
+            TenantId = updateResult.Key.TenantId,
+            Request = updateResult.Request
+        };
 
         // Convert SearchEntryResult to ResourceWrapper
         return ConvertSearchEntryToWrapper(createdEntry);
     }
 
     /// <summary>
-    /// Updates an existing resource from the request body.
+    /// Updates an existing resource from the parsed JSON.
     /// Used when 1 match is found (conditional update updates existing resource).
     /// Client-provided ID in body is ignored - existing ID is preserved.
     /// IMPORTANT: Sets If-Match header with existing version ID to prevent lost updates (optimistic concurrency control).
@@ -218,20 +207,10 @@ public class ConditionalUpdateHandler : IRequestHandler<ConditionalUpdateCommand
         string resourceType,
         string existingId,
         string existingVersionId,
-        string requestBody,
+        ResourceJsonNode jsonNode,
         int tenantId,
         CancellationToken cancellationToken)
     {
-        // Parse request body to ResourceJsonNode
-        ResourceJsonNode jsonNode;
-        await using (var memoryStream = _memoryStreamManager.GetStream("conditional-update-request"))
-        {
-            var bytes = System.Text.Encoding.UTF8.GetBytes(requestBody);
-            await memoryStream.WriteAsync(bytes, cancellationToken);
-            memoryStream.Position = 0;
-            jsonNode = await JsonSourceNodeFactory.Parse(memoryStream);
-        }
-
         // Log warning if client provided ID differs from existing ID
         if (!string.IsNullOrEmpty(jsonNode.Id) && jsonNode.Id != existingId)
         {
@@ -258,16 +237,19 @@ public class ConditionalUpdateHandler : IRequestHandler<ConditionalUpdateCommand
             Coordinator: null, // No bundle context for conditional update
             IfMatch: existingVersionId); // Pass version ID for optimistic concurrency control
 
-        var resourceKey = await _mediator.SendAsync(updateCommand, cancellationToken);
+        var updateResult = await _mediator.SendAsync(updateCommand, cancellationToken);
 
-        // Get the updated resource to return
-        var repository = await _repositoryFactory.GetRepositoryAsync(tenantId, cancellationToken);
-        var updatedEntry = await repository.GetAsync(resourceKey, cancellationToken);
-
-        if (updatedEntry == null)
+        // Convert UpdateResult to SearchEntryResult for ConvertSearchEntryToWrapper
+        var updatedEntry = new SearchEntryResult(
+            ResourceType: updateResult.Key.ResourceType,
+            ResourceId: updateResult.Key.Id,
+            VersionId: updateResult.Key.VersionId ?? "1",
+            LastModified: updateResult.LastModified,
+            ResourceBytes: updateResult.ResourceBytes.ToArray())
         {
-            throw new InvalidOperationException($"Failed to retrieve updated resource {resourceType}/{resourceKey.Id}");
-        }
+            TenantId = updateResult.Key.TenantId,
+            Request = updateResult.Request
+        };
 
         // Convert SearchEntryResult to ResourceWrapper
         return ConvertSearchEntryToWrapper(updatedEntry);

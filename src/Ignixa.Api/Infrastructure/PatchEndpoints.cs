@@ -4,11 +4,15 @@
 // -------------------------------------------------------------------------------------------------
 
 using System.Text;
+using Ignixa.Api.Extensions;
+using Ignixa.Api.Http;
 using Ignixa.Application.Features.ConditionalOperations.ConditionalPatch;
 using Ignixa.Application.Features.Patch;
 using Ignixa.SourceNodeSerialization;
+using Ignixa.SourceNodeSerialization.SourceNodes;
 using Medino;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.IO;
 
 namespace Ignixa.Api.Infrastructure;
 
@@ -18,8 +22,6 @@ namespace Ignixa.Api.Infrastructure;
 /// </summary>
 public static class PatchEndpoints
 {
-    private const string ContentTypeApplicationFhirJson = "application/fhir+json";
-    private const string ContentTypeApplicationJson = "application/json";
 
     /// <summary>
     /// Registers FHIR PATCH endpoints.
@@ -52,18 +54,22 @@ public static class PatchEndpoints
 
         // PATCH /tenant/{tenantId:int}/{resourceType} - Conditional Patch
         // IMPORTANT: Must be registered BEFORE PATCH /{resourceType}/{id} to match correctly
-        endpoints.MapPatch("/tenant/{tenantId:int}/{resourceType}", HandleConditionalPatchResourceExplicit)
+        endpoints.MapPatch("/tenant/{tenantId:int}/{resourceType}", (HttpContext context, int tenantId, string resourceType,
+            [FromServices] IMediator mediator, [FromServices] RecyclableMemoryStreamManager memoryStreamManager, CancellationToken ct) =>
+            HandleConditionalPatchResourceExplicit(context, tenantId, resourceType, mediator, memoryStreamManager, ct))
             .WithName("ConditionalPatchResourceExplicit")
-            .Accepts<object>(ContentTypeApplicationFhirJson, ContentTypeApplicationJson)
-            .Produces<object>(StatusCodes.Status200OK, ContentTypeApplicationFhirJson)
-            .Produces<object>(StatusCodes.Status404NotFound, ContentTypeApplicationFhirJson)
-            .Produces<object>(StatusCodes.Status412PreconditionFailed, ContentTypeApplicationFhirJson);
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status404NotFound, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status412PreconditionFailed, KnownContentTypes.ApplicationFhirJson);
 
         // PATCH /tenant/{tenantId:int}/{resourceType}/{id} - Direct Patch
-        endpoints.MapPatch("/tenant/{tenantId:int}/{resourceType}/{id}", HandlePatchResource)
+        endpoints.MapPatch("/tenant/{tenantId:int}/{resourceType}/{id}", (HttpContext context, int tenantId, string resourceType, string id,
+            [FromServices] IMediator mediator, [FromServices] RecyclableMemoryStreamManager memoryStreamManager, [FromServices] ILogger<Program> logger, CancellationToken ct) =>
+            HandlePatchResource(context, tenantId, resourceType, id, mediator, memoryStreamManager, logger, ct))
             .WithName("PatchResource")
-            .Accepts<object>(ContentTypeApplicationFhirJson, ContentTypeApplicationJson)
-            .Produces<object>(StatusCodes.Status200OK, ContentTypeApplicationFhirJson)
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
             .Produces(StatusCodes.Status404NotFound);
 
         return endpoints;
@@ -81,22 +87,22 @@ public static class PatchEndpoints
         // PATCH /{resourceType} - Conditional Patch (agnostic)
         // IMPORTANT: Must be registered BEFORE PATCH /{resourceType}/{id} to match correctly
         endpoints.MapPatch("/{resourceType}", (HttpContext context, string resourceType,
-            [FromServices] IMediator mediator, CancellationToken ct) =>
-            HandleConditionalPatchResource(context, resourceType, mediator, ct))
+            [FromServices] IMediator mediator, [FromServices] RecyclableMemoryStreamManager memoryStreamManager, CancellationToken ct) =>
+            HandleConditionalPatchResource(context, resourceType, mediator, memoryStreamManager, ct))
             .WithName("ConditionalPatchResourceAgnostic")
-            .Accepts<object>(ContentTypeApplicationFhirJson, ContentTypeApplicationJson)
-            .Produces<object>(StatusCodes.Status200OK, ContentTypeApplicationFhirJson)
-            .Produces<object>(StatusCodes.Status404NotFound, ContentTypeApplicationFhirJson)
-            .Produces<object>(StatusCodes.Status412PreconditionFailed, ContentTypeApplicationFhirJson)
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status404NotFound, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status412PreconditionFailed, KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status400BadRequest);
 
         // PATCH /{resourceType}/{id} - Direct Patch (agnostic)
         endpoints.MapPatch("/{resourceType}/{id}", (HttpContext context, string resourceType, string id,
-            [FromServices] IMediator mediator, [FromServices] ILogger<Program> logger, CancellationToken ct) =>
-            HandlePatchResource(context, ExtractTenantId(context), resourceType, id, mediator, logger, ct))
+            [FromServices] IMediator mediator, [FromServices] RecyclableMemoryStreamManager memoryStreamManager, [FromServices] ILogger<Program> logger, CancellationToken ct) =>
+            HandlePatchResource(context, context.GetTenantId(), resourceType, id, mediator, memoryStreamManager, logger, ct))
             .WithName("PatchResourceAgnostic")
-            .Accepts<object>(ContentTypeApplicationFhirJson, ContentTypeApplicationJson)
-            .Produces<object>(StatusCodes.Status200OK, ContentTypeApplicationFhirJson)
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
             .Produces(StatusCodes.Status404NotFound)
             .Produces(StatusCodes.Status400BadRequest);
 
@@ -113,6 +119,7 @@ public static class PatchEndpoints
         string resourceType,
         string id,
         IMediator mediator,
+        RecyclableMemoryStreamManager memoryStreamManager,
         ILogger<Program> logger,
         CancellationToken cancellationToken)
     {
@@ -125,17 +132,21 @@ public static class PatchEndpoints
             return Results.NotFound(new { error = $"Resource type '{resourceType}' not supported" });
         }
 
-        // Read request body (Parameters resource with patch operations)
-        using var memoryStream = new MemoryStream();
-        await context.Request.Body.CopyToAsync(memoryStream, cancellationToken);
-        var patchBody = Encoding.UTF8.GetString(memoryStream.ToArray());
+        // Parse request body to ResourceJsonNode (Parameters resource with patch operations)
+        ResourceJsonNode patchDocument;
+        await using (var memoryStream = memoryStreamManager.GetStream("patch-request"))
+        {
+            await context.Request.Body.CopyToAsync(memoryStream, cancellationToken);
+            memoryStream.Position = 0;
+            patchDocument = await JsonSourceNodeFactory.Parse(memoryStream);
+        }
 
         // Execute patch via mediator
         var command = new PatchResourceCommand(
             tenantId,
             resourceType,
             id,
-            patchBody);
+            patchDocument);
 
         var result = await mediator.SendAsync(command, cancellationToken);
 
@@ -145,13 +156,13 @@ public static class PatchEndpoints
             return Results.NotFound();
         }
 
-        // Add ETag header
-        context.Response.Headers.Append("ETag", $"W/\"{result.VersionId}\"");
-
         // Return 200 OK with patched resource
         var resourceJson = result.Resource.SerializeToString();
+        var resourceBytes = Encoding.UTF8.GetBytes(resourceJson);
         logger.LogInformation("Patched {ResourceType}/{Id} (version {VersionId})", resourceType, id, result.VersionId);
-        return Results.Content(resourceJson, ContentTypeApplicationFhirJson, statusCode: StatusCodes.Status200OK);
+        return FhirResults.Ok(resourceBytes)
+            .WithETag(result.VersionId)
+            .WithLastModified(result.LastModified);
     }
 
     /// <summary>
@@ -162,10 +173,11 @@ public static class PatchEndpoints
         HttpContext context,
         string resourceType,
         IMediator mediator,
+        RecyclableMemoryStreamManager memoryStreamManager,
         CancellationToken cancellationToken)
     {
-        var tenantId = ExtractTenantId(context);
-        return await HandleConditionalPatchResourceExplicit(context, tenantId, resourceType, mediator, cancellationToken);
+        var tenantId = context.GetTenantId();
+        return await HandleConditionalPatchResourceExplicit(context, tenantId, resourceType, mediator, memoryStreamManager, cancellationToken);
     }
 
     /// <summary>
@@ -180,6 +192,7 @@ public static class PatchEndpoints
         int tenantId,
         string resourceType,
         IMediator mediator,
+        RecyclableMemoryStreamManager memoryStreamManager,
         CancellationToken cancellationToken)
     {
         // Extract query string (search criteria)
@@ -196,24 +209,31 @@ public static class PatchEndpoints
         // Remove leading '?'
         var searchCriteria = queryString.TrimStart('?');
 
-        // Read request body (Parameters resource with patch operations)
-        using var memoryStream = new MemoryStream();
-        await context.Request.Body.CopyToAsync(memoryStream, cancellationToken);
-        var patchBody = Encoding.UTF8.GetString(memoryStream.ToArray());
+        // Parse request body to ResourceJsonNode (Parameters resource with patch operations)
+        ResourceJsonNode patchDocument;
+        await using (var memoryStream = memoryStreamManager.GetStream("conditional-patch-request"))
+        {
+            await context.Request.Body.CopyToAsync(memoryStream, cancellationToken);
+            memoryStream.Position = 0;
+            patchDocument = await JsonSourceNodeFactory.Parse(memoryStream);
+        }
 
         // Execute conditional patch
         var command = new ConditionalPatchCommand(
             tenantId,
             resourceType,
             searchCriteria,
-            patchBody,
+            patchDocument,
             context.TraceIdentifier);
 
         var result = await mediator.SendAsync(command, cancellationToken);
 
         // Return 200 OK with patched resource (ConditionalPatchResult.Resource is ResourceWrapper)
         var resourceJson = result.Resource.Resource.SerializeToString();
-        return Results.Content(resourceJson, ContentTypeApplicationFhirJson, statusCode: StatusCodes.Status200OK);
+        var resourceBytes = Encoding.UTF8.GetBytes(resourceJson);
+        return FhirResults.Ok(resourceBytes)
+            .WithETag(result.Resource.VersionId)
+            .WithLastModified(result.Resource.LastModified);
     }
 
     /// <summary>
@@ -227,18 +247,4 @@ public static class PatchEndpoints
         return true;
     }
 
-    /// <summary>
-    /// Extracts tenant ID from HttpContext.Items (populated by TenantResolutionMiddleware).
-    /// Throws if tenant ID not found - should never happen if middleware ran successfully.
-    /// </summary>
-    private static int ExtractTenantId(HttpContext context)
-    {
-        if (!context.Items.TryGetValue("TenantId", out var tenantIdObj) || tenantIdObj is not int tenantId)
-        {
-            throw new InvalidOperationException(
-                "TenantId not found in HttpContext.Items. TenantResolutionMiddleware may not have run.");
-        }
-
-        return tenantId;
-    }
 }
