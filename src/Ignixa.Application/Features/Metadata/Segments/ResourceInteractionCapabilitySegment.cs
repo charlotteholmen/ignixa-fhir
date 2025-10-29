@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Ignixa.Application.Features.Metadata.Models;
+using Ignixa.Search.Infrastructure;
 using Ignixa.Search.Definition;
 using Ignixa.Specification.ValueSets.Normative;
 
@@ -19,14 +20,14 @@ namespace Ignixa.Application.Features.Metadata.Segments;
 /// </summary>
 public class ResourceInteractionCapabilitySegment : ICapabilitySegment
 {
-    private readonly VersionAwareSearchParameterDefinitionManager _searchParamManager;
+    private readonly IFhirVersionContext _versionContext;
     private readonly ILogger<ResourceInteractionCapabilitySegment> _logger;
 
     public ResourceInteractionCapabilitySegment(
-        VersionAwareSearchParameterDefinitionManager searchParamManager,
+        IFhirVersionContext versionContext,
         ILogger<ResourceInteractionCapabilitySegment> logger)
     {
-        _searchParamManager = searchParamManager ?? throw new ArgumentNullException(nameof(searchParamManager));
+        _versionContext = versionContext ?? throw new ArgumentNullException(nameof(versionContext));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -34,19 +35,19 @@ public class ResourceInteractionCapabilitySegment : ICapabilitySegment
 
     public int Priority => 20; // Execute after static
 
-    public async ValueTask ApplyAsync(
+    public ValueTask ApplyAsync(
         CapabilityStatementJsonNode statement,
         CapabilityContext context,
         CancellationToken cancellationToken)
     {
         _logger.LogDebug("Applying resource interaction capability segment for {FhirVersion}", context.FhirVersion);
 
-        // Get manager for this FHIR version
-        var manager = await _searchParamManager.GetManagerForVersionAsync(context.FhirVersion, cancellationToken);
+        // Get schema provider for this FHIR version
+        var schemaProvider = _versionContext.GetSchemaProvider(context.FhirVersion);
 
-        // Get all resource types from search parameter manager
-        // (ResourceTypeNames is already expanded from abstract base types at initialization)
-        var resourceTypes = manager.ResourceTypeNames
+        // Get all resource types from schema provider
+        // (ResourceTypeNames contains all concrete FHIR resource types for this version)
+        var resourceTypes = schemaProvider.ResourceTypeNames
             .OrderBy(rt => rt)
             .ToList();
 
@@ -88,23 +89,25 @@ public class ResourceInteractionCapabilitySegment : ICapabilitySegment
         restComponent.Interaction = BuildSystemInteractions();
 
         _logger.LogDebug("Added {Count} resource components with interactions", resourceTypes.Count);
+
+        return ValueTask.CompletedTask;
     }
 
-    public async ValueTask<string> GetVersionHashAsync(
+    public ValueTask<string> GetVersionHashAsync(
         CapabilityContext context,
         CancellationToken cancellationToken)
     {
         // Hash is based on FHIR version + sorted resource type list
-        var manager = await _searchParamManager.GetManagerForVersionAsync(context.FhirVersion, cancellationToken);
+        var schemaProvider = _versionContext.GetSchemaProvider(context.FhirVersion);
 
-        var resourceTypes = manager.ResourceTypeNames
+        var resourceTypes = schemaProvider.ResourceTypeNames
             .OrderBy(rt => rt)
             .ToList();
 
         var hashInput = $"{context.FhirVersion}|{string.Join(",", resourceTypes)}";
 
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(hashInput));
-        return Convert.ToBase64String(hashBytes);
+        return ValueTask.FromResult(Convert.ToBase64String(hashBytes));
     }
 
     private IReadOnlyList<ResourceInteractionJsonNode> BuildResourceInteractions(string resourceType)
