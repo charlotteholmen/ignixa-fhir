@@ -41,13 +41,6 @@ namespace Ignixa.Api.Infrastructure;
 /// </summary>
 public static class FhirEndpoints
 {
-    // Reusable JsonSerializerOptions for FHIR bundle serialization (CA1869 compliance)
-    private static readonly JsonSerializerOptions BundleJsonOptions = new()
-    {
-        WriteIndented = false,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
-    };
-
     /// <summary>
     /// Registers FHIR RESTful endpoints for all resource types.
     ///
@@ -418,10 +411,10 @@ public static class FhirEndpoints
         // Determine if created or updated
         bool isCreated = result.Key.VersionId == "1";
 
-        // Determine actual return preference: prefer representation if explicitly requested, otherwise minimal
-        var actualReturnPreference = returnPreference == ReturnPreference.Representation
-            ? ReturnPreference.Representation
-            : ReturnPreference.Minimal;
+        // Determine actual return preference: default to representation (FHIR spec), unless minimal explicitly requested
+        var actualReturnPreference = returnPreference == ReturnPreference.Minimal
+            ? ReturnPreference.Minimal
+            : ReturnPreference.Representation;
 
         // Add Preference-Applied header for return preference
         if (returnPreference != ReturnPreference.Unspecified)
@@ -647,6 +640,20 @@ public static class FhirEndpoints
             var resourceJson = result.Resource.Resource.SerializeToString();
             var resourceBytes = Encoding.UTF8.GetBytes(resourceJson);
 
+            // Extract return preference from Prefer header (RFC 7240)
+            var returnPreferenceConditional = PreferHeaderParser.TryParseReturnPreference(context.Request.Headers, logger);
+
+            // Determine actual return preference: default to representation (FHIR spec), unless minimal explicitly requested
+            var actualReturnPreferenceConditional = returnPreferenceConditional == ReturnPreference.Minimal
+                ? ReturnPreference.Minimal
+                : ReturnPreference.Representation;
+
+            // Add Preference-Applied header for return preference
+            if (returnPreferenceConditional != ReturnPreference.Unspecified)
+            {
+                context.Response.Headers.Append("Preference-Applied", PreferHeaderParser.ToPreferenceAppliedHeader(actualReturnPreferenceConditional));
+            }
+
             if (result.WasCreated)
             {
                 // 201 Created - return Location header with version history
@@ -664,6 +671,15 @@ public static class FhirEndpoints
                     result.Resource.ResourceId,
                     result.Resource.VersionId);
 
+                if (actualReturnPreferenceConditional == ReturnPreference.Representation)
+                {
+                    // Return full resource representation
+                    return FhirResults.Created(location, resourceBytes)
+                        .WithETag(result.Resource.VersionId)
+                        .WithLastModified(result.Resource.LastModified);
+                }
+
+                // Prefer: return=minimal - return minimal body
                 return FhirResults.Created(location)
                     .WithETag(result.Resource.VersionId)
                     .WithLastModified(result.Resource.LastModified)
@@ -753,10 +769,10 @@ public static class FhirEndpoints
             context.Response.Headers.Append("Preference-Applied", PreferHeaderParser.ToPreferenceAppliedHeader(validationOverride.Value));
         }
 
-        // Determine actual return preference: prefer representation if explicitly requested, otherwise minimal
-        var actualReturnPreference = returnPreference == ReturnPreference.Representation
-            ? ReturnPreference.Representation
-            : ReturnPreference.Minimal;
+        // Determine actual return preference: default to representation (FHIR spec), unless minimal explicitly requested
+        var actualReturnPreference = returnPreference == ReturnPreference.Minimal
+            ? ReturnPreference.Minimal
+            : ReturnPreference.Representation;
 
         // Add Preference-Applied header for return preference
         if (returnPreference != ReturnPreference.Unspecified)
@@ -892,7 +908,7 @@ public static class FhirEndpoints
             string responseJson;
             try
             {
-                responseJson = JsonSerializer.Serialize(responseBundle, BundleJsonOptions);
+                responseJson = responseBundle.SerializeToString();
             }
             catch (Exception ex)
             {
@@ -905,7 +921,7 @@ public static class FhirEndpoints
             {
                 context.Response.Headers.Append("Preference-Applied", PreferHeaderParser.ToPreferenceAppliedHeader(validationOverride.Value));
             }
-
+                
             return Results.Content(responseJson, KnownContentTypes.ApplicationFhirJson);
         }
         else
