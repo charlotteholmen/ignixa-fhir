@@ -378,6 +378,26 @@ public static class FhirEndpoints
             throw new BadRequestException($"Resource type must be '{resourceType}', got '{jsonNode.ResourceType}'");
         }
 
+        // Validate resource ID matches (FHIR Spec: For PUT, the resource ID in the body must match the ID in the URL)
+        var bodyId = jsonNode.Id;
+        if (string.IsNullOrWhiteSpace(bodyId))
+        {
+            logger.LogWarning(
+                "Resource ID missing in body for PUT request to {ResourceType}/{Id}",
+                resourceType,
+                id);
+            throw new BadRequestException($"Resource ID must be present in the body for PUT requests");
+        }
+
+        if (!string.Equals(bodyId, id, StringComparison.Ordinal))
+        {
+            logger.LogWarning(
+                "Resource ID mismatch: URL has '{UrlId}', body has '{BodyId}'",
+                id,
+                bodyId);
+            throw new BadRequestException($"Resource ID in body ('{bodyId}') must match the ID in the URL ('{id}')");
+        }
+
         // Extract deferred write coordinator from HttpContext if in bundle context
         var coordinator = context.Items.TryGetValue("DeferredWriteCoordinator", out var coordinatorObj)
             ? coordinatorObj as DeferredWriteCoordinator
@@ -396,8 +416,24 @@ public static class FhirEndpoints
         // Extract return preference from Prefer header (RFC 7240)
         var returnPreference = PreferHeaderParser.TryParseReturnPreference(context.Request.Headers, logger);
 
+        // Extract and validate If-Match header for optimistic concurrency control (ETag validation)
+        string? parsedIfMatch = null;
+        var ifMatchHeader = context.Request.Headers["If-Match"].FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(ifMatchHeader))
+        {
+            // Parse the If-Match header value (e.g., W/"5" or "5")
+            parsedIfMatch = ConditionalHeaderParser.ParseIfNoneMatch(ifMatchHeader);
+
+            // Validate ETag format: must be numeric and >= 1
+            if (parsedIfMatch != null && (!int.TryParse(parsedIfMatch, out var versionId) || versionId < 1))
+            {
+                logger.LogWarning("Invalid ETag in If-Match header: {IfMatch} - must be numeric and >= 1", ifMatchHeader);
+                throw new BadRequestException($"Invalid ETag value: {ifMatchHeader}. ETag must be a positive integer.");
+            }
+        }
+
         // Send generic command with optional coordinator and validation override
-        var command = new CreateOrUpdateResourceCommand(resourceType, id, jsonNode, System.Net.Http.HttpMethod.Put, coordinator, null, validationOverride);
+        var command = new CreateOrUpdateResourceCommand(resourceType, id, jsonNode, System.Net.Http.HttpMethod.Put, coordinator, parsedIfMatch, validationOverride);
         UpdateResult result = await mediator.SendAsync(command, ct);
 
         // Add ETag, Last-Modified, and Preference-Applied headers
