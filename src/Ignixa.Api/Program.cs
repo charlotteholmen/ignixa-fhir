@@ -13,6 +13,7 @@ using Ignixa.Api.Infrastructure;
 using Ignixa.Api.Middleware;
 using Ignixa.Api.Services;
 using Ignixa.Api.Features.Compartment;
+using Ignixa.Api.Features.Health;
 using Ignixa.Api.Features.Metadata.Api;
 using Ignixa.Application.Features;
 using Ignixa.Domain.Abstractions;
@@ -596,6 +597,11 @@ if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
 }
+
+app.UseHttpsRedirection();
+
+// Map health check endpoints (before FHIR endpoints, bypasses tenant resolution)
+app.MapHealthCheckEndpoints();
 
 app.MapFhirEndpoints();
 app.MapFhirHistoryEndpoints(); // FHIR _history endpoints (instance, type, system-level)

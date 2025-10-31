@@ -54,6 +54,11 @@ WORKDIR /app
 # Copy published output from build stage
 COPY --from=build /app/publish .
 
+# Create data directories before switching to non-root user
+RUN mkdir -p /app/fhir-data/tenants && \
+    chown -R nonroot:nonroot /app/fhir-data && \
+    mkdir -p /app/fhir-exports && \
+    chown -R nonroot:nonroot /app/fhir-exports
 # Health check
 #HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
 #    CMD curl -f http://localhost:8080/health || exit 1
