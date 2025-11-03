@@ -5,6 +5,7 @@
 
 using Autofac;
 using Autofac.Extensions.DependencyInjection;
+using DurableTask.Core;
 using Medino;
 using Microsoft.IO;
 using Microsoft.AspNetCore.HostFiltering;
@@ -93,17 +94,6 @@ builder.Services.AddHttpClient();
 // Register DurableTask framework for background job processing ($export, $import)
 builder.Services.AddDurableTask();
 
-// Register Export activities for dependency injection
-builder.Services.AddTransient<Ignixa.Application.BackgroundOperations.Export.Activities.SearchAndWriteChunkActivity>();
-builder.Services.AddTransient<Ignixa.Application.BackgroundOperations.Export.Activities.CompleteJobActivity>();
-
-// Register Import activities for dependency injection
-builder.Services.AddTransient<Ignixa.Application.BackgroundOperations.Import.Activities.ValidateFileActivity>();
-builder.Services.AddTransient<Ignixa.Application.BackgroundOperations.Import.Activities.DownloadAndParseActivity>();
-builder.Services.AddTransient<Ignixa.Application.BackgroundOperations.Import.Activities.ImportBatchActivity>();
-builder.Services.AddTransient<Ignixa.Application.BackgroundOperations.Import.Activities.UpdateProgressActivity>();
-builder.Services.AddTransient<Ignixa.Application.BackgroundOperations.Import.Activities.CompleteJobActivity>();
-
 // Configure Autofac container
 builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
 {
@@ -111,6 +101,16 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
     containerBuilder.RegisterType<InMemoryResourceLocationIndex>()
         .As<IResourceLocationIndex>()
         .SingleInstance();
+
+    // BACKGROUND OPERATIONS CONFIGURATION
+    // Auto-register all DurableTask activities from the BackgroundOperations assembly
+    // This scans for all classes inheriting from TaskActivity and registers them with DI
+    // New activities are automatically discovered without requiring manual registration updates
+    var backgroundOpsAssembly = typeof(Ignixa.Application.BackgroundOperations.Export.Activities.SearchAndWriteChunkActivity).Assembly;
+    containerBuilder.RegisterAssemblyTypes(backgroundOpsAssembly)
+        .Where(t => typeof(DurableTask.Core.TaskActivity).IsAssignableFrom(t) && !t.IsAbstract)
+        .AsSelf()
+        .InstancePerDependency();
 
     // MULTI-TENANCY CONFIGURATION (Phase 20 - ADR-2523)
 
