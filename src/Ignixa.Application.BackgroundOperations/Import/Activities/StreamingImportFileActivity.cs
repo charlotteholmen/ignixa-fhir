@@ -17,6 +17,7 @@ using Ignixa.Search.Infrastructure;
 using Ignixa.Serialization;
 using Ignixa.Serialization.SourceNodes;
 using Ignixa.Specification;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace Ignixa.Application.BackgroundOperations.Import.Activities;
@@ -40,6 +41,7 @@ public class StreamingImportFileActivity : AsyncTaskActivity<StreamingImportFile
     private readonly IFhirVersionContext _fhirVersionContext;
     private readonly ITenantConfigurationStore _tenantConfigurationStore;
     private readonly IBlobStorageClient _blobStorageClient;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<StreamingImportFileActivity> _logger;
 
     public StreamingImportFileActivity(
@@ -47,12 +49,14 @@ public class StreamingImportFileActivity : AsyncTaskActivity<StreamingImportFile
         IFhirVersionContext fhirVersionContext,
         ITenantConfigurationStore tenantConfigurationStore,
         IBlobStorageClient blobStorageClient,
+        IConfiguration configuration,
         ILogger<StreamingImportFileActivity> logger)
     {
         _repositoryFactory = repositoryFactory ?? throw new ArgumentNullException(nameof(repositoryFactory));
         _fhirVersionContext = fhirVersionContext ?? throw new ArgumentNullException(nameof(fhirVersionContext));
         _tenantConfigurationStore = tenantConfigurationStore ?? throw new ArgumentNullException(nameof(tenantConfigurationStore));
         _blobStorageClient = blobStorageClient ?? throw new ArgumentNullException(nameof(blobStorageClient));
+        _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -63,11 +67,10 @@ public class StreamingImportFileActivity : AsyncTaskActivity<StreamingImportFile
         var stopwatch = Stopwatch.StartNew();
 
         _logger.LogInformation(
-            "Starting streaming import: Job={JobId}, File={FileUrl}, Type={ResourceType}, Consumers={ConsumerCount}",
+            "Starting streaming import: Job={JobId}, File={FileUrl}, Type={ResourceType}",
             input.JobId,
             input.FileUrl,
-            input.ResourceType,
-            input.ConsumerCount);
+            input.ResourceType);
 
         // Validate import mode
         if (input.Mode != "InitialLoad" && input.Mode != "IncrementalLoad")
@@ -91,14 +94,15 @@ public class StreamingImportFileActivity : AsyncTaskActivity<StreamingImportFile
                 throw new InvalidOperationException($"Tenant {input.TenantId} not found or inactive");
             }
 
-            // Get tenant repository for writes
-            var repository = await _repositoryFactory.GetRepositoryAsync(input.TenantId, CancellationToken.None);
+            // Get first repository instance to allocate transaction ID
+            // (All threads will share the same transaction ID, but use separate DbContext instances for writes)
+            var allocatorRepository = await _repositoryFactory.GetRepositoryAsync(input.TenantId, CancellationToken.None);
 
             // Allocate transaction ID from tenant's repository (Isolated mode)
             // In isolated mode: Each tenant has its own database, so tenant repository = tenant database
             // In distributed mode: Must use system repository (Partition 0) for transaction allocation
             //                      TODO: Repository factory should handle this logic based on mode
-            var transactionId = await repository.GetNextTransactionIdAsync(CancellationToken.None);
+            var transactionId = await allocatorRepository.GetNextTransactionIdAsync(CancellationToken.None);
 
             _logger.LogDebug(
                 "Allocated transaction ID {TransactionId} for import (Tenant {TenantId})",
@@ -109,6 +113,10 @@ public class StreamingImportFileActivity : AsyncTaskActivity<StreamingImportFile
             var fhirVersion = FhirSpecificationExtensions.FromVersionString(tenantConfig.FhirVersion);
             var schemaProvider = _fhirVersionContext.GetSchemaProvider(fhirVersion);
             var searchIndexer = _fhirVersionContext.GetSearchIndexer(fhirVersion);
+
+            // Read global configuration for consumer count
+            var consumerCount = _configuration.GetValue<int>("Import:ConsumerCount", 8);
+            if (consumerCount < 1) consumerCount = 1;
 
             // Create bounded channel for streaming resources from producer to consumers
             var channel = Channel.CreateBounded<ImportEntry>(
@@ -144,11 +152,16 @@ public class StreamingImportFileActivity : AsyncTaskActivity<StreamingImportFile
             }, CancellationToken.None);
 
             // Consumer tasks: Read from channel, batch, and write to database
-            var consumerTasks = Enumerable.Range(0, input.ConsumerCount)
+            // ConsumerCount is a global setting read from configuration
+            // Each consumer gets its own repository instance (DbContext is not thread-safe)
+            var consumerTasks = Enumerable.Range(0, consumerCount)
                 .Select(consumerId => Task.Run(async () =>
                 {
                     var localSuccessCount = 0;
                     var localErrors = new List<ImportErrorLogEntry>();
+
+                    // Each consumer thread gets its own repository instance
+                    var consumerRepository = await _repositoryFactory.GetRepositoryAsync(input.TenantId, CancellationToken.None);
 
                     try
                     {
@@ -190,7 +203,7 @@ public class StreamingImportFileActivity : AsyncTaskActivity<StreamingImportFile
                                         consumerId,
                                         validOperations.Count);
 
-                                    var keys = await repository.BatchWriteAsync(
+                                    var keys = await consumerRepository.BatchWriteAsync(
                                         transactionId,
                                         validOperations,
                                         CancellationToken.None);
@@ -263,8 +276,8 @@ public class StreamingImportFileActivity : AsyncTaskActivity<StreamingImportFile
             await producerTask;
             await Task.WhenAll(consumerTasks);
 
-            // Commit transaction
-            await repository.CommitTransactionAsync(transactionId, CancellationToken.None);
+            // Commit transaction (use allocator repository for consistency)
+            await allocatorRepository.CommitTransactionAsync(transactionId, CancellationToken.None);
 
             stopwatch.Stop();
 
