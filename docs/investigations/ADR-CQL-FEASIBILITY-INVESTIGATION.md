@@ -1157,6 +1157,273 @@ CQL heavily uses value sets:
 - ❌ Not industry standard
 - ❌ Limited clinical reasoning
 
+## Future Outlook: CQL vs SQL-on-FHIR
+
+### Is CQL Being Sunset?
+
+**Answer: NO. CQL is actively expanding and becoming MORE mandatory.**
+
+Contrary to concerns about obsolescence, Clinical Quality Language is experiencing **growing adoption and regulatory mandates**, particularly in the United States healthcare system.
+
+### CQL Future Trajectory (2025-2028)
+
+#### CQL 2.0 in Active Development
+
+**Current Status**: CQL v1.5.3 is ANSI Normative Standard (March 2025)
+
+**CQL 2.0 Roadmap** (trial-use ballot):
+- Comment tags
+- Search paths, includes, and reverse includes in Retrieve
+- Aggregate clause and aggregate queries
+- Fluent functions
+- CodeSystem, ValueSet, Long types
+- Enhanced conformance language
+- **Status**: Active development, backward compatible
+
+**Normative Standard Benefits**:
+- ✅ Backward compatibility guaranteed
+- ✅ Stable foundation for long-term investment
+- ✅ ANSI certification provides industry legitimacy
+
+#### CMS Mandates: Increasing Requirements
+
+**Hospital Inpatient Quality Reporting (IQR) Program**:
+```
+2024: 6 mandatory eCQMs
+2026: 8 mandatory eCQMs  (+33%)
+2027: 9 mandatory eCQMs
+2028: 11 mandatory eCQMs (+83% from 2024)
+```
+
+**Medicare Shared Savings Program (MSSP) ACOs**:
+- **2024**: Web interface option available
+- **2025**: Web interface **RETIRED** - eCQMs become mandatory
+  - 4 eCQMs required
+  - 100% patient analysis, 70% reporting
+- **2026**: 5 eCQMs + 2 administrative claims measures
+
+**dQM Strategic Roadmap**:
+> "CMS has set the goal of advancing quality measurement by transitioning **ALL quality measures** used in its reporting programs to digital quality measures (dQMs)."
+
+**Impact**: CQL adoption is **mandated by regulation**, not optional.
+
+### SQL-on-FHIR: Complementary, Not Competing
+
+**SQL-on-FHIR v2 Specification** (v2.1.0-pre, 2025)
+
+#### What is SQL-on-FHIR?
+
+A specification that defines **portable, tabular projections of FHIR data** using ViewDefinition resources.
+
+```
+ViewDefinition Resource
+    ├── select: FHIRPath expressions for columns
+    ├── where: FHIRPath filters
+    └── Output: Tabular data (CSV, Parquet, SQL tables)
+```
+
+**Key Concept**: SQL-on-FHIR makes FHIR data accessible to standard SQL analytics tools (PowerBI, Tableau, Databricks, etc.).
+
+#### CQL vs SQL-on-FHIR: Use Case Separation
+
+| Aspect | CQL | SQL-on-FHIR |
+|--------|-----|-------------|
+| **Primary Use** | Clinical logic execution | Data extraction & analytics |
+| **Domain** | Quality measures, CDS, guidelines | Reporting, dashboards, research |
+| **Expressivity** | Very High (clinical reasoning) | Moderate (data transformation) |
+| **Complexity** | High (6-9 months to implement) | Low (8 implementations exist) |
+| **Authoring** | Clinical informaticists | Data analysts, SQL developers |
+| **Output** | Boolean, measures, recommendations | Tables, charts, aggregations |
+| **Real-time** | Yes (CDS) | No (batch analytics) |
+| **Standards Body** | HL7 CDS/CQI WG | HL7 Infrastructure WG |
+| **Adoption** | CMS-mandated for dQMs | Emerging for analytics |
+| **Portability** | Moderate (ELM + engine required) | High (FHIRPath + SQL runner) |
+
+#### Relationship: Complementary Technologies
+
+```
+Healthcare Data Needs
+    ├── Clinical Quality & Decision Support → CQL
+    │   ├── Digital Quality Measures (dQMs)
+    │   ├── Clinical Decision Support (CDS)
+    │   ├── Computable Guidelines (CPGs)
+    │   └── Public Health Reporting
+    │
+    └── Analytics & Reporting → SQL-on-FHIR
+        ├── Dashboards (PowerBI, Tableau)
+        ├── Population health analytics
+        ├── Research cohorts
+        └── Financial/operational reporting
+```
+
+**Key Insight**: Organizations need BOTH, not either/or.
+
+### Inverse Relationship: Expressivity vs Implementation Complexity
+
+From research: *"The systematic comparison of the approaches suggests an inverse relationship between expressivity and implementation complexity."*
+
+**Visual Representation**:
+```
+High Expressivity    CQL ●
+                         ╲
+                          ╲
+                           ╲ FHIRPath
+                            ●
+                             ╲
+                              ╲
+Low Expressivity              ● SQL-on-FHIR
+
+                    Low ←─ Implementation Complexity ─→ High
+```
+
+**Trade-offs**:
+- **CQL**: Maximum clinical reasoning capability, highest implementation cost
+- **FHIRPath**: Moderate capability, moderate cost (Ignixa already has this)
+- **SQL-on-FHIR**: Limited to data extraction, lowest implementation cost
+
+### SQL-on-FHIR Advantages for Ignixa
+
+**Why SQL-on-FHIR is a Better Fit**:
+
+1. **Leverages Existing Architecture**
+   - Ignixa already has `Ignixa.DataLayer.Sql`
+   - ViewDefinition → SQL generation is straightforward
+   - No new execution engine required
+
+2. **Simpler Implementation**
+   - ViewDefinition uses FHIRPath (Ignixa already has parser)
+   - No type system or semantic analyzer needed
+   - 8 independent implementations prove portability
+
+3. **Broader Use Case Coverage**
+   - **80% of analytics use cases** vs CQL's 40% (read-only)
+   - Addresses cohort identification, dashboards, reporting
+   - SQL is universal skill (vs CQL's specialized expertise)
+
+4. **Lower Maintenance Burden**
+   - Specification is simpler (~50 pages vs CQL's 200+)
+   - No clinical domain expertise required
+   - Fewer dependencies (no terminology server for basic use)
+
+5. **Pure .NET Feasible**
+   - FHIRPath parser: already implemented (Ignixa.FhirPath)
+   - SQL generation: straightforward code generation
+   - **Estimated effort**: 2-4 weeks (vs CQL read-only: 8-12 weeks)
+
+### Market Signals: CQL is Growing, Not Declining
+
+**Adoption Indicators**:
+- ✅ CMS mandating eCQMs (2025-2028 escalation)
+- ✅ NCQA HEDIS measures transitioning to CQL
+- ✅ CDC NHSN using CQL for public health reporting
+- ✅ Computable guidelines (CPGs) using CQL
+- ✅ FHIR Clinical Reasoning Module stable (R4, R5)
+- ✅ Active community (cqframework GitHub, eCQI Resource Center)
+- ✅ Commercial support (Firely, NCQA, Smile CDR)
+
+**Investment Signals**:
+- Google developing CQL engine (announced 2024)
+- Firely/NCQA partnership on .NET SDK (active development)
+- HL7 CDS Work Group actively maintaining specification
+- CQL 2.0 in ballot (not deprecated or sunset)
+
+**Conclusion**: CQL is in **growth phase**, not decline.
+
+### When Will SQL-on-FHIR Replace CQL?
+
+**Answer: Never (for clinical quality measures).**
+
+**Reason**: CQL and SQL-on-FHIR serve different purposes.
+
+**What SQL-on-FHIR CANNOT do** (that CQL can):
+- ❌ Execute clinical logic with temporal reasoning
+- ❌ Represent computable guidelines with branching logic
+- ❌ Real-time clinical decision support
+- ❌ Complex clinical calculations (risk scores, clinical formulas)
+- ❌ Cross-resource queries with clinical semantics
+- ❌ Meet CMS digital quality measure specifications
+
+**What CQL CANNOT do well** (that SQL-on-FHIR can):
+- ❌ Simple data extraction for analytics
+- ❌ Flatten hierarchical FHIR into tabular format efficiently
+- ❌ Integrate with standard BI tools (PowerBI, Tableau)
+- ❌ Provide portable views across platforms
+- ❌ Scale to large-scale batch analytics
+
+### Recommendation: Strategic Positioning
+
+Given the future outlook, Ignixa should:
+
+#### Short-Term (2025): Ignore CQL, Implement SQL-on-FHIR
+
+**Rationale**:
+1. CQL remains **Java-dependent** for full implementation
+2. No customer demand for dQMs/CDS yet
+3. SQL-on-FHIR addresses **80% of analytics needs**
+4. Pure .NET, 2-4 week implementation
+5. Leverages existing Ignixa.DataLayer.Sql
+
+**Action**: Implement ViewDefinition resource + SQL runner (2-4 weeks)
+
+#### Medium-Term (2026): Monitor CQL Demand
+
+**Watch for signals**:
+- Customer requests for CMS eCQM reporting
+- Healthcare organizations needing dQM calculation
+- Clinical decision support requirements
+- Public health reporting needs (CDC NHSN)
+
+**Action**: If 3+ customers request CQL → implement read-only ELM
+
+#### Long-Term (2027+): Consider CQL if Market Demands
+
+**Scenarios requiring CQL**:
+1. **Hospital customers**: Need eCQM calculation for CMS reporting
+2. **ACO customers**: Need MSSP quality measure calculation (2025 mandate)
+3. **Public health**: CDC reporting requirements
+4. **Clinical guidelines**: CPG execution for decision support
+
+**Action**: Implement read-only ELM (8-12 weeks) OR partner with terminology service
+
+**ONLY if** 5+ customers + $500K+ contract: Build pure .NET translator (8-12 months)
+
+### Comparison: Implementation Options for Ignixa
+
+| Solution | Timeline | Addresses Use Cases | CMS Compliant | Pure .NET |
+|----------|----------|---------------------|---------------|-----------|
+| **SQL-on-FHIR** | 2-4 weeks | 80% analytics | ❌ No (not dQMs) | ✅ Yes |
+| **Enhanced FHIRPath** | 4-6 weeks | 70% queries | ❌ No | ✅ Yes |
+| **Read-only ELM** | 8-12 weeks | 40% dQMs | ✅ Yes (partial) | ✅ Yes* |
+| **Full CQL** | 8-12 months | 100% | ✅ Yes | ✅ Yes** |
+
+\* Requires offline Java translator
+\*\* Requires building .NET CQL-to-ELM translator
+
+### Final Insight: CQL is Mandatory for Some, Overkill for Most
+
+**CQL is essential IF**:
+- Operating in US healthcare market
+- Customers are hospitals, ACOs, or public health agencies
+- Need to report CMS eCQMs
+- Providing clinical decision support
+- Implementing computable guidelines
+
+**CQL is overkill IF**:
+- Primary use case is analytics and reporting
+- Customers need dashboards, not quality measures
+- Target market is research or population health
+- Data extraction and transformation is primary need
+
+**For Ignixa**:
+- **Current roadmap**: No CQL use cases identified
+- **Recommended**: SQL-on-FHIR (2-4 weeks) for analytics
+- **Defer**: CQL until customer demand emerges
+- **Monitor**: CMS mandates increasing 2025-2028
+
+**Bottom Line**: CQL is NOT being sunset—it's becoming MORE mandatory for digital quality measures. However, SQL-on-FHIR is emerging as the practical solution for analytics, and **Ignixa should start with SQL-on-FHIR, not CQL**.
+
+---
+
 ## Recommendations
 
 ### Primary Recommendation: **DO NOT Implement Full CQL Support**
