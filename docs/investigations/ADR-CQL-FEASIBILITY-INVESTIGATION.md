@@ -1424,6 +1424,426 @@ Given the future outlook, Ignixa should:
 
 ---
 
+## Hybrid Approach: Can CQL Be Converted to SQL-on-FHIR?
+
+### The Core Question
+
+**Can we translate CQL to SQL-on-FHIR ViewDefinitions, avoiding the Java dependency?**
+
+This is an insightful question because both technologies share FHIRPath as a foundation, suggesting potential compatibility.
+
+### Technical Feasibility Analysis
+
+#### Theoretical Possibility
+
+From research: *"Basic CQL could be transpiled to SQL, but CQL syntax and functionality is way more complex and powerful compared to SQL."*
+
+**ELM Translation Potential**:
+- ELM (Expression Logical Model) is designed to be language-independent
+- .NET CQL engine converts ELM → C#
+- In theory, ELM could be translated to SQL
+- **Challenge**: SQL is set-based, CQL has procedural/functional semantics
+
+#### Practical Limitations
+
+From expert consensus: *"In experience, this has been difficult with SQL, being that it is set based. A direct conversion may not be as performant as a query that a human would write."*
+
+**Key Impediments**:
+1. **Semantic mismatch**: SQL operates on sets; CQL has iterative logic
+2. **Complexity gap**: CQL supports functions, libraries, temporal reasoning
+3. **Performance issues**: Transpiled SQL would be inefficient vs hand-written
+4. **Custom functions**: Complex CQL requires database extensions
+
+### CQL Expressivity vs SQL-on-FHIR Constraints
+
+#### What CQL Has That SQL-on-FHIR Doesn't
+
+| CQL Feature | SQL-on-FHIR Equivalent | Translatable? |
+|-------------|------------------------|---------------|
+| **FHIRPath expressions** | ✅ ViewDefinition select | ✅ Yes |
+| **Simple filtering** | ✅ ViewDefinition where | ✅ Yes |
+| **Temporal reasoning** | ❌ No equivalent | ❌ No |
+| **Function definitions** | ❌ No equivalent | ❌ No |
+| **Library dependencies** | ❌ No equivalent | ❌ No |
+| **Cross-resource queries** | ❌ Limited | ⚠️ Partial |
+| **Aggregations** | ⚠️ SQL functions | ⚠️ Partial |
+| **Conditional logic** | ❌ No equivalent | ❌ No |
+| **Iterative operations** | ❌ No equivalent | ❌ No |
+| **Clinical calculations** | ❌ No equivalent | ❌ No |
+
+**Conclusion**: Only ~20-30% of CQL constructs could translate to SQL-on-FHIR.
+
+### CQL Subset That Could Translate
+
+#### Translatable CQL Pattern
+
+**Simple data extraction queries**:
+
+```cql
+// CQL: Simple patient retrieval
+define "Active Patients":
+  [Patient] P
+    where P.active = true
+```
+
+**Equivalent SQL-on-FHIR ViewDefinition**:
+
+```json
+{
+  "resourceType": "ViewDefinition",
+  "name": "ActivePatients",
+  "resource": "Patient",
+  "select": [
+    {"column": "id", "path": "id"},
+    {"column": "name", "path": "name"},
+    {"column": "birthDate", "path": "birthDate"}
+  ],
+  "where": [{
+    "path": "active",
+    "equals": true
+  }]
+}
+```
+
+**Translatability**: ✅ **Yes** - Direct mapping possible.
+
+#### Non-Translatable CQL Pattern
+
+**Temporal reasoning with cross-resource queries**:
+
+```cql
+define "Patients with Recent High BP":
+  [Patient] P
+    where exists(
+      [Observation: "Blood Pressure"] BP
+        where BP.subject = 'Patient/' + P.id
+          and BP.effective during Interval[Today() - 30 days, Today()]
+          and BP.component.where(code ~ "Systolic BP").value > 140 'mm[Hg]'
+    )
+```
+
+**Why Not Translatable**:
+- ❌ `exists()` with correlated subquery (procedural)
+- ❌ `during Interval[Today() - 30 days, Today()]` (temporal reasoning)
+- ❌ `component.where()` with clinical logic
+- ❌ Quantity comparison with units (`> 140 'mm[Hg]'`)
+
+**Translatability**: ❌ **No** - Requires CQL engine.
+
+### Hybrid Architecture Options
+
+Since full CQL→SQL-on-FHIR translation is not feasible, here are practical hybrid approaches:
+
+---
+
+#### Option 1: ViewDefinitions as CQL Data Provider
+
+**Concept**: Use SQL-on-FHIR to optimize CQL data retrieval.
+
+```
+┌─────────────────┐
+│   CQL Engine    │  Execute clinical logic
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Data Provider  │  Implements IDataProvider
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ ViewDefinitions │  Pre-flattened tabular data
+│  (SQL runner)   │  (Fast access, no JSON parsing)
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  SQL Database   │  Ignixa.DataLayer.Sql
+└─────────────────┘
+```
+
+**Implementation**:
+
+```csharp
+public class ViewDefinitionDataProvider : IDataProvider
+{
+    private readonly ISqlViewRunner _viewRunner;
+
+    public IEnumerable<object> Retrieve(string dataType, ...)
+    {
+        // Check if ViewDefinition exists for this resource type
+        var viewDef = _viewRunner.GetViewDefinition(dataType);
+
+        if (viewDef != null)
+        {
+            // Use pre-computed SQL view (FAST)
+            return _viewRunner.QueryView(viewDef, filters);
+        }
+        else
+        {
+            // Fall back to standard FHIR search (SLOW)
+            return _fhirSearchService.Search(dataType, filters);
+        }
+    }
+}
+```
+
+**Benefits**:
+- ✅ CQL gets full expressivity
+- ✅ Data retrieval optimized via SQL
+- ✅ No translation complexity
+- ✅ Best of both worlds
+
+**Effort**: 4-6 weeks (ViewDefinition runner + data provider integration)
+
+---
+
+#### Option 2: SQL-on-FHIR for Analytics, CQL for Measures
+
+**Concept**: Use the right tool for each job.
+
+```
+Use Cases Split:
+    ├── Analytics & Reporting → SQL-on-FHIR
+    │   ├── Dashboards (PowerBI, Tableau)
+    │   ├── Ad-hoc queries
+    │   ├── Research cohorts
+    │   └── Financial reporting
+    │
+    └── Clinical Quality & CDS → CQL (if needed)
+        ├── CMS eCQM reporting
+        ├── Clinical decision support
+        ├── Computable guidelines
+        └── Public health reporting
+```
+
+**Architecture**:
+
+```csharp
+// Analytics endpoint (fast, simple)
+GET /ViewDefinition/active-patients-summary
+→ Returns CSV/Parquet for PowerBI
+
+// Quality measure endpoint (complex, compliant)
+POST /Measure/diabetes-control/$evaluate-measure
+→ Executes CQL, returns MeasureReport
+```
+
+**Benefits**:
+- ✅ No translation complexity
+- ✅ Each technology optimized for its domain
+- ✅ Simpler implementation
+- ✅ Standards-compliant
+
+**Effort**: Separate implementations (2-4 weeks SQL-on-FHIR + 8-12 weeks CQL if needed)
+
+---
+
+#### Option 3: Transpile CQL Subset to ViewDefinitions
+
+**Concept**: Build limited CQL→ViewDefinition transpiler for simple queries.
+
+**Translatable Subset**:
+- ✅ Single resource retrieval (`[Patient]`)
+- ✅ Simple filters (`where P.active = true`)
+- ✅ Basic FHIRPath navigation (`P.name.family`)
+- ❌ Cross-resource queries
+- ❌ Temporal reasoning
+- ❌ Functions/libraries
+- ❌ Aggregations beyond SQL standard
+
+**Example Translation**:
+
+```cql
+// Input: CQL
+library SimplePatients
+define "Active Patients":
+  [Patient] P where P.active = true
+```
+
+↓ Transpile ↓
+
+```json
+// Output: ViewDefinition
+{
+  "resourceType": "ViewDefinition",
+  "name": "Active_Patients",
+  "resource": "Patient",
+  "where": [{"path": "active", "equals": true}]
+}
+```
+
+**Implementation**:
+
+```csharp
+public class CqlToViewDefinitionTranspiler
+{
+    public ViewDefinition? TryTranspile(CqlLibrary library, string definitionName)
+    {
+        var def = library.GetDefinition(definitionName);
+
+        // Only support simple Retrieve expressions
+        if (def.Expression is RetrieveExpression retrieve)
+        {
+            var viewDef = new ViewDefinition
+            {
+                Resource = retrieve.DataType
+            };
+
+            // Translate where clause if present
+            if (retrieve.Codes != null)
+            {
+                viewDef.Where = TranslateFilters(retrieve.Codes);
+            }
+
+            return viewDef;
+        }
+
+        // Cannot translate complex CQL
+        return null;
+    }
+}
+```
+
+**Benefits**:
+- ✅ Reuse CQL authoring for simple cases
+- ✅ Execute via SQL (fast)
+- ✅ No CQL engine for basic queries
+
+**Limitations**:
+- ❌ Only 20-30% of CQL translatable
+- ❌ Complex measures still need CQL engine
+- ❌ Maintenance burden for transpiler
+
+**Effort**: 6-8 weeks (parser, translator, testing)
+
+**Verdict**: ⚠️ Not worth it - better to use SQL-on-FHIR directly.
+
+---
+
+#### Option 4: FHIRPath Extensions for Both
+
+**Concept**: Extend Ignixa.FhirPath to support both CQL-like features AND ViewDefinition generation.
+
+```
+Enhanced FHIRPath (Ignixa.FhirPath++)
+    ├── Core FHIRPath (navigation)
+    ├── Temporal functions (age, duration)
+    ├── Aggregations (sum, avg, count)
+    ├── Cross-resource queries (limited)
+    │
+    ├─→ Execute directly (fast, in-memory)
+    └─→ Compile to ViewDefinition (persistent, SQL)
+```
+
+**Implementation**:
+
+```csharp
+// Single FHIRPath expression, dual execution modes
+var expression = "Patient.where(active = true).name.family";
+
+// Mode 1: Direct evaluation (like current Ignixa.FhirPath)
+var results = evaluator.Evaluate(resources, expression);
+
+// Mode 2: Compile to ViewDefinition (NEW)
+var viewDef = compiler.CompileToViewDefinition("Patient", expression);
+// ViewDefinition stored and executed via SQL
+```
+
+**Benefits**:
+- ✅ Single language for both use cases
+- ✅ Builds on existing Ignixa.FhirPath
+- ✅ No CQL complexity
+- ✅ Standards-based (FHIRPath + ViewDefinition)
+
+**Effort**: 6-8 weeks (extend FHIRPath + ViewDefinition compiler)
+
+**Verdict**: 🟢 **Most promising for Ignixa** - pure .NET, leverages existing work.
+
+---
+
+### Recommendation: Pragmatic Hybrid Strategy
+
+Based on the analysis, here's the optimal approach for Ignixa:
+
+#### Phase 1: SQL-on-FHIR Foundation (2-4 weeks)
+
+**Implement**:
+1. ViewDefinition resource CRUD
+2. SQL-based ViewDefinition runner
+3. FHIRPath → SQL column mapping
+
+**Benefits**:
+- Addresses 80% of analytics needs immediately
+- Foundation for hybrid approaches
+- Pure .NET, no dependencies
+
+#### Phase 2: Enhanced FHIRPath (4-6 weeks)
+
+**Extend Ignixa.FhirPath**:
+1. Temporal functions
+2. Aggregations
+3. Limited cross-resource queries
+
+**Benefits**:
+- Addresses 70% of query use cases
+- Can optionally compile to ViewDefinitions
+- No CQL complexity
+
+#### Phase 3: ViewDefinition-Backed CQL (Optional, 8-10 weeks)
+
+**If CQL is required**:
+1. Implement read-only ELM execution
+2. Use ViewDefinitions as optimized data provider
+3. CQL engine queries pre-computed SQL views
+
+**Benefits**:
+- CQL performance optimization
+- Reduced N+1 query problem
+- Leverages SQL-on-FHIR investment
+
+### When to Use Each Technology
+
+| Scenario | Use | Rationale |
+|----------|-----|-----------|
+| **Dashboards/BI** | SQL-on-FHIR | Direct SQL access, standard tools |
+| **Ad-hoc queries** | Enhanced FHIRPath | Flexible, no SQL knowledge required |
+| **Research cohorts** | SQL-on-FHIR | Batch processing, large datasets |
+| **Simple filters** | FHIRPath | Fast, in-memory, no persistence |
+| **CMS eCQMs** | CQL (if mandated) | Regulatory compliance |
+| **Clinical decision support** | CQL (if needed) | Real-time, complex clinical logic |
+| **Performance-critical** | SQL-on-FHIR | Pre-computed views, indexed |
+
+### The "No Translation" Reality
+
+**Key Finding**: **Full CQL-to-SQL-on-FHIR translation is NOT feasible.**
+
+**Reasons**:
+1. **Semantic incompatibility**: CQL's procedural/functional style vs SQL's set operations
+2. **Expressivity gap**: 70-80% of CQL features have no SQL equivalent
+3. **Performance penalty**: Transpiled SQL would be inefficient
+4. **Maintenance burden**: Two implementations to maintain
+
+**Alternative**: Use both technologies for their strengths, with ViewDefinitions optimizing CQL's data access layer.
+
+### Ignixa-Specific Recommendation
+
+**DO**:
+1. ✅ Implement SQL-on-FHIR (2-4 weeks) for analytics
+2. ✅ Enhance FHIRPath (4-6 weeks) for queries
+3. ✅ Use ViewDefinitions to optimize future CQL data retrieval
+
+**DO NOT**:
+1. ❌ Attempt CQL-to-ViewDefinition transpiler (not worth the effort)
+2. ❌ Implement full CQL without customer demand
+3. ❌ Try to make SQL-on-FHIR do clinical reasoning (wrong tool)
+
+**CONDITIONAL**:
+1. ⚠️ If CQL is required: Implement Option 1 (ViewDefinitions as CQL Data Provider)
+2. ⚠️ If performance-critical CQL: Pre-compute ViewDefinitions for common queries
+
+---
+
 ## Recommendations
 
 ### Primary Recommendation: **DO NOT Implement Full CQL Support**
