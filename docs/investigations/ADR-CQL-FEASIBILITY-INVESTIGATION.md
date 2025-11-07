@@ -117,6 +117,682 @@ FHIRPath ⊂ CQL
 | **Implementation cost** | Low | **Very High** |
 | **Maintenance cost** | Low | **High** |
 
+## CQL-to-ELM Translation Deep Dive
+
+### What is ELM?
+
+**Expression Logical Model (ELM)** is the executable intermediate representation of CQL expressions. Think of it as the "bytecode" or "IL" for CQL.
+
+```
+CQL (Human-readable)  →  ELM (Machine-readable)  →  Execution
+    ↓                         ↓                         ↓
+Text source code         JSON/XML structure      Runtime evaluation
+```
+
+### Why ELM Exists
+
+**Problem**: CQL is designed for clinical authors, not efficient execution.
+
+**Solution**: Two-stage compilation:
+1. **Translation**: CQL text → ELM (semantic analysis, type checking, optimization)
+2. **Execution**: ELM → Runtime evaluation (fast, no parsing overhead)
+
+**Benefits**:
+- **Portability**: ELM is platform-independent (JSON/XML)
+- **Performance**: Parse once, execute many times
+- **Validation**: Catch errors at translation time, not runtime
+- **Distribution**: Share compiled logic without source code exposure
+- **Optimization**: ELM can be optimized for execution
+
+### CQL-to-ELM Translation Process
+
+#### Stage 1: Lexical Analysis (Tokenization)
+
+```cql
+define "Has Diabetes": exists([Condition: "Diabetes"])
+```
+
+**Tokens**:
+```
+DEFINE, IDENTIFIER("Has Diabetes"), COLON, EXISTS, LPAREN, LBRACKET,
+IDENTIFIER(Condition), COLON, STRING("Diabetes"), RBRACKET, RPAREN
+```
+
+#### Stage 2: Syntactic Analysis (Parsing)
+
+**Abstract Syntax Tree (AST)**:
+```
+ExpressionDef
+├── name: "Has Diabetes"
+└── expression: ExistsExpression
+    └── operand: Retrieve
+        ├── dataType: "Condition"
+        └── codeProperty: "code"
+            └── valueset: "Diabetes"
+```
+
+#### Stage 3: Semantic Analysis
+
+**Type Checking**:
+- `Retrieve` returns `List<Condition>`
+- `Exists` accepts `List<T>`, returns `Boolean`
+- ✅ Type-safe
+
+**Name Resolution**:
+- Resolve "Diabetes" valueset reference
+- Resolve "Condition" to FHIR data model
+- Resolve library dependencies
+
+**Validation**:
+- Check valueset exists in terminology
+- Verify FHIR resource type is valid
+- Ensure code paths are reachable
+
+#### Stage 4: ELM Generation
+
+**Output ELM (JSON)**:
+```json
+{
+  "library": {
+    "identifier": { "id": "DiabetesLogic", "version": "1.0.0" },
+    "statements": {
+      "def": [
+        {
+          "name": "Has Diabetes",
+          "context": "Patient",
+          "expression": {
+            "type": "Exists",
+            "operand": {
+              "type": "Retrieve",
+              "dataType": "{http://hl7.org/fhir}Condition",
+              "codeProperty": "code",
+              "codes": {
+                "type": "ValueSetRef",
+                "name": "Diabetes"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+### CQL-to-ELM Translator Implementation
+
+**Official Java Translator**:
+- **Repository**: https://github.com/cqframework/clinical_quality_language
+- **Maven**: `org.cqframework:cql-to-elm`
+- **Language**: Java 8+
+- **Size**: ~50K lines of code
+- **Complexity**: High (grammar, type system, optimization)
+
+**Key Components**:
+```
+cql-to-elm/
+├── grammar/              # ANTLR4 grammar for CQL
+├── model/                # ELM object model
+├── visitor/              # AST → ELM transformation
+├── operators/            # Built-in operator definitions
+├── types/                # CQL type system
+└── optimizer/            # ELM optimization passes
+```
+
+**Translation Command**:
+```bash
+# Java-based translation
+java -jar cql-to-elm-translator.jar \
+  --input DiabetesLogic.cql \
+  --output DiabetesLogic.json \
+  --format json
+```
+
+### Pure .NET Challenge
+
+**No equivalent exists**. Building a .NET CQL-to-ELM translator requires:
+
+1. **CQL Grammar Implementation** (6-8 weeks)
+   - ANTLR4 C# target OR Superpower parser
+   - ~150 grammar rules
+   - Error recovery and reporting
+
+2. **Type System** (4-6 weeks)
+   - CQL primitive types (Integer, Decimal, String, Boolean, DateTime, Time, Quantity)
+   - FHIR type integration
+   - List types, Tuple types, Choice types
+   - Type inference engine
+
+3. **Semantic Analyzer** (6-8 weeks)
+   - Symbol table management
+   - Name resolution (local, library, global scopes)
+   - Type checking and coercion
+   - Operator overload resolution
+
+4. **ELM Code Generator** (6-8 weeks)
+   - AST → ELM transformation
+   - Expression optimization
+   - Library dependency resolution
+   - ValueSet reference resolution
+
+5. **Standard Library** (4-6 weeks)
+   - ~200+ built-in functions
+   - Temporal operators (duration, interval)
+   - Aggregate operators (sum, avg, count)
+   - String/Math/Comparison operators
+
+**Total**: 26-36 weeks (6-9 months) for competent implementation.
+
+### Alternative: Offline Translation Workflow
+
+**For read-only ELM support**, use Java translator offline:
+
+```
+Development Environment (Java available)
+    ↓
+1. Author CQL in text files
+    ↓
+2. Translate to ELM using Java translator
+    ↓
+3. Upload ELM JSON to FHIR Library resource
+    ↓
+Production FHIR Server (.NET)
+    ↓
+4. Execute ELM using Hl7.Cql.Elm engine
+```
+
+**Workflow**:
+```bash
+# Development (offline)
+cql-to-elm translate --input measures/*.cql --output elm/*.json
+
+# Upload to FHIR server
+POST /Library
+{
+  "resourceType": "Library",
+  "status": "active",
+  "type": { "coding": [{ "code": "logic-library" }] },
+  "content": [{
+    "contentType": "application/elm+json",
+    "data": "<base64-encoded ELM JSON>"
+  }]
+}
+
+# Production (online)
+GET /Library/diabetes-logic/$evaluate
+# Server executes pre-compiled ELM
+```
+
+**Pros**:
+- ✅ Pure .NET runtime (no Java in production)
+- ✅ Smaller attack surface
+- ✅ Faster startup (no JIT compilation)
+
+**Cons**:
+- ❌ No in-server CQL authoring
+- ❌ Separate build step required
+- ❌ Harder to debug (source vs compiled mismatch)
+
+---
+
+## Running ELM on FHIR Server
+
+### ELM Execution Architecture
+
+Once you have ELM (either from Java translation or hypothetical .NET translator), you need to execute it against FHIR data.
+
+```
+┌─────────────────┐
+│  Library        │  FHIR Resource storing ELM
+│  (ELM JSON)     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  CQL Engine     │  Hl7.Cql.Elm NuGet package
+│  (Hl7.Cql.Elm)  │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Data Provider  │  Interface to FHIR data
+│  (Custom)       │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  FHIR Server    │  Ignixa FHIR Server
+│  (Ignixa)       │  - Search API
+└─────────────────┘  - Resource retrieval
+                     - Multi-tenant partitions
+```
+
+### Hl7.Cql.Elm Integration
+
+**NuGet Package**: `Hl7.Cql.Elm` v2.2.0
+
+**Key Classes**:
+```csharp
+using Hl7.Cql.Elm;
+using Hl7.Cql.Fhir;
+using Hl7.Cql.Runtime;
+
+// 1. Load Library resource containing ELM
+var library = await fhirClient.ReadAsync<Library>("Library/diabetes-logic");
+var elmJson = library.Content[0].Data; // Base64-encoded ELM JSON
+var elmBytes = Convert.FromBase64String(elmJson);
+var elmLibrary = JsonSerializer.Deserialize<Hl7.Cql.Elm.Library>(elmBytes);
+
+// 2. Create CQL context
+var context = new CqlContext();
+
+// 3. Register FHIR data provider
+var dataProvider = new IgnixaFhirDataProvider(fhirRepository, partitionId);
+context.RegisterDataProvider("http://hl7.org/fhir", dataProvider);
+
+// 4. Register terminology provider (for ValueSet operations)
+var terminologyProvider = new IgnixaTerminologyProvider(terminologyService);
+context.RegisterTerminologyProvider(terminologyProvider);
+
+// 5. Execute expression
+var result = context.EvaluateExpression(elmLibrary, "Has Diabetes");
+// Returns: bool (true/false)
+```
+
+### FHIR Data Provider Implementation
+
+**Required Interface**: `IDataProvider`
+
+```csharp
+public interface IDataProvider
+{
+    // Retrieve resources matching criteria
+    IEnumerable<object> Retrieve(
+        string context,           // e.g., "Patient"
+        string dataType,          // e.g., "Condition"
+        string templateId,        // Profile URL
+        string codePath,          // e.g., "code"
+        IEnumerable<Code> codes,  // ValueSet codes
+        string valueSet,          // ValueSet URL
+        string datePath,          // e.g., "onset"
+        string dateLowPath,
+        string dateHighPath,
+        Interval<DateTime> dateRange);
+}
+```
+
+**Ignixa-Specific Implementation**:
+
+```csharp
+public class IgnixaFhirDataProvider : IDataProvider
+{
+    private readonly IFhirRepository _repository;
+    private readonly int _partitionId;
+    private readonly ISearchService _searchService;
+
+    public IEnumerable<object> Retrieve(
+        string context,
+        string dataType,
+        string templateId,
+        string codePath,
+        IEnumerable<Code> codes,
+        string valueSet,
+        string datePath,
+        string dateLowPath,
+        string dateHighPath,
+        Interval<DateTime> dateRange)
+    {
+        // Convert CQL Retrieve to Ignixa SearchOptions
+        var searchOptions = new SearchOptions
+        {
+            ResourceType = dataType,
+            Parameters = new List<SearchParameter>()
+        };
+
+        // Add code filter if present
+        if (!string.IsNullOrEmpty(valueSet))
+        {
+            // Expand ValueSet to get codes
+            var expandedCodes = _terminologyProvider.ExpandValueSet(valueSet);
+
+            searchOptions.Parameters.Add(new SearchParameter
+            {
+                Name = codePath,
+                Values = expandedCodes.Select(c => c.Code).ToList()
+            });
+        }
+
+        // Add date range filter
+        if (dateRange != null && !string.IsNullOrEmpty(datePath))
+        {
+            searchOptions.Parameters.Add(new SearchParameter
+            {
+                Name = datePath,
+                Comparator = SearchComparator.GreaterThanOrEqual,
+                Value = dateRange.Low.ToString("yyyy-MM-dd")
+            });
+
+            searchOptions.Parameters.Add(new SearchParameter
+            {
+                Name = datePath,
+                Comparator = SearchComparator.LessThanOrEqual,
+                Value = dateRange.High.ToString("yyyy-MM-dd")
+            });
+        }
+
+        // Execute search against Ignixa repository
+        var partition = new PartitionKey(_partitionId);
+        var results = _searchService.SearchAsync(partition, searchOptions, CancellationToken.None)
+            .ToBlockingEnumerable();
+
+        // Convert ResourceWrapper to FHIR POCO
+        return results.Select(r => r.Resource.ToPoco());
+    }
+}
+```
+
+### Terminology Provider Implementation
+
+**Required Interface**: `ITerminologyProvider`
+
+```csharp
+public interface ITerminologyProvider
+{
+    // Expand ValueSet to get all codes
+    ValueSetExpansion ExpandValueSet(string valueSetUrl);
+
+    // Check if code is in ValueSet
+    bool IsCodeInValueSet(string code, string system, string valueSetUrl);
+
+    // Lookup code details
+    CodeSystemConcept LookupCode(string code, string system);
+}
+```
+
+**Ignixa Implementation**:
+
+```csharp
+public class IgnixaTerminologyProvider : ITerminologyProvider
+{
+    private readonly IFhirRepository _repository;
+    private readonly IValueSetExpansionCache _cache;
+
+    public ValueSetExpansion ExpandValueSet(string valueSetUrl)
+    {
+        // Check cache first
+        if (_cache.TryGet(valueSetUrl, out var expansion))
+            return expansion;
+
+        // Load ValueSet resource
+        var valueSet = _repository.ReadAsync<ValueSet>(
+            ResourceIdentifier.FromUrl(valueSetUrl),
+            CancellationToken.None).Result;
+
+        if (valueSet == null)
+            throw new InvalidOperationException($"ValueSet not found: {valueSetUrl}");
+
+        // Perform expansion (simplified - production needs full algorithm)
+        var codes = new List<Code>();
+
+        foreach (var include in valueSet.Compose.Include)
+        {
+            if (include.Concept != null)
+            {
+                // Explicit concept list
+                codes.AddRange(include.Concept.Select(c => new Code
+                {
+                    CodeValue = c.Code,
+                    System = include.System,
+                    Display = c.Display
+                }));
+            }
+            else if (include.Filter != null)
+            {
+                // Filter-based inclusion (requires CodeSystem traversal)
+                var codeSystem = _repository.ReadAsync<CodeSystem>(
+                    ResourceIdentifier.FromUrl(include.System),
+                    CancellationToken.None).Result;
+
+                // Apply filters and collect matching codes
+                // (Complex - depends on filter operators)
+            }
+        }
+
+        var expansion = new ValueSetExpansion { Contains = codes };
+        _cache.Set(valueSetUrl, expansion);
+        return expansion;
+    }
+
+    public bool IsCodeInValueSet(string code, string system, string valueSetUrl)
+    {
+        var expansion = ExpandValueSet(valueSetUrl);
+        return expansion.Contains.Any(c =>
+            c.CodeValue == code && c.System == system);
+    }
+}
+```
+
+### Multi-Tenant Considerations
+
+**Challenge**: CQL doesn't natively understand multi-tenancy.
+
+**Problem Scenario**:
+```cql
+// This CQL doesn't specify partition!
+define "All Diabetic Patients":
+  [Condition: "Diabetes"] C
+    return C.subject
+```
+
+**Solution 1: Context Injection**
+
+Inject partition context into data provider:
+
+```csharp
+public class TenantScopedFhirDataProvider : IDataProvider
+{
+    private readonly int _partitionId; // Injected from request context
+
+    public IEnumerable<object> Retrieve(...)
+    {
+        // ALWAYS filter by partition
+        var partition = new PartitionKey(_partitionId);
+        return _searchService.SearchAsync(partition, searchOptions, ct)
+            .ToBlockingEnumerable();
+    }
+}
+```
+
+**Solution 2: CQL Library Per Tenant**
+
+Store tenant-specific Library resources:
+
+```
+Library/diabetes-logic-tenant-1
+Library/diabetes-logic-tenant-2
+Library/diabetes-logic-tenant-3
+```
+
+Middleware selects correct library based on tenant header.
+
+**Solution 3: Runtime Filtering**
+
+Add implicit partition filter to all Retrieve operations:
+
+```csharp
+public IEnumerable<object> Retrieve(...)
+{
+    var results = _searchService.SearchAsync(...);
+
+    // Defensive: ensure partition isolation
+    return results.Where(r => r.Partition.Id == _partitionId);
+}
+```
+
+### Performance Optimization
+
+**Challenge**: N+1 query problem in CQL.
+
+**Example**:
+```cql
+define "Patients with Recent Lab":
+  [Patient] P
+    where exists(
+      [Observation] O
+        where O.subject.reference = 'Patient/' + P.id
+          and O.effective during Interval[Today() - 30 days, Today()]
+    )
+```
+
+**Problem**: For each Patient, executes separate Observation query (N+1).
+
+**Optimization 1: Batch Retrieval**
+
+```csharp
+public class BatchingFhirDataProvider : IDataProvider
+{
+    private readonly Dictionary<string, List<object>> _cache = new();
+
+    public IEnumerable<object> Retrieve(...)
+    {
+        var cacheKey = $"{dataType}:{valueSet}:{dateRange}";
+
+        if (!_cache.ContainsKey(cacheKey))
+        {
+            // Fetch ALL matching resources in one query
+            var allResults = _searchService.SearchAsync(...);
+            _cache[cacheKey] = allResults.ToList();
+        }
+
+        return _cache[cacheKey];
+    }
+}
+```
+
+**Optimization 2: Prefetching**
+
+Analyze ELM to identify all Retrieve operations, prefetch data before execution:
+
+```csharp
+public async Task<CqlResult> EvaluateMeasureAsync(Library library)
+{
+    // 1. Analyze ELM to find all Retrieve operations
+    var retrieveOps = AnalyzeELM(library);
+
+    // 2. Prefetch all data in parallel
+    var prefetchTasks = retrieveOps.Select(op =>
+        PrefetchAsync(op.DataType, op.ValueSet, op.DateRange));
+    await Task.WhenAll(prefetchTasks);
+
+    // 3. Execute CQL with cached data
+    return context.EvaluateExpression(library, "Measure Logic");
+}
+```
+
+**Optimization 3: SQL-Level Join**
+
+For certain patterns, convert CQL to SQL instead of iterating:
+
+```cql
+[Patient] P where exists([Condition: "Diabetes"] C where C.subject = P.id)
+```
+
+→ Convert to:
+
+```sql
+SELECT DISTINCT p.*
+FROM patient p
+INNER JOIN condition c ON c.subject = p.id
+WHERE c.code IN (SELECT code FROM valueset_expansion WHERE valueset_url = 'Diabetes')
+  AND p.partition_id = @partitionId
+```
+
+### Error Handling
+
+**Common Runtime Errors**:
+
+1. **ValueSet not found**:
+```csharp
+try
+{
+    var expansion = terminologyProvider.ExpandValueSet(valueSetUrl);
+}
+catch (ValueSetNotFoundException ex)
+{
+    // Return OperationOutcome
+    return OperationOutcome.ForError($"ValueSet {valueSetUrl} not found");
+}
+```
+
+2. **Type mismatch**:
+```cql
+define "Invalid": "string" + 5  // Type error
+```
+
+ELM translation catches this, but if ELM is hand-crafted:
+```csharp
+try
+{
+    var result = context.EvaluateExpression(library, "Invalid");
+}
+catch (CqlTypeException ex)
+{
+    return OperationOutcome.ForError($"Type error: {ex.Message}");
+}
+```
+
+3. **Circular library dependencies**:
+```csharp
+// Detect cycles during library loading
+var loadedLibraries = new HashSet<string>();
+var loadingStack = new Stack<string>();
+
+void LoadLibrary(string libraryId)
+{
+    if (loadingStack.Contains(libraryId))
+        throw new CircularDependencyException($"Circular dependency: {string.Join(" -> ", loadingStack)} -> {libraryId}");
+
+    loadingStack.Push(libraryId);
+    // Load dependencies...
+    loadingStack.Pop();
+    loadedLibraries.Add(libraryId);
+}
+```
+
+### Integration with Ignixa Architecture
+
+**Proposed Integration Points**:
+
+1. **Library Resource** (new)
+   - `src/Ignixa.Application/Features/Library/`
+   - CRUD operations for Library resources
+   - ELM validation on create/update
+
+2. **Measure Resource** (new)
+   - `src/Ignixa.Application/Features/Measure/`
+   - References Library resources
+   - `$evaluate-measure` operation
+
+3. **CQL Evaluation Service** (new)
+   - `src/Ignixa.Application/Services/CqlEvaluationService.cs`
+   - Wraps Hl7.Cql.Elm engine
+   - Manages data/terminology providers
+
+4. **Endpoints** (new)
+   - `src/Ignixa.Api/Infrastructure/CqlEndpoints.cs`
+   - `POST /Library/$evaluate`
+   - `GET /Measure/$evaluate-measure`
+
+**Estimated Effort for Read-Only ELM**:
+- Library resource: 1 week
+- Data provider: 2-3 weeks
+- Terminology provider: 3-4 weeks (depends on ValueSet implementation)
+- Measure resource: 1-2 weeks
+- Testing: 1-2 weeks
+- **Total**: 8-12 weeks
+
+---
+
 ## Use Cases Analysis
 
 ### Primary CQL Use Cases
