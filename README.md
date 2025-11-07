@@ -10,6 +10,31 @@
 [![FHIR](https://img.shields.io/badge/FHIR-R4%20%7C%20R4B%20%7C%20R5%20%7C%20R6%20%7C%20STU3-orange)](https://hl7.org/fhir/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+## Deploy to Azure
+
+Deploy the complete Ignixa FHIR Server infrastructure to Azure with one click:
+
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fbrendankowitz%2Fignixa-fhir%2Fmain%2Fdeploy%2Fazure%2Fazuredeploy.json)
+
+**What gets deployed:**
+- ✅ App Service (Linux) configured for Docker containers
+- ✅ Azure SQL Database with encryption
+- ✅ Azure Storage (FHIR data + DurableTask orchestration)
+- ✅ Application Insights for monitoring
+- ✅ All configured with Managed Identity (no passwords)
+- ✅ Docker/ACR integration with optional Managed Identity
+
+**Auto-configured on first run:**
+- ✅ Tenant 1 connected to Azure SQL Database
+- ✅ Database schema auto-initialized
+- ✅ DurableTask backend connected to Azure Storage
+- ✅ Export/Import connected to Azure Blob Storage
+
+**Requirements:**
+- Docker image must be built and pushed to Azure Container Registry (ACR)
+- Grant App Service Managed Identity the `AcrPull` role on your ACR
+- See [deployment guide](deploy/azure/README.md) for complete instructions
+
 ## Overview
 
 Ignixa is a next-generation FHIR server implementation built from the ground up with modern .NET patterns and clean architecture principles. It provides a high-performance, extensible platform for healthcare data interoperability.

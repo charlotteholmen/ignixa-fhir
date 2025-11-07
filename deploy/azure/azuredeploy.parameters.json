@@ -1,0 +1,57 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "appName": {
+      "value": "ignixa-fhir-demo"
+    },
+    "dockerRegistryUrl": {
+      "value": "https://ignixa.azurecr.io"
+    },
+    "dockerImage": {
+      "value": "ignixa-fhir"
+    },
+    "dockerImageTag": {
+      "value": "latest"
+    },
+    "dockerRegistryUsername": {
+      "value": ""
+    },
+    "dockerRegistryPassword": {
+      "value": ""
+    },
+    "environment": {
+      "value": "production"
+    },
+    "appServicePlanSku": {
+      "value": "B2"
+    },
+    "appServicePlanTier": {
+      "value": "Basic"
+    },
+    "sqlDatabaseSku": {
+      "value": "Basic"
+    },
+    "sqlDatabaseMaxSizeGB": {
+      "value": 2
+    },
+    "enableManagedIdentityAuth": {
+      "value": true
+    },
+    "storageAccountType": {
+      "value": "Standard_LRS"
+    },
+    "logRetentionDays": {
+      "value": 30
+    },
+    "fhirVersion": {
+      "value": "4.3"
+    },
+    "tenantMode": {
+      "value": "Isolated"
+    },
+    "enableTransactionWatcher": {
+      "value": true
+    }
+  }
+}
