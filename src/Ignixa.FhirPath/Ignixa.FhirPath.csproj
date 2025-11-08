@@ -14,4 +14,8 @@
     <ProjectReference Include="..\Ignixa.Domain\Ignixa.Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ignixa.SqlOnFhir" />
+  </ItemGroup>
+
 </Project>
