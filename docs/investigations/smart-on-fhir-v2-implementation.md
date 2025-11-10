@@ -1,845 +1,831 @@
-# SMART on FHIR v2 Native Implementation
+# SMART on FHIR v2 Implementation Investigation
 
-This document outlines the native implementation of SMART on FHIR v2 specification integrated into the FHIR Server v2 architecture, supporting multi-tenant deployments with modern OAuth 2.0 and OpenID Connect patterns.
+**Date**: 2025-11-09  
+**Status**: Investigation  
+**Authors**: Claude AI  
+**Related**: ADR-2523 (Multi-Tenancy), ADR-2524 (FHIR History)
 
-## SMART on FHIR v2 Overview
+---
 
-### Key Specifications Supported
-- **SMART App Launch Framework v2.0** (STU2)
-- **OAuth 2.0 Authorization Code Flow with PKCE**
-- **OpenID Connect for identity**
-- **FHIR R4/R4B/R5 Bulk Data Access**
-- **Backend Services (client_credentials flow)**
-- **Granular scopes and permissions**
+## Executive Summary
 
-### Core Authentication Flows
-1. **EHR Launch Flow**: Apps launched from within EHR systems
-2. **Standalone Launch Flow**: Apps launched independently
-3. **Backend Services Flow**: Server-to-server authentication
-4. **Refresh Token Flow**: Token renewal without re-authentication
+This investigation provides a comprehensive technical analysis of implementing **SMART on FHIR v2.2** natively within the Ignixa FHIR server. The key challenge is supporting SMART's standard scope format (`patient/Patient.read`) while maintaining compatibility with Azure EntraID, which rejects scopes containing forward slash characters.
 
-## Core SMART Abstractions
+**Proposed Solution**: Implement bidirectional scope translation (`.` ↔ `/`) with a new `Ignixa.Application.SmartOnFhir` assembly, establishing a dual authorization system supporting both traditional RBAC and SMART scope-based access control.
 
-### SMART Configuration Interface
+**Estimated Effort**: 10 weeks (5 phases)
+
+**Key Deliverables**:
+1. New `Ignixa.Application.SmartOnFhir` project assembly
+2. Bidirectional EntraID scope translation (`.` ↔ `/`)
+3. Dual authorization system (RBAC + SMART scopes)
+4. Three-layer access control (endpoint, resource-type, instance)
+5. Patient compartment enforcement
+6. SMART discovery endpoints
+
+---
+
+## Table of Contents
+
+1. [Background](#background)
+2. [Problem Statement](#problem-statement)
+3. [Proposed Solution](#proposed-solution)
+4. [Architecture](#architecture)
+5. [Implementation Phases](#implementation-phases)
+6. [Security Considerations](#security-considerations)
+7. [Testing Strategy](#testing-strategy)
+8. [Configuration](#configuration)
+9. [Alternatives Considered](#alternatives-considered)
+10. [Risks & Mitigation](#risks--mitigation)
+11. [Success Criteria](#success-criteria)
+12. [References](#references)
+
+---
+
+## Background
+
+### SMART on FHIR Overview
+
+SMART (Substitutable Medical Applications, Reusable Technologies) on FHIR is an OAuth 2.0-based authorization framework that enables third-party applications to securely access FHIR resources with granular permissions.
+
+**Key Features**:
+- **Granular Scopes**: Resource-type and permission-level control (e.g., `patient/Observation.read`)
+- **Launch Context**: Patient, encounter, and practitioner context passed via tokens
+- **Multiple Flows**: EHR launch, standalone launch, backend services (client credentials)
+- **User/Patient/System Contexts**: Different authorization contexts for different use cases
+
+### SMART v2.2 Scope Syntax
+
+```
+{context}/{resourceType}.{permissions}[?param=value&...]
+
+Examples:
+- patient/Observation.rs                    # Read/search patient observations
+- user/Appointment.cruds                    # Full access to user appointments
+- system/Patient.r                          # Read all patients (backend)
+- patient/Observation.rs?category=laboratory # Only lab observations
+```
+
+**Components**:
+- **Context**: `patient/` (single patient), `user/` (user's data), `system/` (all data)
+- **ResourceType**: FHIR resource name or `*` (wildcard)
+- **Permissions**: `c` (create), `r` (read), `u` (update), `d` (delete), `s` (search)
+- **Constraints**: Optional FHIR search parameter filters
+
+---
+
+## Problem Statement
+
+### Challenge 1: EntraID Scope Incompatibility
+
+**Issue**: Azure EntraID (Azure AD) v2 endpoints **reject OAuth scopes containing forward slash (`/`) characters**, which are fundamental to SMART on FHIR's standard scope format.
+
+**Impact**:
+- ❌ Standard scope `patient/Patient.read` is rejected by EntraID
+- ❌ Cannot use SMART-compliant apps without transformation
+- ❌ Microsoft's legacy solution requires external proxy (retiring Sept 2026)
+
+**Microsoft's Official Workaround**:
+```
+Replace "/" with "."
+Replace "*" with "all"
+```
+
+### Challenge 2: Dual Authorization Requirements
+
+**Issue**: Need to support two distinct authorization models simultaneously:
+
+1. **General RBAC** - Traditional roles for internal users (Administrator, Clinician, ReadOnly)
+2. **SMART Scopes** - Dynamic, granular permissions for third-party apps
+
+**Requirements**:
+- Both models must coexist within same tenant
+- Different users may use different authorization strategies
+- Multi-level access control (endpoint, resource-type, instance)
+- Authorization strategy determined by JWT claims
+
+### Challenge 3: Multi-Tenancy Integration
+
+**Issue**: Authorization must integrate seamlessly with existing multi-tenant architecture (ADR-2523).
+
+**Requirements**:
+- Per-tenant authorization configuration
+- Tenant-scoped tokens prevent cross-tenant access
+- Support both FHIR versions and storage backends per tenant
+- Respect existing `TenantResolutionMiddleware` and partition strategy
+
+---
+
+## Proposed Solution
+
+### Solution 1: Bidirectional Scope Translation
+
+**Approach**: Translate scopes at the API boundary while using SMART-standard internally.
+
+| SMART Standard | EntraID Compatible | Notes |
+|---------------|-------------------|-------|
+| `patient/Patient.read` | `patient.Patient.read` | Replace `/` with `.` |
+| `user/*.cruds` | `user.all.cruds` | Replace `*` with `all` |
+| `system/Observation.rs` | `system.Observation.rs` | System context |
+| `patient/Observation.rs?category=lab` | `patient.Observation.rs?category=lab` | Constraints preserved |
+
+**Benefits**:
+- ✅ No external proxy required
+- ✅ SMART-compliant internally
+- ✅ EntraID-compatible externally
+- ✅ Reversible, lossless transformation
+
+### Solution 2: New Project Assembly - `Ignixa.Application.SmartOnFhir`
+
+Following the existing `BackgroundOperations` pattern, create a dedicated assembly for SMART functionality.
+
+**Structure**:
+```
+src/Ignixa.Application.SmartOnFhir/
+  ├── Scopes/
+  │   ├── SmartScopeParser.cs           # Parse and translate scopes
+  │   ├── SmartScopeEvaluator.cs        # Evaluate scope permissions
+  │   ├── SmartScopeNormalizer.cs       # EntraID ↔ SMART translation
+  │   └── SmartScopeCache.cs            # Cache parsed scopes
+  ├── Context/
+  │   ├── LaunchContextExtractor.cs     # Extract patient, encounter
+  │   ├── SmartContextValidator.cs      # Validate context
+  │   └── PatientCompartmentEnforcer.cs # Compartment enforcement
+  ├── Authorization/
+  │   ├── SmartAuthorizationHandler.cs
+  │   ├── SmartAuthorizationEvaluator.cs
+  │   └── SmartClaimsTransformer.cs     # JWT claims → SmartContext
+  ├── Behaviors/
+  │   └── SmartAuthorizationBehavior.cs # Medino pipeline behavior
+  ├── Services/
+  │   ├── SmartConfigurationService.cs  # .well-known/smart-configuration
+  │   ├── SmartCapabilityStatementBuilder.cs
+  │   └── SmartTokenIntrospectionService.cs
+  ├── Flows/
+  │   ├── EhrLaunchHandler.cs           # Future: native OAuth flows
+  │   ├── StandaloneLaunchHandler.cs
+  │   └── BackendServicesHandler.cs
+  └── Extensions/
+      └── SmartOnFhirServiceExtensions.cs
+```
+
+**Benefits**:
+- ✅ Clear feature boundary
+- ✅ Optional dependency (can be disabled per tenant)
+- ✅ Independent testing and documentation
+- ✅ Follows existing codebase pattern
+
+### Solution 3: Three-Layer Authorization
+
+**Architecture**:
+
+```
+Layer 1: Endpoint-Level (Middleware)
+  → Fast rejection before handler execution
+  → JWT validation and claims extraction
+  → Basic endpoint access checks
+  ↓
+Layer 2: Resource-Type Level (Medino Behavior)
+  → Validate access to specific resource types
+  → Evaluate SMART scopes OR RBAC permissions
+  → Runs before handler execution
+  ↓
+Layer 3: Instance-Level (Handler Logic)
+  → Fine-grained authorization on resource content
+  → Patient compartment enforcement for patient/ scopes
+  → Search parameter constraint validation
+```
+
+---
+
+## Architecture
+
+### High-Level Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         HTTP Request                         │
+│                Authorization: Bearer <JWT>                   │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           ↓
+┌─────────────────────────────────────────────────────────────┐
+│               ASP.NET Core Middleware Pipeline               │
+├─────────────────────────────────────────────────────────────┤
+│  1. TenantResolutionMiddleware (existing)                   │
+│     → Extract TenantId, load TenantConfiguration            │
+│  2. UseAuthentication() [ASP.NET Core]                      │
+│     → Validate JWT signature, verify issuer/audience        │
+│  3. AuthorizationMiddleware [NEW]                           │
+│     → Determine auth strategy (RBAC vs SMART)               │
+│     → Parse SMART scopes (translate EntraID → Standard)     │
+│     → Store scopes in HttpContext.Items                     │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    Minimal API Endpoint                      │
+│  MapGet("/{resourceType}/{id}", handler)                    │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           ↓
+┌─────────────────────────────────────────────────────────────┐
+│                     Medino Pipeline                          │
+├─────────────────────────────────────────────────────────────┤
+│  1. CapabilityEnforcementBehavior (existing)                │
+│  2. SmartAuthorizationBehavior [NEW]                        │
+│     → Evaluate SMART scopes OR RBAC permissions             │
+│  3. ValidationBehavior (existing)                           │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    Request Handler                           │
+│  GetResourceHandler.HandleAsync()                           │
+│    → Fetch resource                                         │
+│    → Instance-level checks (patient compartment)            │
+│    → Return resource                                        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Domain Models
+
+#### Core Domain Models (Ignixa.Domain)
 
 ```csharp
-public interface ISmartConfiguration
+public record SmartScope
 {
-    /// <summary>
-    /// Get SMART configuration for tenant
-    /// </summary>
-    ValueTask<SmartConfigurationMetadata> GetConfigurationAsync(string tenantId, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Get well-known configuration endpoints
-    /// </summary>
-    ValueTask<SmartWellKnownConfiguration> GetWellKnownConfigurationAsync(string tenantId, CancellationToken cancellationToken = default);
+    public SmartContext Context { get; init; }
+    public string ResourceType { get; init; } = "*";
+    public SmartPermissions Permissions { get; init; }
+    public Dictionary<string, string>? Constraints { get; init; }
+    public string OriginalScope { get; init; } = string.Empty;
 }
 
-public record SmartConfigurationMetadata
+public enum SmartContext
 {
-    public required string TenantId { get; init; }
-    public required Uri AuthorizationEndpoint { get; init; }
-    public required Uri TokenEndpoint { get; init; }
-    public required Uri IntrospectionEndpoint { get; init; }
-    public required Uri RevocationEndpoint { get; init; }
-    public required Uri RegistrationEndpoint { get; init; }
-    public required Uri ManagementEndpoint { get; init; }
-    public required string[] ScopesSupported { get; init; }
-    public required string[] ResponseTypesSupported { get; init; }
-    public required string[] GrantTypesSupported { get; init; }
-    public required string[] TokenEndpointAuthMethodsSupported { get; init; }
-    public required string[] CodeChallengeMethodsSupported { get; init; }
-    public required SmartCapabilities Capabilities { get; init; }
-}
-
-public record SmartWellKnownConfiguration
-{
-    public required string Issuer { get; init; }
-    public required Uri JwksUri { get; init; }
-    public required string[] ScopesSupported { get; init; }
-    public required string[] ResponseTypesSupported { get; init; }
-    public required SmartCapabilities Capabilities { get; init; }
+    Patient,  // patient/ prefix
+    User,     // user/ prefix
+    System    // system/ prefix
 }
 
 [Flags]
-public enum SmartCapabilities
+public enum SmartPermissions
 {
     None = 0,
-    LaunchEhr = 1 << 0,
-    LaunchStandalone = 1 << 1,
-    ClientPublic = 1 << 2,
-    ClientConfidential = 1 << 3,
-    SsoOpenidConnect = 1 << 4,
-    ContextStandalonePatient = 1 << 5,
-    ContextStandaloneEncounter = 1 << 6,
-    ContextEhrPatient = 1 << 7,
-    ContextEhrEncounter = 1 << 8,
-    PermissionPatient = 1 << 9,
-    PermissionUser = 1 << 10,
-    PermissionOfflineAccess = 1 << 11
+    Create = 1,
+    Read = 2,
+    Update = 4,
+    Delete = 8,
+    Search = 16
+}
+
+public enum AuthorizationStrategy
+{
+    RoleBased,     // Traditional RBAC
+    SmartScopes,   // SMART on FHIR
+    Anonymous      // No auth required
 }
 ```
 
-### SMART Token Management
+#### Tenant Configuration Extension
 
 ```csharp
-public interface ISmartTokenService
+public record TenantAuthorizationConfiguration
 {
-    /// <summary>
-    /// Issue access token for authorization code
-    /// </summary>
-    ValueTask<SmartTokenResponse> ExchangeCodeAsync(SmartTokenRequest request, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Refresh access token using refresh token
-    /// </summary>
-    ValueTask<SmartTokenResponse> RefreshTokenAsync(SmartRefreshRequest request, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Validate and parse access token
-    /// </summary>
-    ValueTask<SmartTokenClaims?> ValidateTokenAsync(string accessToken, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Revoke access or refresh token
-    /// </summary>
-    ValueTask RevokeTokenAsync(string token, string? tokenTypeHint = null, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Introspect token (RFC 7662)
-    /// </summary>
-    ValueTask<SmartTokenIntrospectionResponse> IntrospectTokenAsync(string token, CancellationToken cancellationToken = default);
-}
-
-public record SmartTokenRequest
-{
-    public required string TenantId { get; init; }
-    public required string GrantType { get; init; }
-    public required string Code { get; init; }
-    public required string RedirectUri { get; init; }
-    public required string ClientId { get; init; }
-    public string? ClientSecret { get; init; }
-    public string? CodeVerifier { get; init; }
-}
-
-public record SmartRefreshRequest
-{
-    public required string TenantId { get; init; }
-    public required string GrantType { get; init; } = "refresh_token";
-    public required string RefreshToken { get; init; }
-    public required string ClientId { get; init; }
-    public string? ClientSecret { get; init; }
-    public string? Scope { get; init; }
-}
-
-public record SmartTokenResponse
-{
-    public required string AccessToken { get; init; }
-    public required string TokenType { get; init; } = "Bearer";
-    public required int ExpiresIn { get; init; }
-    public string? RefreshToken { get; init; }
-    public string? Scope { get; init; }
-    public string? IdToken { get; init; }
-    public string? Patient { get; init; }
-    public string? Encounter { get; init; }
-    public string? Intent { get; init; }
-    public string? SmartStyleUrl { get; init; }
-}
-
-public record SmartTokenClaims
-{
-    public required string TenantId { get; init; }
-    public required string ClientId { get; init; }
-    public required string Subject { get; init; }
-    public required string[] Scopes { get; init; }
-    public required DateTimeOffset IssuedAt { get; init; }
-    public required DateTimeOffset ExpiresAt { get; init; }
-    public string? Patient { get; init; }
-    public string? Encounter { get; init; }
-    public string? User { get; init; }
-    public string? LaunchContext { get; init; }
-    public IReadOnlyDictionary<string, object>? FhirContext { get; init; }
-}
-
-public record SmartTokenIntrospectionResponse
-{
-    public required bool Active { get; init; }
-    public string? ClientId { get; init; }
-    public string? Scope { get; init; }
-    public string? Subject { get; init; }
-    public long? ExpiresAt { get; init; }
-    public long? IssuedAt { get; init; }
-    public string? TokenType { get; init; }
+    public bool EnableSmartOnFhir { get; init; } = false;
+    public bool EnableRbac { get; init; } = true;
+    public string? EntraIdTenantId { get; init; }
+    public string? EntraIdClientId { get; init; }
+    public string? TokenIssuer { get; init; }
+    public string? TokenAudience { get; init; }
+    public Dictionary<string, RolePermissions> RolePermissions { get; init; } = new();
 }
 ```
 
-### SMART Authorization Service
+### Key Components
+
+#### 1. SmartScopeParser
+
+Translates EntraID scopes to SMART standard:
 
 ```csharp
-public interface ISmartAuthorizationService
+public class SmartScopeParser
 {
-    /// <summary>
-    /// Validate authorization request and generate authorization code
-    /// </summary>
-    ValueTask<SmartAuthorizationResponse> AuthorizeAsync(SmartAuthorizationRequest request, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Validate launch context and parameters
-    /// </summary>
-    ValueTask<SmartLaunchContext> ValidateLaunchAsync(string tenantId, string? launch, string? iss, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Get user consent for requested scopes
-    /// </summary>
-    ValueTask<SmartConsentResult> GetConsentAsync(SmartConsentRequest request, CancellationToken cancellationToken = default);
-}
-
-public record SmartAuthorizationRequest
-{
-    public required string TenantId { get; init; }
-    public required string ResponseType { get; init; }
-    public required string ClientId { get; init; }
-    public required string RedirectUri { get; init; }
-    public required string Scope { get; init; }
-    public required string State { get; init; }
-    public string? CodeChallenge { get; init; }
-    public string? CodeChallengeMethod { get; init; }
-    public string? Launch { get; init; }
-    public string? Iss { get; init; }
-    public string? Aud { get; init; }
-}
-
-public record SmartAuthorizationResponse
-{
-    public required string Code { get; init; }
-    public required string State { get; init; }
-    public required SmartLaunchContext LaunchContext { get; init; }
-}
-
-public record SmartLaunchContext
-{
-    public required string TenantId { get; init; }
-    public required string LaunchId { get; init; }
-    public string? Patient { get; init; }
-    public string? Encounter { get; init; }
-    public string? User { get; init; }
-    public string? Intent { get; init; }
-    public IReadOnlyDictionary<string, object>? Context { get; init; }
-}
-
-public record SmartConsentRequest
-{
-    public required string TenantId { get; init; }
-    public required string ClientId { get; init; }
-    public required string UserId { get; init; }
-    public required string[] RequestedScopes { get; init; }
-    public SmartLaunchContext? LaunchContext { get; init; }
-}
-
-public record SmartConsentResult
-{
-    public required bool Granted { get; init; }
-    public required string[] ApprovedScopes { get; init; }
-    public string? DenialReason { get; init; }
-}
-```
-
-## SMART Scope Management
-
-### Granular Scope Parser
-
-```csharp
-public static class SmartScopeParser
-{
-    private static readonly Regex ScopePattern = new(@"^(?<context>patient|user|system)\/(?<resource>\*|[A-Z][a-zA-Z]*(?:\.[a-zA-Z]+)*)\.(?<interaction>read|write|\*|c|r|u|d|s)(?<constraint>:\w+(?:[|&]\w+)*)?$", RegexOptions.Compiled);
-
-    public static SmartScope ParseScope(ReadOnlySpan<char> scopeString)
+    public static SmartScope Parse(string entraIdScope)
     {
-        var match = ScopePattern.Match(scopeString.ToString());
-        if (!match.Success)
+        // "patient.Observation.rs" → "patient/Observation.rs"
+        var standardScope = TranslateFromEntraId(entraIdScope);
+        
+        // Parse components: context, resource type, permissions, constraints
+        // Return structured SmartScope object
+    }
+    
+    private static string TranslateFromEntraId(string entraIdScope)
+    {
+        return entraIdScope
+            .ReplaceFirst(".", "/")     // patient.X → patient/X
+            .Replace(".all.", "/*.")    // .all. → /*.
+            .Replace(".all", "/*");     // .all → /*
+    }
+}
+```
+
+#### 2. SmartScopeEvaluator
+
+Evaluates if user scopes satisfy required scope:
+
+```csharp
+public class SmartScopeEvaluator
+{
+    public bool Evaluate(
+        IEnumerable<SmartScope> userScopes,
+        SmartScope requiredScope,
+        FhirRequestContext requestContext)
+    {
+        foreach (var userScope in userScopes)
         {
-            // Handle special scopes
-            return scopeString switch
-            {
-                _ when scopeString.SequenceEqual("openid".AsSpan()) => new SmartScope(SmartScopeType.OpenId, "*", "*"),
-                _ when scopeString.SequenceEqual("profile".AsSpan()) => new SmartScope(SmartScopeType.Profile, "*", "*"),
-                _ when scopeString.SequenceEqual("email".AsSpan()) => new SmartScope(SmartScopeType.Email, "*", "*"),
-                _ when scopeString.SequenceEqual("offline_access".AsSpan()) => new SmartScope(SmartScopeType.OfflineAccess, "*", "*"),
-                _ when scopeString.SequenceEqual("launch".AsSpan()) => new SmartScope(SmartScopeType.Launch, "*", "*"),
-                _ when scopeString.StartsWith("launch/".AsSpan()) => ParseLaunchScope(scopeString),
-                _ => throw new ArgumentException($"Invalid SMART scope: {scopeString}")
-            };
+            // 1. Context must match
+            // 2. Resource type must match (or wildcard)
+            // 3. Permissions must be sufficient
+            // 4. Constraints must be satisfied
+            
+            if (AllChecksPass())
+                return true;
         }
-
-        var context = ParseScopeContext(match.Groups["context"].ValueSpan);
-        var resource = match.Groups["resource"].Value;
-        var interaction = ParseInteraction(match.Groups["interaction"].ValueSpan);
-        var constraint = match.Groups["constraint"].Success ? match.Groups["constraint"].Value[1..] : null; // Remove ':'
-
-        return new SmartScope(context, resource, interaction, constraint);
+        return false;
     }
-
-    private static SmartScopeType ParseScopeContext(ReadOnlySpan<char> context)
-    {
-        return context switch
-        {
-            _ when context.SequenceEqual("patient".AsSpan()) => SmartScopeType.Patient,
-            _ when context.SequenceEqual("user".AsSpan()) => SmartScopeType.User,
-            _ when context.SequenceEqual("system".AsSpan()) => SmartScopeType.System,
-            _ => throw new ArgumentException($"Invalid scope context: {context}")
-        };
-    }
-
-    private static string ParseInteraction(ReadOnlySpan<char> interaction)
-    {
-        return interaction switch
-        {
-            _ when interaction.SequenceEqual("read".AsSpan()) => "read",
-            _ when interaction.SequenceEqual("write".AsSpan()) => "write",
-            _ when interaction.SequenceEqual("*".AsSpan()) => "*",
-            _ when interaction.SequenceEqual("c".AsSpan()) => "create",
-            _ when interaction.SequenceEqual("r".AsSpan()) => "read",
-            _ when interaction.SequenceEqual("u".AsSpan()) => "update",
-            _ when interaction.SequenceEqual("d".AsSpan()) => "delete",
-            _ when interaction.SequenceEqual("s".AsSpan()) => "search",
-            _ => throw new ArgumentException($"Invalid interaction: {interaction}")
-        };
-    }
-
-    private static SmartScope ParseLaunchScope(ReadOnlySpan<char> scopeString)
-    {
-        // launch/patient, launch/encounter, etc.
-        var contextType = scopeString[7..]; // Remove "launch/"
-        return new SmartScope(SmartScopeType.Launch, contextType.ToString(), "*");
-    }
-}
-
-public record SmartScope(
-    SmartScopeType Type,
-    string Resource,
-    string Interaction,
-    string? Constraint = null)
-{
-    public bool MatchesResource(string resourceType) =>
-        Resource == "*" || Resource.Equals(resourceType, StringComparison.OrdinalIgnoreCase);
-
-    public bool MatchesInteraction(string interaction) =>
-        Interaction == "*" || Interaction.Equals(interaction, StringComparison.OrdinalIgnoreCase);
-
-    public override string ToString() => Type switch
-    {
-        SmartScopeType.Patient => $"patient/{Resource}.{Interaction}{(Constraint != null ? $":{Constraint}" : "")}",
-        SmartScopeType.User => $"user/{Resource}.{Interaction}{(Constraint != null ? $":{Constraint}" : "")}",
-        SmartScopeType.System => $"system/{Resource}.{Interaction}{(Constraint != null ? $":{Constraint}" : "")}",
-        SmartScopeType.Launch => $"launch/{Resource}",
-        SmartScopeType.OpenId => "openid",
-        SmartScopeType.Profile => "profile",
-        SmartScopeType.Email => "email",
-        SmartScopeType.OfflineAccess => "offline_access",
-        _ => throw new ArgumentOutOfRangeException()
-    };
-}
-
-public enum SmartScopeType
-{
-    Patient,
-    User,
-    System,
-    Launch,
-    OpenId,
-    Profile,
-    Email,
-    OfflineAccess
 }
 ```
 
-### Authorization Policy Integration
+#### 3. AuthorizationMiddleware
+
+HTTP pipeline integration:
 
 ```csharp
-public class SmartAuthorizationHandler : AuthorizationHandler<SmartRequirement>
+public class AuthorizationMiddleware
 {
-    private readonly ISmartTokenService _tokenService;
-    private readonly ILogger<SmartAuthorizationHandler> _logger;
-
-    public SmartAuthorizationHandler(ISmartTokenService tokenService, ILogger<SmartAuthorizationHandler> logger)
+    public async Task InvokeAsync(HttpContext context)
     {
-        _tokenService = tokenService;
-        _logger = logger;
+        // 1. Skip public endpoints
+        // 2. Extract and validate JWT
+        // 3. Determine authorization strategy
+        // 4. Parse SMART scopes if applicable
+        // 5. Store in HttpContext.Items
     }
+}
+```
 
-    protected override async Task HandleRequirementAsync(
-        AuthorizationHandlerContext context,
-        SmartRequirement requirement)
+#### 4. SmartAuthorizationBehavior
+
+Medino pipeline behavior for resource-type authorization:
+
+```csharp
+public class SmartAuthorizationBehavior<TRequest, TResponse> 
+    : IPipelineBehavior<TRequest, TResponse>
+{
+    public async Task<TResponse> HandleAsync(...)
     {
-        if (context.Resource is not HttpContext httpContext)
+        if (request is not IRequireAuthorization authRequest)
+            return await next();
+        
+        var strategy = httpContext.Items["AuthorizationStrategy"];
+        
+        if (strategy == AuthorizationStrategy.SmartScopes)
         {
-            context.Fail();
-            return;
+            var userScopes = httpContext.Items["SmartScopes"];
+            var requiredScope = authRequest.GetRequiredSmartScope();
+            
+            if (!_evaluator.Evaluate(userScopes, requiredScope, context))
+                throw new FhirAuthorizationException(...);
         }
-
-        // Extract access token from Authorization header
-        var authHeader = httpContext.Request.Headers.Authorization.FirstOrDefault();
-        if (string.IsNullOrEmpty(authHeader) || !authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        else if (strategy == AuthorizationStrategy.RoleBased)
         {
-            context.Fail();
-            return;
+            // RBAC evaluation
         }
+        
+        return await next();
+    }
+}
+```
 
-        var accessToken = authHeader[7..]; // Remove "Bearer "
+---
 
-        try
-        {
-            var tokenClaims = await _tokenService.ValidateTokenAsync(accessToken);
-            if (tokenClaims == null)
-            {
-                context.Fail();
-                return;
+## RBAC System Design
+
+### Role Hierarchy
+
+```
+Administrator
+  ├─ TenantAdministrator (tenant-scoped)
+  ├─ Clinician
+  │   ├─ Physician
+  │   └─ Nurse
+  ├─ ReadOnly
+  └─ SystemService (backend)
+```
+
+### Permission Model
+
+| Role | Create | Read | Update | Delete | Search |
+|------|--------|------|--------|--------|--------|
+| Administrator | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Physician | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Nurse | ⚠️ | ✅ | ⚠️ | ❌ | ✅ |
+| ReadOnly | ❌ | ✅ | ❌ | ❌ | ✅ |
+
+⚠️ = Limited to specific resource types
+
+---
+
+## Implementation Phases
+
+### Phase 0: Project Setup (3 days)
+
+- [ ] Create `Ignixa.Application.SmartOnFhir` project
+- [ ] Add project references
+- [ ] Create folder structure
+- [ ] Add README.md
+- [ ] Update All.sln
+
+### Phase 1: Foundation - RBAC (2 weeks)
+
+**Goal**: Basic authentication and role-based authorization
+
+**Tasks**:
+- [ ] Add `TenantAuthorizationConfiguration` to domain
+- [ ] Implement `AuthorizationMiddleware` with JWT validation
+- [ ] Configure ASP.NET Core authentication (JwtBearer)
+- [ ] Implement `RbacEvaluator`
+- [ ] Add `IRequireAuthorization` interface
+- [ ] Create basic role definitions
+- [ ] Update endpoints to require authentication
+- [ ] Add unit tests
+
+**Deliverables**:
+- ✅ JWT authentication working
+- ✅ Basic RBAC enforcement
+- ✅ Role-based permissions configurable
+
+### Phase 2: SMART Scopes (3 weeks)
+
+**Goal**: SMART scope parsing and evaluation
+
+**Tasks**:
+- [ ] Implement `SmartScope` domain model
+- [ ] Create `SmartScopeParser` with EntraID translation
+- [ ] Implement `SmartScopeEvaluator`
+- [ ] Add `SmartAuthorizationBehavior`
+- [ ] Update commands/queries for `IRequireAuthorization`
+- [ ] Add scope claim extraction
+- [ ] Implement `.well-known/smart-configuration`
+- [ ] Add SMART metadata to CapabilityStatement
+- [ ] Integration tests
+
+**Deliverables**:
+- ✅ SMART scope parsing working
+- ✅ Scope-based authorization functional
+- ✅ SMART discovery endpoints
+
+### Phase 3: Patient Compartment (2 weeks)
+
+**Goal**: Instance-level authorization
+
+**Tasks**:
+- [ ] Implement patient compartment extraction
+- [ ] Add instance-level checks to handlers
+- [ ] Create `FhirRequestContext`
+- [ ] Validate patient/ scope context
+- [ ] Add audit logging
+- [ ] Compartment tests
+
+**Deliverables**:
+- ✅ Patient compartment enforcement
+- ✅ Patient ID validation
+- ✅ Comprehensive tests
+
+### Phase 4: Advanced Features (2 weeks)
+
+**Goal**: Constraints and optimization
+
+**Tasks**:
+- [ ] Search parameter constraint parsing
+- [ ] Constraint evaluation
+- [ ] User/ context evaluation
+- [ ] Wildcard resource support
+- [ ] Scope narrowing
+- [ ] Audit trails
+- [ ] Performance optimization
+
+**Deliverables**:
+- ✅ Search constraints working
+- ✅ User/ context supported
+- ✅ Performance benchmarks met
+
+### Phase 5: Production Hardening (1 week)
+
+**Goal**: Security and documentation
+
+**Tasks**:
+- [ ] Security audit
+- [ ] Performance testing
+- [ ] Integration guide
+- [ ] Sample applications
+- [ ] Error message improvements
+- [ ] Monitoring setup
+- [ ] Rate limiting
+
+**Deliverables**:
+- ✅ Security audit complete
+- ✅ Documentation published
+- ✅ Production-ready
+
+**Total Timeline**: 10 weeks
+
+---
+
+## Security Considerations
+
+### Token Validation
+
+**Critical Requirements**:
+- ✅ Validate JWT signature (JWKS)
+- ✅ Verify issuer matches EntraID tenant
+- ✅ Verify audience matches FHIR server
+- ✅ Verify expiration (exp)
+- ✅ Verify not-before (nbf)
+- ✅ Reject unexpected algorithms
+- ✅ Cache JWKS keys (1 hour TTL)
+
+### Attack Vectors & Mitigations
+
+| Attack | Mitigation |
+|--------|-----------|
+| Scope Injection | JWT signature validation |
+| Patient Context Mismatch | Strict patient ID matching |
+| Privilege Escalation | Strategy isolation |
+| Cross-Tenant Access | Token tenant validation |
+| Token Replay | Validate exp, nbf, iat |
+| Compartment Bypass | Instance-level checks |
+
+### Multi-Tenancy Isolation
+
+```csharp
+private void ValidateTenantIsolation(FhirRequestContext ctx)
+{
+    var tokenTenantId = ctx.Claims.FindFirst("tenant")?.Value;
+    var routeTenantId = ctx.TenantId.ToString();
+
+    if (tokenTenantId != null && tokenTenantId != routeTenantId)
+    {
+        throw new FhirAuthorizationException(
+            $"Token for tenant {tokenTenantId} cannot access tenant {routeTenantId}");
+    }
+}
+```
+
+---
+
+## Testing Strategy
+
+### Unit Tests
+
+**SmartScopeParser**:
+- EntraID to SMART translation
+- Wildcard handling
+- Constraint parsing
+- Malformed scope handling
+
+**SmartScopeEvaluator**:
+- Context matching (patient, user, system)
+- Permission checks
+- Resource type matching
+- Patient compartment validation
+
+**Example**:
+```csharp
+[Fact]
+public void Parse_EntraIdScope_TranslatesToSmartStandard()
+{
+    var scope = SmartScopeParser.Parse("patient.Observation.rs");
+    
+    Assert.Equal(SmartContext.Patient, scope.Context);
+    Assert.Equal("Observation", scope.ResourceType);
+    Assert.Equal(SmartPermissions.Read | SmartPermissions.Search, 
+                 scope.Permissions);
+}
+```
+
+### Integration Tests
+
+**E2E Authorization**:
+- Valid scope → 200 OK
+- Insufficient scope → 403 Forbidden
+- Invalid token → 401 Unauthorized
+- Patient mismatch → 403 Forbidden
+- Cross-tenant → 403 Forbidden
+
+**Example**:
+```csharp
+[Fact]
+public async Task GetResource_WithValidSmartScope_Returns200()
+{
+    var token = CreateJwt(scopes: "patient.Patient.read", patientId: "123");
+    _client.DefaultRequestHeaders.Authorization = 
+        new AuthenticationHeaderValue("Bearer", token);
+
+    var response = await _client.GetAsync("/tenant/1/Patient/123");
+
+    Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+}
+```
+
+### Security Tests
+
+**Penetration Testing**:
+- [ ] Token tampering
+- [ ] Expired token access
+- [ ] Missing signature validation
+- [ ] Patient compartment bypass
+- [ ] Cross-tenant access
+- [ ] Privilege escalation
+- [ ] Scope injection
+- [ ] Rate limit bypass
+
+---
+
+## Configuration
+
+### appsettings.json Example
+
+```json
+{
+  "Tenants": {
+    "Mode": "Isolated",
+    "Configurations": [
+      {
+        "TenantId": 1,
+        "DisplayName": "Mayo Clinic",
+        "FhirVersion": "4.0",
+        "Authorization": {
+          "EnableSmartOnFhir": true,
+          "EnableRbac": true,
+          "EntraIdTenantId": "12345678-1234-1234-1234-123456789abc",
+          "EntraIdClientId": "87654321-4321-4321-4321-cba987654321",
+          "TokenIssuer": "https://login.microsoftonline.com/.../v2.0",
+          "TokenAudience": "api://ignixa-fhir",
+          "RolePermissions": {
+            "Administrator": {
+              "AllowedInteractions": ["read", "create", "update", "delete", "search"]
+            },
+            "Physician": {
+              "AllowedInteractions": ["read", "create", "update", "search"],
+              "DeniedResourceTypes": ["AuditEvent"]
             }
-
-            // Parse scopes from token
-            var scopes = tokenClaims.Scopes.Select(SmartScopeParser.ParseScope).ToArray();
-
-            // Check if requested operation is allowed
-            if (IsOperationAllowed(requirement, scopes, httpContext))
-            {
-                // Add SMART context to HttpContext for later use
-                httpContext.Items["SmartTokenClaims"] = tokenClaims;
-                context.Succeed(requirement);
-            }
-            else
-            {
-                _logger.LogWarning("Access denied for operation {Operation} on resource {Resource}",
-                    requirement.Interaction, requirement.ResourceType);
-                context.Fail();
-            }
+          }
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error validating SMART token");
-            context.Fail();
-        }
-    }
-
-    private static bool IsOperationAllowed(SmartRequirement requirement, SmartScope[] scopes, HttpContext context)
-    {
-        // Extract tenant from route or context
-        var tenantId = context.GetTenantId();
-
-        // Check if any scope allows the requested operation
-        return scopes.Any(scope => scope.Type switch
-        {
-            SmartScopeType.Patient => IsPatientScopeAllowed(scope, requirement, context),
-            SmartScopeType.User => IsUserScopeAllowed(scope, requirement, context),
-            SmartScopeType.System => IsSystemScopeAllowed(scope, requirement, context),
-            _ => false
-        });
-    }
-
-    private static bool IsPatientScopeAllowed(SmartScope scope, SmartRequirement requirement, HttpContext context)
-    {
-        // Patient scopes require patient context
-        var patientId = context.GetPatientContext();
-        if (string.IsNullOrEmpty(patientId))
-        {
-            return false;
-        }
-
-        return scope.MatchesResource(requirement.ResourceType) &&
-               scope.MatchesInteraction(requirement.Interaction);
-    }
-
-    private static bool IsUserScopeAllowed(SmartScope scope, SmartRequirement requirement, HttpContext context)
-    {
-        // User scopes require authenticated user
-        var userId = context.GetUserContext();
-        if (string.IsNullOrEmpty(userId))
-        {
-            return false;
-        }
-
-        return scope.MatchesResource(requirement.ResourceType) &&
-               scope.MatchesInteraction(requirement.Interaction);
-    }
-
-    private static bool IsSystemScopeAllowed(SmartScope scope, SmartRequirement requirement, HttpContext context)
-    {
-        // System scopes allow broader access
-        return scope.MatchesResource(requirement.ResourceType) &&
-               scope.MatchesInteraction(requirement.Interaction);
-    }
-}
-
-public record SmartRequirement(string ResourceType, string Interaction) : IAuthorizationRequirement;
-```
-
-## SMART Token Implementation
-
-### JWT-Based Token Service
-
-```csharp
-public class JwtSmartTokenService : ISmartTokenService
-{
-    private readonly IOptionsMonitor<SmartTokenOptions> _options;
-    private readonly ISmartClientService _clientService;
-    private readonly ISmartAuthorizationCodeStore _codeStore;
-    private readonly ISmartRefreshTokenStore _refreshTokenStore;
-    private readonly ILogger<JwtSmartTokenService> _logger;
-
-    public JwtSmartTokenService(
-        IOptionsMonitor<SmartTokenOptions> options,
-        ISmartClientService clientService,
-        ISmartAuthorizationCodeStore codeStore,
-        ISmartRefreshTokenStore refreshTokenStore,
-        ILogger<JwtSmartTokenService> logger)
-    {
-        _options = options;
-        _clientService = clientService;
-        _codeStore = codeStore;
-        _refreshTokenStore = refreshTokenStore;
-        _logger = logger;
-    }
-
-    public async ValueTask<SmartTokenResponse> ExchangeCodeAsync(SmartTokenRequest request, CancellationToken cancellationToken = default)
-    {
-        // Validate authorization code
-        var authCode = await _codeStore.ConsumeAsync(request.Code, cancellationToken);
-        if (authCode == null)
-        {
-            throw new SmartAuthorizationException("Invalid or expired authorization code");
-        }
-
-        // Validate client
-        var client = await _clientService.GetClientAsync(request.TenantId, request.ClientId, cancellationToken);
-        if (client == null)
-        {
-            throw new SmartAuthorizationException("Invalid client");
-        }
-
-        // Validate PKCE if required
-        if (!string.IsNullOrEmpty(authCode.CodeChallenge))
-        {
-            if (string.IsNullOrEmpty(request.CodeVerifier))
-            {
-                throw new SmartAuthorizationException("Code verifier required");
-            }
-
-            if (!ValidateCodeChallenge(request.CodeVerifier, authCode.CodeChallenge, authCode.CodeChallengeMethod))
-            {
-                throw new SmartAuthorizationException("Invalid code verifier");
-            }
-        }
-
-        // Generate tokens
-        var options = _options.Get(request.TenantId);
-        var tokenClaims = new SmartTokenClaims
-        {
-            TenantId = request.TenantId,
-            ClientId = request.ClientId,
-            Subject = authCode.Subject,
-            Scopes = authCode.Scopes,
-            IssuedAt = DateTimeOffset.UtcNow,
-            ExpiresAt = DateTimeOffset.UtcNow.Add(options.AccessTokenLifetime),
-            Patient = authCode.LaunchContext?.Patient,
-            Encounter = authCode.LaunchContext?.Encounter,
-            User = authCode.LaunchContext?.User,
-            LaunchContext = authCode.LaunchContext?.LaunchId,
-            FhirContext = authCode.LaunchContext?.Context
-        };
-
-        var accessToken = GenerateAccessToken(tokenClaims, options);
-        var refreshToken = await GenerateRefreshTokenAsync(tokenClaims, options, cancellationToken);
-
-        return new SmartTokenResponse
-        {
-            AccessToken = accessToken,
-            TokenType = "Bearer",
-            ExpiresIn = (int)options.AccessTokenLifetime.TotalSeconds,
-            RefreshToken = refreshToken,
-            Scope = string.Join(" ", authCode.Scopes),
-            Patient = authCode.LaunchContext?.Patient,
-            Encounter = authCode.LaunchContext?.Encounter
-        };
-    }
-
-    public async ValueTask<SmartTokenClaims?> ValidateTokenAsync(string accessToken, CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var tokenHandler = new JsonWebTokenHandler();
-
-            // Get all tenant signing keys for validation
-            var validationParameters = await GetTokenValidationParametersAsync(cancellationToken);
-
-            var result = await tokenHandler.ValidateTokenAsync(accessToken, validationParameters);
-            if (!result.IsValid)
-            {
-                _logger.LogWarning("Invalid access token: {Exception}", result.Exception?.Message);
-                return null;
-            }
-
-            var jwt = result.SecurityToken as JsonWebToken;
-            return ExtractTokenClaims(jwt!);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error validating access token");
-            return null;
-        }
-    }
-
-    private string GenerateAccessToken(SmartTokenClaims claims, SmartTokenOptions options)
-    {
-        var tokenHandler = new JsonWebTokenHandler();
-
-        var tokenDescriptor = new SecurityTokenDescriptor
-        {
-            Subject = new ClaimsIdentity(new[]
-            {
-                new Claim(JwtRegisteredClaimNames.Sub, claims.Subject),
-                new Claim(JwtRegisteredClaimNames.Iat, claims.IssuedAt.ToUnixTimeSeconds().ToString(), ClaimValueTypes.Integer64),
-                new Claim(JwtRegisteredClaimNames.Exp, claims.ExpiresAt.ToUnixTimeSeconds().ToString(), ClaimValueTypes.Integer64),
-                new Claim("tenant_id", claims.TenantId),
-                new Claim("client_id", claims.ClientId),
-                new Claim("scope", string.Join(" ", claims.Scopes))
-            }),
-            Issuer = options.Issuer,
-            Audience = options.Audience,
-            SigningCredentials = options.SigningCredentials
-        };
-
-        // Add FHIR context claims
-        if (!string.IsNullOrEmpty(claims.Patient))
-        {
-            tokenDescriptor.Subject.AddClaim(new Claim("patient", claims.Patient));
-        }
-
-        if (!string.IsNullOrEmpty(claims.Encounter))
-        {
-            tokenDescriptor.Subject.AddClaim(new Claim("encounter", claims.Encounter));
-        }
-
-        if (!string.IsNullOrEmpty(claims.User))
-        {
-            tokenDescriptor.Subject.AddClaim(new Claim("user", claims.User));
-        }
-
-        return tokenHandler.CreateToken(tokenDescriptor);
-    }
-
-    private static bool ValidateCodeChallenge(string codeVerifier, string codeChallenge, string? method)
-    {
-        var expectedChallenge = method switch
-        {
-            "S256" => Base64UrlEncoder.Encode(SHA256.HashData(Encoding.UTF8.GetBytes(codeVerifier))),
-            "plain" or null => codeVerifier,
-            _ => throw new SmartAuthorizationException($"Unsupported code challenge method: {method}")
-        };
-
-        return codeChallenge == expectedChallenge;
-    }
-
-    private static SmartTokenClaims ExtractTokenClaims(JsonWebToken jwt)
-    {
-        return new SmartTokenClaims
-        {
-            TenantId = jwt.GetClaim("tenant_id")?.Value ?? throw new InvalidOperationException("Missing tenant_id claim"),
-            ClientId = jwt.GetClaim("client_id")?.Value ?? throw new InvalidOperationException("Missing client_id claim"),
-            Subject = jwt.Subject ?? throw new InvalidOperationException("Missing subject claim"),
-            Scopes = jwt.GetClaim("scope")?.Value?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>(),
-            IssuedAt = DateTimeOffset.FromUnixTimeSeconds(long.Parse(jwt.GetClaim(JwtRegisteredClaimNames.Iat)?.Value ?? "0")),
-            ExpiresAt = DateTimeOffset.FromUnixTimeSeconds(long.Parse(jwt.GetClaim(JwtRegisteredClaimNames.Exp)?.Value ?? "0")),
-            Patient = jwt.GetClaim("patient")?.Value,
-            Encounter = jwt.GetClaim("encounter")?.Value,
-            User = jwt.GetClaim("user")?.Value
-        };
-    }
-}
-
-public class SmartTokenOptions
-{
-    public required string Issuer { get; set; }
-    public required string Audience { get; set; }
-    public required SigningCredentials SigningCredentials { get; set; }
-    public TimeSpan AccessTokenLifetime { get; set; } = TimeSpan.FromHours(1);
-    public TimeSpan RefreshTokenLifetime { get; set; } = TimeSpan.FromDays(7);
-    public TimeSpan AuthorizationCodeLifetime { get; set; } = TimeSpan.FromMinutes(10);
+      }
+    ]
+  }
 }
 ```
 
-## SMART Client Management
+---
 
-### Client Registration and Validation
+## SMART Discovery
 
-```csharp
-public interface ISmartClientService
+### .well-known/smart-configuration
+
+```json
 {
-    ValueTask<SmartClient?> GetClientAsync(string tenantId, string clientId, CancellationToken cancellationToken = default);
-    ValueTask<SmartClient> RegisterClientAsync(string tenantId, SmartClientRegistration registration, CancellationToken cancellationToken = default);
-    ValueTask<SmartClient> UpdateClientAsync(string tenantId, string clientId, SmartClientUpdate update, CancellationToken cancellationToken = default);
-    ValueTask DeleteClientAsync(string tenantId, string clientId, CancellationToken cancellationToken = default);
-    ValueTask<bool> ValidateClientAsync(string tenantId, string clientId, string? clientSecret, CancellationToken cancellationToken = default);
-}
-
-public record SmartClient
-{
-    public required string TenantId { get; init; }
-    public required string ClientId { get; init; }
-    public required string ClientName { get; init; }
-    public required SmartClientType ClientType { get; init; }
-    public required string[] RedirectUris { get; init; }
-    public required string[] GrantTypes { get; init; }
-    public required string[] ResponseTypes { get; init; }
-    public required string[] Scopes { get; init; }
-    public string? ClientSecret { get; init; }
-    public string? JwksUri { get; init; }
-    public string? SoftwareId { get; init; }
-    public string? SoftwareVersion { get; init; }
-    public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
-    public DateTimeOffset? UpdatedAt { get; init; }
-    public bool IsActive { get; init; } = true;
-    public SmartClientMetadata? Metadata { get; init; }
-}
-
-public enum SmartClientType
-{
-    Public,
-    Confidential,
-    NativeApp,
-    WebApp,
-    BackendService
-}
-
-public record SmartClientMetadata
-{
-    public string? Description { get; init; }
-    public string? LogoUri { get; init; }
-    public string? PolicyUri { get; init; }
-    public string? TermsOfServiceUri { get; init; }
-    public string? ContactEmail { get; init; }
-    public IReadOnlyDictionary<string, object>? ExtensionData { get; init; }
+  "issuer": "https://login.microsoftonline.com/{tenant}/v2.0",
+  "jwks_uri": "https://login.microsoftonline.com/{tenant}/.well-known/jwks",
+  "authorization_endpoint": "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize",
+  "token_endpoint": "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+  "scopes_supported": [
+    "openid", "fhirUser", "offline_access",
+    "patient.Patient.read", "patient.all.read",
+    "user.Patient.cruds", "user.all.cruds",
+    "system.Patient.read"
+  ],
+  "capabilities": [
+    "launch-ehr",
+    "launch-standalone",
+    "client-public",
+    "context-ehr-patient",
+    "permission-patient",
+    "permission-user"
+  ]
 }
 ```
 
-## Controller Integration
+---
 
-### SMART Endpoints Controller
+## Alternatives Considered
 
-```csharp
-[ApiController]
-[Route("{tenantId}/smart")]
-public class SmartController : ControllerBase
-{
-    private readonly ISmartConfiguration _smartConfig;
-    private readonly ISmartAuthorizationService _authService;
-    private readonly ISmartTokenService _tokenService;
-    private readonly ISmartClientService _clientService;
+### Alternative 1: External SMART Proxy
 
-    public SmartController(
-        ISmartConfiguration smartConfig,
-        ISmartAuthorizationService authService,
-        ISmartTokenService tokenService,
-        ISmartClientService clientService)
-    {
-        _smartConfig = smartConfig;
-        _authService = authService;
-        _tokenService = tokenService;
-        _clientService = clientService;
-    }
+**Approach**: Use Microsoft's proxy or build custom proxy
 
-    [HttpGet(".well-known/smart-configuration")]
-    public async Task<ActionResult<SmartWellKnownConfiguration>> GetWellKnownConfiguration(string tenantId, CancellationToken cancellationToken)
-    {
-        var config = await _smartConfig.GetWellKnownConfigurationAsync(tenantId, cancellationToken);
-        return Ok(config);
-    }
+**Pros**:
+- No FHIR server changes
 
-    [HttpGet("authorize")]
-    public async Task<IActionResult> Authorize([FromQuery] SmartAuthorizationRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var response = await _authService.AuthorizeAsync(request, cancellationToken);
+**Cons**:
+- ❌ External dependency
+- ❌ Microsoft proxy retiring Sept 2026
+- ❌ Additional latency
+- ❌ Complex deployment
 
-            var redirectUri = new UriBuilder(request.RedirectUri);
-            redirectUri.Query = $"code={response.Code}&state={request.State}";
+**Decision**: ✗ Rejected - Native implementation preferred
 
-            return Redirect(redirectUri.ToString());
-        }
-        catch (SmartAuthorizationException ex)
-        {
-            var errorUri = new UriBuilder(request.RedirectUri);
-            errorUri.Query = $"error={ex.Error}&error_description={Uri.EscapeDataString(ex.Message)}&state={request.State}";
+### Alternative 2: Custom Scope Format
 
-            return Redirect(errorUri.ToString());
-        }
-    }
+**Approach**: Design custom format for EntraID
 
-    [HttpPost("token")]
-    public async Task<ActionResult<SmartTokenResponse>> Token([FromForm] SmartTokenRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var response = await _tokenService.ExchangeCodeAsync(request, cancellationToken);
-            return Ok(response);
-        }
-        catch (SmartAuthorizationException ex)
-        {
-            return BadRequest(new { error = ex.Error, error_description = ex.Message });
-        }
-    }
+**Pros**:
+- Optimized for EntraID
 
-    [HttpPost("introspect")]
-    public async Task<ActionResult<SmartTokenIntrospectionResponse>> Introspect([FromForm] string token, CancellationToken cancellationToken)
-    {
-        var response = await _tokenService.IntrospectTokenAsync(token, cancellationToken);
-        return Ok(response);
-    }
-}
-```
+**Cons**:
+- ❌ Not SMART-compliant
+- ❌ Existing apps won't work
+- ❌ Loses ecosystem compatibility
 
-## Dependency Injection Setup
+**Decision**: ✗ Rejected - SMART compliance critical
 
-```csharp
-public static class SmartServiceCollectionExtensions
-{
-    public static IServiceCollection AddSmartOnFhir(this IServiceCollection services, IConfiguration configuration)
-    {
-        var smartSection = configuration.GetSection("Smart");
+---
 
-        services.Configure<SmartTokenOptions>(smartSection.GetSection("Token"));
+## Risks & Mitigation
 
-        services.AddSingleton<ISmartConfiguration, SmartConfigurationService>();
-        services.AddScoped<ISmartTokenService, JwtSmartTokenService>();
-        services.AddScoped<ISmartAuthorizationService, SmartAuthorizationService>();
-        services.AddScoped<ISmartClientService, SmartClientService>();
+| Risk | Impact | Probability | Mitigation |
+|------|--------|-------------|------------|
+| EntraID translation edge cases | High | Medium | Comprehensive tests, SMART test suite |
+| Patient compartment errors | High | Medium | Extensive testing, security review |
+| Performance degradation | Medium | Low | Token caching, benchmarks |
+| SMART v3 breaking changes | Medium | Low | Extensible design, version abstraction |
+| Multi-tenant confusion | High | Low | Strict validation, audit logging |
 
-        // Authorization policies
-        services.AddAuthorization(options =>
-        {
-            options.AddPolicy("SmartFhirRead", policy =>
-                policy.Requirements.Add(new SmartRequirement("*", "read")));
+---
 
-            options.AddPolicy("SmartFhirWrite", policy =>
-                policy.Requirements.Add(new SmartRequirement("*", "write")));
-        });
+## Success Criteria
 
-        services.AddSingleton<IAuthorizationHandler, SmartAuthorizationHandler>();
+### Functional
 
-        return services;
-    }
-}
-```
+- ✅ SMART scopes supported internally
+- ✅ EntraID scopes accepted in tokens
+- ✅ RBAC and SMART both working
+- ✅ Patient compartment accurate
+- ✅ `.well-known/smart-configuration` functional
+- ✅ CapabilityStatement includes SMART metadata
 
-This SMART on FHIR v2 implementation provides:
+### Non-Functional
 
-1. **Complete SMART v2 Support**: All standard flows and capabilities
-2. **Multi-Tenant Architecture**: Tenant-isolated configuration and tokens
-3. **Granular Scopes**: Modern scope parsing with constraints
-4. **Memory Efficiency**: Span-based parsing and minimal allocations
-5. **JWT Security**: Industry-standard token validation
-6. **Flexible Client Types**: Support for all SMART client categories
-7. **Authorization Integration**: Native ASP.NET Core policy integration
-8. **Extensible Design**: Easy to add custom scopes and behaviors
+- ✅ Authorization latency < 50ms (p95)
+- ✅ JWT validation cached
+- ✅ Zero cross-tenant leakage
+- ✅ All auth events audited
+- ✅ Security audit passed
+- ✅ Test coverage > 90%
 
-The implementation seamlessly integrates with the FHIR Server v2 architecture while providing production-ready SMART on FHIR capabilities.
+---
+
+## References
+
+- [SMART App Launch v2.2.0](https://hl7.org/fhir/smart-app-launch/)
+- [SMART Scopes](https://hl7.org/fhir/smart-app-launch/scopes-and-launch-context.html)
+- [Microsoft SMART on FHIR](https://learn.microsoft.com/en-us/azure/healthcare-apis/fhir/smart-on-fhir)
+- [EntraID OAuth Scopes](https://learn.microsoft.com/en-us/entra/identity-platform/scopes-oidc)
+- ADR-2523: Multi-Tenancy Architecture
+- ADR-2506: Capability Enforcement
+
+---
+
+## Next Steps
+
+1. **Stakeholder Review** (1 week)
+   - Review with team
+   - Gather feedback
+   - Adjust design
+
+2. **ADR Creation** (3 days)
+   - Formalize decisions
+   - Document alternatives
+   - Create ADR-XXXX
+
+3. **Phase 0 Implementation** (3 days)
+   - Create project structure
+   - Basic framework
+   - Test scaffolding
+
+4. **Proof of Concept** (1 week)
+   - Build minimal SMART app
+   - Test EntraID integration
+   - Validate scope translation
+
+5. **Phase 1 Kickoff** (2 weeks)
+   - Begin RBAC implementation
+   - JWT authentication
+   - Basic enforcement
+
+---
+
+**End of Investigation**
