@@ -22,6 +22,7 @@ This investigation provides a comprehensive technical analysis of implementing *
 4. Three-layer access control (endpoint, resource-type, instance)
 5. Patient compartment enforcement
 6. SMART discovery endpoints
+7. Multi-IDP support (OpenIddict, EntraID, EntraID External ID)
 
 ---
 
@@ -30,15 +31,16 @@ This investigation provides a comprehensive technical analysis of implementing *
 1. [Background](#background)
 2. [Problem Statement](#problem-statement)
 3. [Proposed Solution](#proposed-solution)
-4. [Architecture](#architecture)
-5. [Implementation Phases](#implementation-phases)
-6. [Security Considerations](#security-considerations)
-7. [Testing Strategy](#testing-strategy)
-8. [Configuration](#configuration)
-9. [Alternatives Considered](#alternatives-considered)
-10. [Risks & Mitigation](#risks--mitigation)
-11. [Success Criteria](#success-criteria)
-12. [References](#references)
+4. [Multi-IDP Strategy](#multi-idp-strategy)
+5. [Architecture](#architecture)
+6. [Implementation Phases](#implementation-phases)
+7. [Security Considerations](#security-considerations)
+8. [Testing Strategy](#testing-strategy)
+9. [Configuration](#configuration)
+10. [Alternatives Considered](#alternatives-considered)
+11. [Risks & Mitigation](#risks--mitigation)
+12. [Success Criteria](#success-criteria)
+13. [References](#references)
 
 ---
 
@@ -198,6 +200,326 @@ Layer 3: Instance-Level (Handler Logic)
 
 ---
 
+## Multi-IDP Strategy
+
+### Three-Tier Identity Provider Architecture
+
+Supporting multiple identity providers enables optimal developer experience, enterprise integration, and SMART ecosystem compatibility.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   Development Environment                    │
+├─────────────────────────────────────────────────────────────┤
+│  OpenIddict (self-hosted)                                   │
+│  ✅ Full OAuth 2.0 / OIDC server                            │
+│  ✅ Custom scopes (SMART + RBAC)                            │
+│  ✅ Custom claims (patient, tenant, roles)                  │
+│  ✅ Fast iteration, no external dependencies                │
+│  ✅ Consistent with production token structure              │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│                 Production - Internal Users                  │
+├─────────────────────────────────────────────────────────────┤
+│  EntraID (Azure AD)                                         │
+│  ✅ Enterprise SSO                                          │
+│  ✅ Role-based access (Administrator, Clinician, etc.)      │
+│  ✅ Security groups → roles claim                           │
+│  ✅ MFA, Conditional Access policies                        │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│             Production - External Apps (SMART)               │
+├─────────────────────────────────────────────────────────────┤
+│  EntraID External ID (formerly B2C)                         │
+│  ✅ Federated IDPs (Auth0, Okta, Google, etc.)              │
+│  ✅ SMART scopes (patient.*, user.*, system.*)              │
+│  ✅ Patient/encounter context in tokens                     │
+│  ✅ Unified token format regardless of upstream IDP         │
+│  ✅ Custom policies for scope translation                   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Why This Architecture
+
+#### 1. OpenIddict for Development
+
+**Benefits**:
+- ✅ **Zero Cloud Dependency**: Runs completely locally
+- ✅ **Fast Iteration**: No need to configure EntraID for every developer
+- ✅ **Full Control**: Can issue any scope, claim, or token structure
+- ✅ **Consistent**: Mirrors production token format exactly
+- ✅ **Cost-Free**: No Azure subscription needed for development
+
+**Setup Example**:
+
+```csharp
+// In Program.cs (Development only)
+if (builder.Environment.IsDevelopment())
+{
+    builder.Services.AddOpenIddict()
+        .AddCore(options =>
+        {
+            options.UseEntityFrameworkCore()
+                .UseDbContext<AuthDbContext>();
+        })
+        .AddServer(options =>
+        {
+            options.SetAuthorizationEndpointUris("/connect/authorize")
+                   .SetTokenEndpointUris("/connect/token")
+                   .SetUserinfoEndpointUris("/connect/userinfo");
+
+            options.AllowAuthorizationCodeFlow()
+                   .AllowClientCredentialsFlow()
+                   .AllowRefreshTokenFlow();
+
+            // SMART scopes (EntraID-compatible format)
+            options.RegisterScopes(
+                "openid", "profile", "fhirUser", "offline_access",
+                "patient.Patient.read", "patient.Observation.rs",
+                "user.Patient.cruds", "user.all.read",
+                "system.Patient.read");
+
+            options.AddDevelopmentEncryptionCertificate()
+                   .AddDevelopmentSigningCertificate();
+
+            options.UseAspNetCore()
+                   .EnableAuthorizationEndpointPassthrough()
+                   .EnableTokenEndpointPassthrough();
+        })
+        .AddValidation(options =>
+        {
+            options.UseLocalServer();
+            options.UseAspNetCore();
+        });
+}
+```
+
+**Token Generation (Dev)**:
+
+```csharp
+// Can issue tokens with any combination of scopes and claims
+var identity = new ClaimsIdentity(OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
+
+// SMART scopes
+identity.AddClaim("scope", "patient.Patient.read");
+identity.AddClaim("scope", "patient.Observation.rs");
+
+// SMART context
+identity.AddClaim("patient", "patient-123");
+identity.AddClaim("fhirUser", "Practitioner/practitioner-456");
+identity.AddClaim("tenant", "1");
+
+// OR RBAC roles
+// identity.AddClaim("role", "Physician");
+// identity.AddClaim("role", "Clinician");
+```
+
+#### 2. EntraID for Internal RBAC
+
+**Use Case**: Hospital staff, administrators, system operators
+
+**Configuration**:
+
+```json
+{
+  "TenantId": 1,
+  "Authorization": {
+    "Provider": "EntraID",
+    "EnableRbac": true,
+    "EnableSmartOnFhir": false,
+    "TokenIssuer": "https://login.microsoftonline.com/{tenant-id}/v2.0",
+    "TokenAudience": "api://ignixa-fhir",
+    "EntraIdTenantId": "{your-entra-tenant-id}",
+    "EntraIdClientId": "{your-app-registration-id}"
+  }
+}
+```
+
+**EntraID App Registration**:
+- **App Roles**: Define custom roles (Administrator, Physician, Nurse)
+- **Group Claims**: Map Azure AD security groups → roles
+- **Token Claims**: Include `roles` claim in token
+
+#### 3. EntraID External ID for SMART Apps
+
+**Use Case**: Third-party SMART apps, patient-facing apps, research applications
+
+**Why EntraID External ID (B2C)?**
+
+| Feature | Benefit |
+|---------|---------|
+| **IDP Federation** | Support Auth0, Okta, Google, Apple, etc. |
+| **Custom Policies** | Transform scopes (`.` → `/` if needed) |
+| **SMART Compliance** | Can issue SMART-compliant scopes |
+| **Patient Context** | Include patient, encounter, fhirUser claims |
+| **Unified Tokens** | Same token format regardless of upstream IDP |
+
+**Configuration**:
+
+```json
+{
+  "TenantId": 2,
+  "Authorization": {
+    "Provider": "EntraIDExternalID",
+    "EnableRbac": false,
+    "EnableSmartOnFhir": true,
+    "TokenIssuer": "https://{tenant-name}.b2clogin.com/{tenant-id}/v2.0",
+    "TokenAudience": "api://ignixa-fhir",
+    "EntraIdB2CTenantId": "{b2c-tenant-id}",
+    "EntraIdB2CPolicy": "B2C_1A_SMART_SIGNIN"
+  }
+}
+```
+
+### Unified Token Validation
+
+Regardless of IDP (OpenIddict, EntraID, EntraID External ID), all tokens validated the same way:
+
+```csharp
+public class UnifiedTokenValidator
+{
+    public async Task<ClaimsPrincipal?> ValidateTokenAsync(
+        string token,
+        TenantConfiguration tenantConfig,
+        CancellationToken cancellationToken)
+    {
+        var issuer = tenantConfig.Authorization.TokenIssuer;
+        var audience = tenantConfig.Authorization.TokenAudience;
+
+        var validationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = issuer,
+
+            ValidateAudience = true,
+            ValidAudience = audience,
+
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromMinutes(5),
+
+            ValidateIssuerSigningKey = true,
+            // Fetch signing keys from JWKS endpoint
+            IssuerSigningKeyResolver = (token, securityToken, kid, validationParams) =>
+            {
+                return FetchSigningKeys(issuer, cancellationToken);
+            },
+
+            RequireSignedTokens = true,
+            RequireExpirationTime = true
+        };
+
+        var handler = new JwtSecurityTokenHandler();
+        var principal = handler.ValidateToken(token, validationParameters, out _);
+
+        return principal;
+    }
+}
+```
+
+**Key Point**: Same validation code works for all three IDPs. Only difference is issuer/audience configuration.
+
+### Development Workflow with OpenIddict
+
+**Step 1: Seed Test Data**
+
+```csharp
+// In AuthDbContext or seed script
+public static async Task SeedTestUsersAsync(IServiceProvider services)
+{
+    var manager = services.GetRequiredService<IOpenIddictApplicationManager>();
+
+    // SMART app (patient-facing)
+    await manager.CreateAsync(new OpenIddictApplicationDescriptor
+    {
+        ClientId = "smart-app-123",
+        DisplayName = "Patient Portal App",
+        Permissions =
+        {
+            Permissions.Endpoints.Authorization,
+            Permissions.Endpoints.Token,
+            Permissions.GrantTypes.AuthorizationCode,
+            Permissions.ResponseTypes.Code,
+            Permissions.Scopes.Profile,
+            "patient.Patient.read",
+            "patient.Observation.rs",
+            "patient.MedicationRequest.rs"
+        },
+        RedirectUris = { new Uri("https://localhost:5001/callback") }
+    });
+
+    // Internal user (RBAC)
+    await manager.CreateAsync(new OpenIddictApplicationDescriptor
+    {
+        ClientId = "internal-admin",
+        DisplayName = "Hospital Admin Portal",
+        Permissions =
+        {
+            Permissions.Endpoints.Token,
+            Permissions.GrantTypes.ClientCredentials,
+            "role:Administrator"
+        }
+    });
+}
+```
+
+**Step 2: Issue Test Tokens**
+
+```bash
+# SMART token (patient context)
+curl -X POST http://localhost:5000/connect/token \
+  -d "grant_type=authorization_code" \
+  -d "client_id=smart-app-123" \
+  -d "code=..." \
+  -d "scope=patient.Patient.read patient.Observation.rs"
+
+# RBAC token (internal user)
+curl -X POST http://localhost:5000/connect/token \
+  -d "grant_type=client_credentials" \
+  -d "client_id=internal-admin" \
+  -d "client_secret=..." \
+  -d "scope=role:Administrator"
+```
+
+**Step 3: Test FHIR Requests**
+
+```bash
+# Using SMART token
+curl http://localhost:5000/tenant/1/Patient/123 \
+  -H "Authorization: Bearer {smart-token}"
+
+# Using RBAC token
+curl http://localhost:5000/tenant/1/Patient \
+  -H "Authorization: Bearer {rbac-token}"
+```
+
+### Multi-IDP Benefits
+
+#### ✅ **Developer Experience**
+- No Azure subscription needed for local dev
+- Instant token generation (no external API calls)
+- Full control over test scenarios
+- Consistent across all developers
+
+#### ✅ **Production Flexibility**
+- Support any IDP via EntraID External ID federation
+- Internal users → EntraID (enterprise SSO)
+- External apps → EntraID External ID (SMART compliance)
+- Easy to add new IDPs without code changes
+
+#### ✅ **Cost Optimization**
+- OpenIddict: Free (self-hosted)
+- EntraID: Included with Microsoft 365 (for internal users)
+- EntraID External ID: Pay-per-use (MAU model, free tier for dev)
+
+#### ✅ **Security**
+- Unified token validation (same security posture)
+- EntraID External ID supports MFA, conditional access
+- Audit logging across all IDPs
+- Token revocation support
+
+---
+
 ## Architecture
 
 ### High-Level Flow
@@ -293,12 +615,20 @@ public enum AuthorizationStrategy
 ```csharp
 public record TenantAuthorizationConfiguration
 {
+    /// <summary>Identity provider: OpenIddict, EntraID, EntraIDExternalID</summary>
+    public string Provider { get; init; } = "OpenIddict";
+
     public bool EnableSmartOnFhir { get; init; } = false;
     public bool EnableRbac { get; init; } = true;
+
     public string? EntraIdTenantId { get; init; }
     public string? EntraIdClientId { get; init; }
+    public string? EntraIdB2CTenantId { get; init; }
+    public string? EntraIdB2CPolicy { get; init; }
+
     public string? TokenIssuer { get; init; }
     public string? TokenAudience { get; init; }
+
     public Dictionary<string, RolePermissions> RolePermissions { get; init; } = new();
 }
 ```
@@ -442,30 +772,55 @@ Administrator
 
 ### Phase 0: Project Setup (3 days)
 
+**Goal**: Set up project structure and OpenIddict for development
+
+**Tasks**:
 - [ ] Create `Ignixa.Application.SmartOnFhir` project
-- [ ] Add project references
+- [ ] Add project references (Domain, Application)
 - [ ] Create folder structure
-- [ ] Add README.md
+- [ ] Add README.md with SMART overview
 - [ ] Update All.sln
+
+**OpenIddict Setup (Development)**:
+- [ ] Add `OpenIddict.AspNetCore` NuGet package
+- [ ] Add `OpenIddict.EntityFrameworkCore` NuGet package
+- [ ] Create `AuthDbContext` for OpenIddict storage
+- [ ] Add OpenIddict registration in Program.cs (dev only)
+- [ ] Create seed script for test users/apps
+- [ ] Document local token generation workflow
+- [ ] Add OpenIddict endpoints for authorization/token
+
+**Deliverables**:
+- ✅ Project structure created
+- ✅ OpenIddict running locally
+- ✅ Can issue test tokens (SMART + RBAC)
 
 ### Phase 1: Foundation - RBAC (2 weeks)
 
-**Goal**: Basic authentication and role-based authorization
+**Goal**: Basic authentication, role-based authorization, and multi-IDP support
 
 **Tasks**:
 - [ ] Add `TenantAuthorizationConfiguration` to domain
+- [ ] Add `Provider` enum (OpenIddict, EntraID, EntraIDExternalID)
 - [ ] Implement `AuthorizationMiddleware` with JWT validation
 - [ ] Configure ASP.NET Core authentication (JwtBearer)
+- [ ] Implement `UnifiedTokenValidator`
+- [ ] Create `ITokenValidationStrategy` interface
+- [ ] Implement `OpenIddictTokenValidator`
+- [ ] Implement `EntraIdTokenValidator`
+- [ ] Implement `EntraIdExternalIdTokenValidator`
+- [ ] Factory pattern for validator selection
 - [ ] Implement `RbacEvaluator`
 - [ ] Add `IRequireAuthorization` interface
 - [ ] Create basic role definitions
 - [ ] Update endpoints to require authentication
-- [ ] Add unit tests
+- [ ] Add unit tests for each validator
 
 **Deliverables**:
-- ✅ JWT authentication working
+- ✅ JWT authentication working with all three IDPs
 - ✅ Basic RBAC enforcement
 - ✅ Role-based permissions configurable
+- ✅ Can switch between IDPs via configuration
 
 ### Phase 2: SMART Scopes (3 weeks)
 
@@ -656,23 +1011,23 @@ public async Task GetResource_WithValidSmartScope_Returns200()
 
 ## Configuration
 
-### appsettings.json Example
+### Development Configuration (OpenIddict)
 
 ```json
 {
+  "Environment": "Development",
   "Tenants": {
     "Mode": "Isolated",
     "Configurations": [
       {
         "TenantId": 1,
-        "DisplayName": "Mayo Clinic",
+        "DisplayName": "Development Tenant",
         "FhirVersion": "4.0",
         "Authorization": {
+          "Provider": "OpenIddict",
           "EnableSmartOnFhir": true,
           "EnableRbac": true,
-          "EntraIdTenantId": "12345678-1234-1234-1234-123456789abc",
-          "EntraIdClientId": "87654321-4321-4321-4321-cba987654321",
-          "TokenIssuer": "https://login.microsoftonline.com/.../v2.0",
+          "TokenIssuer": "https://localhost:5000",
           "TokenAudience": "api://ignixa-fhir",
           "RolePermissions": {
             "Administrator": {
@@ -683,6 +1038,63 @@ public async Task GetResource_WithValidSmartScope_Returns200()
               "DeniedResourceTypes": ["AuditEvent"]
             }
           }
+        }
+      }
+    ]
+  }
+}
+```
+
+### Production Configuration (Multi-IDP)
+
+```json
+{
+  "Environment": "Production",
+  "Tenants": {
+    "Mode": "Isolated",
+    "Configurations": [
+      {
+        "TenantId": 1,
+        "DisplayName": "Internal Users (RBAC)",
+        "FhirVersion": "4.0",
+        "Authorization": {
+          "Provider": "EntraID",
+          "EnableSmartOnFhir": false,
+          "EnableRbac": true,
+          "TokenIssuer": "https://login.microsoftonline.com/{tenant-id}/v2.0",
+          "TokenAudience": "api://ignixa-fhir",
+          "EntraIdTenantId": "12345678-1234-1234-1234-123456789abc",
+          "EntraIdClientId": "87654321-4321-4321-4321-cba987654321",
+          "RolePermissions": {
+            "Administrator": {
+              "AllowedInteractions": ["read", "create", "update", "delete", "search"]
+            },
+            "Physician": {
+              "AllowedInteractions": ["read", "create", "update", "search"],
+              "DeniedResourceTypes": ["AuditEvent", "Provenance"]
+            },
+            "Nurse": {
+              "AllowedInteractions": ["read", "create", "update", "search"],
+              "AllowedResourceTypes": ["Patient", "Observation", "Medication", "Condition"]
+            },
+            "ReadOnly": {
+              "AllowedInteractions": ["read", "search"]
+            }
+          }
+        }
+      },
+      {
+        "TenantId": 2,
+        "DisplayName": "External Apps (SMART)",
+        "FhirVersion": "4.0",
+        "Authorization": {
+          "Provider": "EntraIDExternalID",
+          "EnableSmartOnFhir": true,
+          "EnableRbac": false,
+          "TokenIssuer": "https://{tenant-name}.b2clogin.com/{tenant-id}/v2.0",
+          "TokenAudience": "api://ignixa-fhir",
+          "EntraIdB2CTenantId": "abcdef12-3456-7890-abcd-ef1234567890",
+          "EntraIdB2CPolicy": "B2C_1A_SMART_SIGNIN"
         }
       }
     ]
@@ -790,10 +1202,22 @@ public async Task GetResource_WithValidSmartScope_Returns200()
 
 ## References
 
+### SMART on FHIR Specification
 - [SMART App Launch v2.2.0](https://hl7.org/fhir/smart-app-launch/)
-- [SMART Scopes](https://hl7.org/fhir/smart-app-launch/scopes-and-launch-context.html)
+- [SMART Scopes and Launch Context](https://hl7.org/fhir/smart-app-launch/scopes-and-launch-context.html)
+- [SMART Backend Services](https://hl7.org/fhir/smart-app-launch/backend-services.html)
+
+### Microsoft Documentation
 - [Microsoft SMART on FHIR](https://learn.microsoft.com/en-us/azure/healthcare-apis/fhir/smart-on-fhir)
 - [EntraID OAuth Scopes](https://learn.microsoft.com/en-us/entra/identity-platform/scopes-oidc)
+- [EntraID External ID (B2C)](https://learn.microsoft.com/en-us/entra/external-id/)
+
+### OpenIddict
+- [OpenIddict Documentation](https://documentation.openiddict.com/)
+- [OpenIddict Samples](https://github.com/openiddict/openiddict-samples)
+- [OpenIddict with ASP.NET Core](https://documentation.openiddict.com/guides/getting-started/creating-your-own-server-instance.html)
+
+### Internal Documentation
 - ADR-2523: Multi-Tenancy Architecture
 - ADR-2506: Capability Enforcement
 
