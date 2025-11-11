@@ -476,3 +476,5 @@ Global
 		{D62AAF79-C7D4-4002-BE91-38FFC458DD59} = {0955C698-034D-424C-A981-095EB50A5673}
 	EndGlobalSection
 EndGlobal
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ignixa.Extensions.ProfileBehaviors", "src\Ignixa.Extensions.ProfileBehaviors\Ignixa.Extensions.ProfileBehaviors.csproj", "{NEWGUID}"
+EndProject
