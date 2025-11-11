@@ -83,6 +83,11 @@ builder.Services.Configure<HostFilteringOptions>(options =>
 builder.Services.Configure<Ignixa.DataLayer.BlobStorage.Infrastructure.LocalFileBlobStorageOptions>(
     builder.Configuration.GetSection("LocalFileBlobStorage"));
 
+// Configure SearchParameter conflict resolution options (Phase 21+ - Multi-IG support)
+// Maps from appsettings.json: SearchParameters:ConflictResolution
+builder.Services.Configure<SearchParameterResolutionOptions>(
+    builder.Configuration.GetSection("SearchParameters:ConflictResolution"));
+
 // Register IHttpContextFactory and IHttpContextAccessor for bundle entry pipeline routing
 builder.Services.AddSingleton<IHttpContextFactory, DefaultHttpContextFactory>();
 builder.Services.AddHttpContextAccessor();
@@ -410,13 +415,21 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
     // Similar to HAPI FHIR's FhirContext pattern - caches instances per FHIR version
     // Moved to Ignixa.Search layer for proper dependency management
     // Now supports tenant-aware composite providers for custom resource types
+    // Requires SearchParameterResolutionOptions for intelligent conflict resolution
     containerBuilder.Register<IFhirVersionContext>(c =>
-        new FhirVersionContext(
+    {
+        var configuration = c.Resolve<IConfiguration>();
+        var options = new SearchParameterResolutionOptions();
+        configuration.GetSection("SearchParameters:ConflictResolution").Bind(options);
+
+        return new FhirVersionContext(
             c.Resolve<ILoggerFactory>(),
+            options,
             c.Resolve<IPackageResourceRepository>(),
             c.Resolve<Ignixa.Abstractions.IPackageResourceProvider>(),
-            c.Resolve<Ignixa.Specification.ICompositeSchemaProviderRegistry>()))
-        .SingleInstance();
+            c.Resolve<Ignixa.Specification.ICompositeSchemaProviderRegistry>());
+    })
+    .SingleInstance();
 
     // Register SearchOptionsBuilderFactory for version-aware search options builders
     // Factory creates and caches builders per (tenant, FHIR version) pair
@@ -426,14 +439,6 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
     containerBuilder.RegisterType<SearchOptionsBuilderFactory>()
         .As<ISearchOptionsBuilderFactory>()
         .SingleInstance();
-
-    // Register FhirSchemaProviderResolver - enables version-aware components to resolve
-    // the correct provider at runtime based on request FHIR version
-    containerBuilder.Register<FhirSchemaProviderResolver>(c =>
-    {
-        var versionContext = c.Resolve<IFhirVersionContext>();
-        return (FhirSpecification version) => versionContext.GetBaseSchemaProvider(version);
-    }).SingleInstance();
 
     // DEPRECATED: VersionAwareSearchParameterDefinitionManager replaced by FhirVersionContext.GetSearchParameterDefinitionManager()
     // Multi-version support now provided via FhirVersionContext pattern (same as SearchIndexer and SchemaProvider)
