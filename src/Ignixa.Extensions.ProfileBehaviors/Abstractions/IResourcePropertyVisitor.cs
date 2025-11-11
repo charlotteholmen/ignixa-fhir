@@ -4,6 +4,7 @@
 // -------------------------------------------------------------------------------------------------
 
 using Ignixa.Abstractions;
+using Ignixa.Specification;
 
 namespace Ignixa.Extensions.ProfileBehaviors.Abstractions;
 
@@ -176,16 +177,25 @@ public sealed class ElementMetadata
 
     /// <summary>
     /// Creates ElementMetadata from IElementDefinitionSummary.
+    /// Extracts binding strength from IExtendedElementMetadata if available.
     /// </summary>
     public static ElementMetadata FromElementDefinition(IElementDefinitionSummary element)
     {
+        // Extract binding strength if element has extended metadata
+        string? bindingStrength = null;
+        if (element is IExtendedElementMetadata extended && extended.Binding != null)
+        {
+            bindingStrength = extended.Binding.Strength;
+        }
+
         return new ElementMetadata
         {
             ElementName = element.ElementName,
             IsCollection = element.IsCollection,
             IsRequired = element.IsRequired,
             IsChoiceElement = element.IsChoiceElement,
-            Types = element.Type?.Select(t => t.GetTypeName()).ToList() ?? Array.Empty<string>()
+            Types = element.Type?.Select(t => t.GetTypeName()).ToList() ?? Array.Empty<string>(),
+            BindingStrength = bindingStrength
         };
     }
 }

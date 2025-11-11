@@ -110,15 +110,12 @@ public sealed class DataAbsentReasonVisitor : IResourcePropertyVisitor
     /// </para>
     /// <para>
     /// <strong>Binding Strength Detection</strong>:
-    /// Uses heuristics based on element name and type:
-    /// - Element name matches known required binding patterns (e.g., "status")
-    /// - Element is coded type with known required binding
-    /// </para>
-    /// <para>
-    /// <strong>Enhancement Opportunity</strong>:
-    /// When BindingStrength is populated in ElementMetadata, we can directly check:
-    /// - Required binding → Cannot have data-absent-reason
+    /// Primary: Direct check of metadata.BindingStrength (from IExtendedElementMetadata)
+    /// - Required → Cannot have data-absent-reason (no "unknown" code in binding)
     /// - Extensible/Preferred/Example → Can have data-absent-reason
+    /// Fallback: Heuristics based on element name and type patterns
+    /// - Element name matches known required binding patterns (e.g., "status")
+    /// - Element is coded type with name suggesting required binding
     /// </para>
     /// </remarks>
     private static bool CanHaveDataAbsentReason(string propertyName, ElementMetadata metadata)
@@ -135,6 +132,23 @@ public sealed class DataAbsentReasonVisitor : IResourcePropertyVisitor
             return false;
         }
 
+        // Check binding strength directly if available (most reliable method)
+        if (!string.IsNullOrEmpty(metadata.BindingStrength))
+        {
+            // Required bindings without "unknown" code cannot have data-absent-reason
+            // The US Core guidance states: "For required bindings without unknown code,
+            // return HTTP 404 for read or exclude from search results"
+            if (metadata.BindingStrength.Equals("Required", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            // Extensible, Preferred, Example bindings CAN have data-absent-reason
+            // because they allow codes outside the ValueSet or can use text-only
+            return true;
+        }
+
+        // Fallback to heuristics when binding strength not available
         // Check if element name matches known required binding patterns
         if (RequiredBindingPatterns.Contains(propertyName))
         {
@@ -155,12 +169,6 @@ public sealed class DataAbsentReasonVisitor : IResourcePropertyVisitor
                 return false;
             }
         }
-
-        // TODO: When BindingStrength is available in metadata, use it directly:
-        // if (metadata.BindingStrength == "required")
-        // {
-        //     return false;
-        // }
 
         // Element is eligible for data-absent-reason
         return true;
