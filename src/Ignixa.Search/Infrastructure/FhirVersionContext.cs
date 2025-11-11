@@ -6,11 +6,15 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Ignixa.Domain;
+using Ignixa.Domain.Abstractions;
+using Ignixa.Domain.Models;
+using Ignixa.Domain.Constants;
 using Ignixa.Specification;
 using Ignixa.Search.Indexing;
 using Ignixa.Search.Definition;
 using Ignixa.Serialization;
 using Ignixa.Specification.Generated;
+using Ignixa.Abstractions;
 
 namespace Ignixa.Search.Infrastructure;
 
@@ -21,6 +25,7 @@ namespace Ignixa.Search.Infrastructure;
 public sealed class FhirVersionContext : IFhirVersionContext, IDisposable
 {
     private readonly ConcurrentDictionary<FhirSpecification, IFhirSchemaProvider> _schemaProviders = new();
+    private readonly ConcurrentDictionary<(FhirSpecification, int), CompositeStructureDefinitionSummaryProvider> _compositeProviders = new();
     private readonly ConcurrentDictionary<FhirSpecification, ISearchIndexer> _searchIndexers = new();
     private readonly ConcurrentDictionary<FhirSpecification, ISearchParameterDefinitionManager> _searchParamManagers = new();
     private readonly ConcurrentDictionary<FhirSpecification, ICompartmentDefinitionManager> _compartmentManagers = new();
@@ -28,15 +33,27 @@ public sealed class FhirVersionContext : IFhirVersionContext, IDisposable
     private readonly SemaphoreSlim _searchParamLock = new(1, 1);
     private readonly SemaphoreSlim _compartmentLock = new(1, 1);
     private readonly ILoggerFactory _loggerFactory;
+    private readonly IPackageResourceRepository _packageResourceRepository;
+    private readonly IPackageResourceProvider _packageResourceProvider;
+    private readonly ICompositeSchemaProviderRegistry _compositeProviderRegistry;
+    private readonly ILogger<FhirVersionContext> _logger;
     private bool _disposed;
 
-    public FhirVersionContext(ILoggerFactory loggerFactory)
+    public FhirVersionContext(
+        ILoggerFactory loggerFactory,
+        IPackageResourceRepository packageResourceRepository = null,
+        IPackageResourceProvider packageResourceProvider = null,
+        ICompositeSchemaProviderRegistry compositeProviderRegistry = null)
     {
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+        _packageResourceRepository = packageResourceRepository;
+        _packageResourceProvider = packageResourceProvider;
+        _compositeProviderRegistry = compositeProviderRegistry;
+        _logger = _loggerFactory.CreateLogger<FhirVersionContext>();
     }
 
     /// <inheritdoc/>
-    public IFhirSchemaProvider GetSchemaProvider(FhirSpecification fhirVersion)
+    public IFhirSchemaProvider GetBaseSchemaProvider(FhirSpecification fhirVersion)
     {
         return _schemaProviders.GetOrAdd(fhirVersion, version =>
         {
@@ -53,6 +70,64 @@ public sealed class FhirVersionContext : IFhirVersionContext, IDisposable
     }
 
     /// <inheritdoc/>
+    public IFhirSchemaProvider GetSchemaProvider(FhirSpecification fhirVersion, Nullable<int> tenantId)
+    {
+        // If no tenant ID provided, return base provider
+        if (!tenantId.HasValue)
+        {
+            _logger.LogTrace(
+                "Tenant not available - returning base schema provider for {FhirVersion}",
+                fhirVersion);
+            return GetBaseSchemaProvider(fhirVersion);
+        }
+
+        // If package management dependencies not available, return base provider
+        if (_packageResourceRepository == null || _packageResourceProvider == null)
+        {
+            _logger.LogTrace(
+                "Package management dependencies not available - returning base schema provider for {FhirVersion}",
+                fhirVersion);
+            return GetBaseSchemaProvider(fhirVersion);
+        }
+
+        // Return cached composite provider or create new one
+        return _compositeProviders.GetOrAdd((fhirVersion, tenantId.Value), key =>
+        {
+            var (version, tenant) = key;
+
+            _logger.LogDebug(
+                "Creating composite schema provider for {FhirVersion}, tenant {TenantId}",
+                version,
+                tenant);
+
+            // Get base provider for this FHIR version
+            var baseProvider = GetBaseSchemaProvider(version);
+
+            // Create composite provider that includes base spec + tenant packages
+            var fhirVersionString = version.ToVersionString();
+            var compositeProvider = new CompositeStructureDefinitionSummaryProvider(
+                baseProvider,
+                _packageResourceRepository,
+                _packageResourceProvider,
+                fhirVersionString,
+                _loggerFactory.CreateLogger<CompositeStructureDefinitionSummaryProvider>());
+
+            // Register provider for cache invalidation if registry available
+            if (_compositeProviderRegistry != null)
+            {
+                _compositeProviderRegistry.RegisterProvider(tenant, compositeProvider);
+            }
+
+            _logger.LogDebug(
+                "Composite schema provider created and cached for {FhirVersion}, tenant {TenantId}",
+                version,
+                tenant);
+
+            return compositeProvider;
+        });
+    }
+
+    /// <inheritdoc/>
     public ISearchIndexer GetSearchIndexer(FhirSpecification fhirVersion)
     {
         // Fast path: check if already cached
@@ -65,7 +140,7 @@ public sealed class FhirVersionContext : IFhirVersionContext, IDisposable
         // This prevents potential deadlock where:
         // - Thread A: holds _indexerLock, waits for _searchParamLock (in GetSearchParameterDefinitionManager)
         // - Thread B: holds _searchParamLock, waits for _indexerLock
-        var schemaProvider = GetSchemaProvider(fhirVersion);
+        var schemaProvider = GetBaseSchemaProvider(fhirVersion);
         var searchParamManager = GetSearchParameterDefinitionManager(fhirVersion);
 
         // Slow path: create new indexer (synchronous factory with lock)
@@ -113,7 +188,7 @@ public sealed class FhirVersionContext : IFhirVersionContext, IDisposable
 
             // Create new search parameter definition manager
             // Manager initializes synchronously using pre-generated search parameters
-            var schemaProvider = GetSchemaProvider(fhirVersion);
+            var schemaProvider = GetBaseSchemaProvider(fhirVersion);
             var logger = _loggerFactory.CreateLogger<SearchParameterDefinitionManager>();
             var manager = new SearchParameterDefinitionManager(schemaProvider, logger);
 

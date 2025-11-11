@@ -5,6 +5,7 @@
 
 using System.Security.Cryptography;
 using System.Text;
+using Ignixa.Abstractions;
 using Microsoft.Extensions.Logging;
 using Ignixa.Application.Features.Metadata.Models;
 using Ignixa.Search.Infrastructure;
@@ -42,8 +43,8 @@ public class ResourceInteractionCapabilitySegment : ICapabilitySegment
     {
         _logger.LogDebug("Applying resource interaction capability segment for {FhirVersion}", context.FhirVersion);
 
-        // Get schema provider for this FHIR version
-        var schemaProvider = _versionContext.GetSchemaProvider(context.FhirVersion);
+        // Get schema provider for this FHIR version and tenant (includes custom resource types)
+        var schemaProvider = _versionContext.GetSchemaProvider(context.FhirVersion, context.TenantId);
 
         // Get all resource types from schema provider
         // (ResourceTypeNames contains all concrete FHIR resource types for this version)
@@ -68,10 +69,20 @@ public class ResourceInteractionCapabilitySegment : ICapabilitySegment
         // Add resource components with interactions
         foreach (var resourceType in resourceTypes)
         {
+            IStructureDefinitionSummary? schema = schemaProvider.Provide(resourceType);
+            if (schema == null)
+            {
+                _logger.LogWarning("Could not load schema for resource type {ResourceType}", resourceType);
+                continue;
+            }
+
+            // Use schema.Url for canonical reference, with fallback to constructed URL
+            string canonicalUrl = schema.Url ?? $"http://hl7.org/fhir/StructureDefinition/{resourceType}";
+
             var resourceComponent = new ResourceComponentJsonNode
             {
                 Type = resourceType,
-                Profile = ReferenceOrCanonicalJsonNode.FromCanonical($"http://hl7.org/fhir/StructureDefinition/{resourceType}"),
+                Profile = ReferenceOrCanonicalJsonNode.FromCanonical(canonicalUrl),
                 Interaction = BuildResourceInteractions(resourceType),
                 Versioning = ResourceComponentJsonNode.ResourceVersionPolicy.Versioned,
                 ReadHistory = false,
@@ -97,8 +108,8 @@ public class ResourceInteractionCapabilitySegment : ICapabilitySegment
         CapabilityContext context,
         CancellationToken cancellationToken)
     {
-        // Hash is based on FHIR version + sorted resource type list
-        var schemaProvider = _versionContext.GetSchemaProvider(context.FhirVersion);
+        // Hash is based on FHIR version + sorted resource type list (includes custom resource types)
+        var schemaProvider = _versionContext.GetSchemaProvider(context.FhirVersion, context.TenantId);
 
         var resourceTypes = schemaProvider.ResourceTypeNames
             .OrderBy(rt => rt)
