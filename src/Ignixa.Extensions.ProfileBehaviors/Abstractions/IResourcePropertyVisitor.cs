@@ -34,13 +34,13 @@ public interface IResourcePropertyVisitor
     /// <param name="propertyName">The JSON property name (e.g., "name", "birthDate").</param>
     /// <param name="metadata">Schema metadata for this element (cardinality, type, etc.).</param>
     /// <param name="depth">Nesting depth (0 = root level, 1 = nested, etc.).</param>
-    /// <param name="context">Walking context (resource type, options, etc.).</param>
+    /// <param name="context">Visitor context (resource type, options, etc.).</param>
     /// <returns>Action to take: Include, Skip, Mutate.</returns>
     PropertyVisitResult VisitProperty(
         string propertyName,
         ElementMetadata? metadata,
         int depth,
-        WalkingContext context);
+        VisitorContext context);
 
     /// <summary>
     /// Called when a mandatory property is missing during walking.
@@ -49,13 +49,13 @@ public interface IResourcePropertyVisitor
     /// <param name="propertyName">The missing property name.</param>
     /// <param name="metadata">Schema metadata for this element.</param>
     /// <param name="depth">Nesting depth (0 = root level).</param>
-    /// <param name="context">Walking context.</param>
+    /// <param name="context">Visitor context.</param>
     /// <returns>Action to take: Skip (do nothing) or Inject (add property).</returns>
     PropertyVisitResult VisitMissingProperty(
         string propertyName,
         ElementMetadata metadata,
         int depth,
-        WalkingContext context);
+        VisitorContext context);
 }
 
 /// <summary>
@@ -201,12 +201,12 @@ public sealed class ElementMetadata
 }
 
 /// <summary>
-/// Context information for the walker.
+/// Context information for the visitor.
 /// </summary>
-public sealed class WalkingContext
+public sealed class VisitorContext
 {
     /// <summary>
-    /// The FHIR resource type being walked (e.g., "Patient").
+    /// The FHIR resource type being visited (e.g., "Patient").
     /// </summary>
     public required string ResourceType { get; init; }
 
@@ -216,7 +216,7 @@ public sealed class WalkingContext
     public required FhirSpecification FhirVersion { get; init; }
 
     /// <summary>
-    /// Maximum depth to walk (0 = root only, -1 = unlimited).
+    /// Maximum depth to visit (0 = root only, -1 = unlimited).
     /// </summary>
     public int MaxDepth { get; init; } = -1;
 

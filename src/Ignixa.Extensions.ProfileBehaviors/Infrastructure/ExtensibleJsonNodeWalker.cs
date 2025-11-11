@@ -69,7 +69,7 @@ public sealed class ExtensibleJsonNodeWalker
         EnsureArg.IsNotNull(resourceNode, nameof(resourceNode));
         EnsureArg.IsNotNullOrEmpty(resourceType, nameof(resourceType));
 
-        var context = new WalkingContext
+        var context = new VisitorContext
         {
             ResourceType = resourceType,
             FhirVersion = fhirVersion,
@@ -101,7 +101,7 @@ public sealed class ExtensibleJsonNodeWalker
     private void WalkObject(
         JsonObject obj,
         Dictionary<string, ElementMetadata> elementMetadata,
-        WalkingContext context,
+        VisitorContext context,
         int depth)
     {
         // Check depth limit
@@ -162,7 +162,7 @@ public sealed class ExtensibleJsonNodeWalker
     /// <summary>
     /// Recurses into nested objects/arrays if needed.
     /// </summary>
-    private void RecurseIfNeeded(JsonNode? node, WalkingContext context, int depth)
+    private void RecurseIfNeeded(JsonNode? node, VisitorContext context, int depth)
     {
         if (node == null)
         {
@@ -198,7 +198,7 @@ public sealed class ExtensibleJsonNodeWalker
     private void InjectMissingMandatoryElements(
         JsonObject obj,
         Dictionary<string, ElementMetadata> elementMetadata,
-        WalkingContext context)
+        VisitorContext context)
     {
         // Find all mandatory elements (IsRequired = true)
         var mandatoryElements = elementMetadata.Values.Where(e => e.IsRequired).ToList();

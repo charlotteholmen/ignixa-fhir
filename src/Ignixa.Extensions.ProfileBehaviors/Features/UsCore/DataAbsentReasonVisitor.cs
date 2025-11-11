@@ -67,7 +67,7 @@ public sealed class DataAbsentReasonVisitor : IResourcePropertyVisitor
         string propertyName,
         ElementMetadata? metadata,
         int depth,
-        WalkingContext context)
+        VisitorContext context)
     {
         // US Core visitor doesn't modify existing properties
         return PropertyVisitResult.Include();
@@ -80,7 +80,7 @@ public sealed class DataAbsentReasonVisitor : IResourcePropertyVisitor
         string propertyName,
         ElementMetadata metadata,
         int depth,
-        WalkingContext context)
+        VisitorContext context)
     {
         // Only inject at root level
         if (depth > 0)
