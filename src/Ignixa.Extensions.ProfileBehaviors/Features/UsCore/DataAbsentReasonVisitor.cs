@@ -23,7 +23,8 @@ namespace Ignixa.Extensions.ProfileBehaviors.Features.UsCore;
 /// <para>
 /// <strong>Implementation Strategy</strong>:
 /// - Only injects at root level (depth = 0) to avoid complexity
-/// - Skips elements with required binding (status fields)
+/// - Uses metadata (IsRequired, Types, element name patterns) to determine eligibility
+/// - Checks for coded elements with likely required bindings
 /// - Uses "unknown" code by default
 /// </para>
 /// </remarks>
@@ -32,13 +33,31 @@ public sealed class DataAbsentReasonVisitor : IResourcePropertyVisitor
     private const string DataAbsentReasonUrl = "http://hl7.org/fhir/StructureDefinition/data-absent-reason";
     private const string DefaultCode = "unknown";
 
-    // Elements that CANNOT have data-absent-reason (required binding without unknown code)
-    private static readonly HashSet<string> ExcludedElements = new(StringComparer.Ordinal)
+    // System/mandatory fields that should never have data-absent-reason
+    private static readonly HashSet<string> SystemFields = new(StringComparer.Ordinal)
     {
-        "status", // Most status fields have required binding
         "resourceType",
         "id",
         "meta"
+    };
+
+    // Element name patterns that typically indicate required bindings
+    // These cannot have data-absent-reason as the binding doesn't include "unknown"
+    private static readonly HashSet<string> RequiredBindingPatterns = new(StringComparer.Ordinal)
+    {
+        "status",           // Most status fields (Observation.status, Condition.clinicalStatus, etc.)
+        "clinicalStatus",   // Condition.clinicalStatus (required binding)
+        "verificationStatus", // AllergyIntolerance.verificationStatus
+        "intent",           // Request resources (MedicationRequest.intent)
+        "priority"          // Some priority fields have required bindings
+    };
+
+    // FHIR types that indicate coded elements (may have binding restrictions)
+    private static readonly HashSet<string> CodedTypes = new(StringComparer.Ordinal)
+    {
+        "code",
+        "Coding",
+        "CodeableConcept"
     };
 
     /// <summary>
@@ -69,23 +88,96 @@ public sealed class DataAbsentReasonVisitor : IResourcePropertyVisitor
             return PropertyVisitResult.Skip();
         }
 
-        // Skip excluded elements (required binding, system fields)
-        if (ExcludedElements.Contains(propertyName))
+        // Check if element is eligible for data-absent-reason injection
+        if (!CanHaveDataAbsentReason(propertyName, metadata))
         {
             return PropertyVisitResult.Skip();
         }
-
-        // Check if element is truly mandatory
-        if (!metadata.IsRequired)
-        {
-            return PropertyVisitResult.Skip();
-        }
-
-        // TODO: Check binding strength - skip if required binding
-        // For now, we skip known problematic elements via ExcludedElements
 
         // Inject data-absent-reason
         return PropertyVisitResult.Inject(() => CreateDataAbsentReasonElement(metadata));
+    }
+
+    /// <summary>
+    /// Determines if an element can have a data-absent-reason extension.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>FHIR Rules</strong>:
+    /// - Element must be mandatory (IsRequired = true)
+    /// - Element must not be a system field (resourceType, id, meta)
+    /// - Element must not have a required binding without "unknown" code
+    /// </para>
+    /// <para>
+    /// <strong>Binding Strength Detection</strong>:
+    /// Uses heuristics based on element name and type:
+    /// - Element name matches known required binding patterns (e.g., "status")
+    /// - Element is coded type with known required binding
+    /// </para>
+    /// <para>
+    /// <strong>Enhancement Opportunity</strong>:
+    /// When BindingStrength is populated in ElementMetadata, we can directly check:
+    /// - Required binding → Cannot have data-absent-reason
+    /// - Extensible/Preferred/Example → Can have data-absent-reason
+    /// </para>
+    /// </remarks>
+    private static bool CanHaveDataAbsentReason(string propertyName, ElementMetadata metadata)
+    {
+        // Must be mandatory
+        if (!metadata.IsRequired)
+        {
+            return false;
+        }
+
+        // Skip system fields
+        if (SystemFields.Contains(propertyName))
+        {
+            return false;
+        }
+
+        // Check if element name matches known required binding patterns
+        if (RequiredBindingPatterns.Contains(propertyName))
+        {
+            return false;
+        }
+
+        // Check for coded elements with likely required bindings using heuristics
+        if (IsCodedElement(metadata))
+        {
+            // Additional heuristics for coded elements
+            // If element name suggests a required binding, skip it
+            if (propertyName.EndsWith("Status", StringComparison.Ordinal) ||
+                propertyName.EndsWith("Intent", StringComparison.Ordinal) ||
+                propertyName.Equals("code", StringComparison.Ordinal))
+            {
+                // Conservative: Skip coded elements with these patterns
+                // They often have required bindings
+                return false;
+            }
+        }
+
+        // TODO: When BindingStrength is available in metadata, use it directly:
+        // if (metadata.BindingStrength == "required")
+        // {
+        //     return false;
+        // }
+
+        // Element is eligible for data-absent-reason
+        return true;
+    }
+
+    /// <summary>
+    /// Checks if an element is a coded element (code, Coding, CodeableConcept).
+    /// </summary>
+    private static bool IsCodedElement(ElementMetadata metadata)
+    {
+        if (metadata.Types == null || metadata.Types.Count == 0)
+        {
+            return false;
+        }
+
+        // Check if any type is a coded type
+        return metadata.Types.Any(t => CodedTypes.Contains(t));
     }
 
     /// <summary>
