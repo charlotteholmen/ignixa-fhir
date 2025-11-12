@@ -88,17 +88,17 @@ public sealed class ExtensibleJsonNodeVisitor
         var elementMetadata = schema.GetElements()
             .ToDictionary(e => e.ElementName, ElementMetadata.FromElementDefinition);
 
-        // Walk the resource
-        WalkObject(resourceNode.AsObject(), elementMetadata, context, depth: 0);
+        // Visit the resource
+        VisitObject(resourceNode.AsObject(), elementMetadata, context, depth: 0);
 
         // Check for missing mandatory elements and potentially inject them
         InjectMissingMandatoryElements(resourceNode.AsObject(), elementMetadata, context);
     }
 
     /// <summary>
-    /// Walks a JsonObject, processing existing properties.
+    /// Visits a JsonObject, processing existing properties.
     /// </summary>
-    private void WalkObject(
+    private void VisitObject(
         JsonObject obj,
         Dictionary<string, ElementMetadata> elementMetadata,
         VisitorContext context,
@@ -180,7 +180,7 @@ public sealed class ExtensibleJsonNodeVisitor
             // For nested objects, we don't have schema metadata (limitation for now)
             // Just recurse without metadata
             var emptyMetadata = new Dictionary<string, ElementMetadata>();
-            WalkObject(nestedObj, emptyMetadata, context, depth + 1);
+            VisitObject(nestedObj, emptyMetadata, context, depth + 1);
         }
         else if (node is JsonArray array)
         {

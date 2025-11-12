@@ -4,6 +4,7 @@
 // -------------------------------------------------------------------------------------------------
 
 using Ignixa.Abstractions;
+using Ignixa.Domain.Abstractions;
 using Ignixa.Extensions.ProfileBehaviors.Abstractions;
 using Ignixa.Extensions.ProfileBehaviors.Infrastructure;
 using Medino;
@@ -32,10 +33,10 @@ namespace Ignixa.Extensions.ProfileBehaviors.Features.UsCore;
 /// Only activates when US Core package is loaded for the tenant (detected via ProfileDetectionService).
 /// </para>
 /// </remarks>
-/// <typeparam name="TRequest">Request type (must have ResourceType, JsonNode properties).</typeparam>
+/// <typeparam name="TRequest">Request type (must implement IResourceCommand for resource access).</typeparam>
 /// <typeparam name="TResponse">Response type.</typeparam>
 public sealed class DataAbsentReasonBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
-    where TRequest : IRequest<TResponse>
+    where TRequest : IRequest<TResponse>, IResourceCommand
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly IProfileDetectionService _profileDetection;
@@ -66,13 +67,6 @@ public sealed class DataAbsentReasonBehavior<TRequest, TResponse> : IPipelineBeh
         RequestHandlerDelegate<TResponse> next,
         CancellationToken cancellationToken)
     {
-        // Only process requests that have ResourceType and JsonNode properties
-        // This is a generic behavior, but only applies to CreateOrUpdateResourceCommand
-        if (!HasRequiredProperties(request, out var resourceType, out var jsonNode))
-        {
-            return await next();
-        }
-
         // Get tenant context from HttpContext
         var httpContext = _httpContextAccessor.HttpContext;
         var tenantId = httpContext?.Items["TenantId"] as int?;
@@ -105,14 +99,14 @@ public sealed class DataAbsentReasonBehavior<TRequest, TResponse> : IPipelineBeh
             var visitor = new ExtensibleJsonNodeVisitor(schemaProvider, propertyVisitor);
 
             visitor.Visit(
-                jsonNode.MutableNode,
-                resourceType,
+                request.JsonNode.MutableNode,
+                request.ResourceType,
                 fhirVersion,
                 maxDepth: 0); // Only inject at root level
 
             _logger.LogDebug(
                 "Processed {ResourceType} for US Core data-absent-reason injection (tenant {TenantId})",
-                resourceType,
+                request.ResourceType,
                 tenantId.Value);
         }
         catch (Exception ex)
@@ -120,45 +114,12 @@ public sealed class DataAbsentReasonBehavior<TRequest, TResponse> : IPipelineBeh
             _logger.LogWarning(
                 ex,
                 "Failed to inject data-absent-reason for {ResourceType} - continuing to validation",
-                resourceType);
+                request.ResourceType);
             // Continue to next handler - validation will catch any issues
         }
 
         // Continue to next handler (ValidationBehavior should now pass)
         return await next();
-    }
-
-    /// <summary>
-    /// Checks if request has required properties (uses reflection to avoid tight coupling to CreateOrUpdateResourceCommand).
-    /// </summary>
-    private static bool HasRequiredProperties(
-        TRequest request,
-        out string resourceType,
-        out dynamic jsonNode)
-    {
-        resourceType = string.Empty;
-        jsonNode = null!;
-
-        var requestType = request.GetType();
-
-        // Check for ResourceType property
-        var resourceTypeProp = requestType.GetProperty("ResourceType");
-        if (resourceTypeProp?.PropertyType != typeof(string))
-        {
-            return false;
-        }
-
-        // Check for JsonNode property
-        var jsonNodeProp = requestType.GetProperty("JsonNode");
-        if (jsonNodeProp == null)
-        {
-            return false;
-        }
-
-        resourceType = (string)resourceTypeProp.GetValue(request)!;
-        jsonNode = jsonNodeProp.GetValue(request)!;
-
-        return !string.IsNullOrEmpty(resourceType) && jsonNode != null;
     }
 
     /// <summary>
