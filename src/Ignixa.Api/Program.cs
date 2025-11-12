@@ -497,8 +497,20 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .As<Ignixa.Application.Features.Metadata.Segments.ICapabilitySegment>()
         .SingleInstance();
 
+    containerBuilder.RegisterType<Ignixa.Application.Features.Metadata.Segments.OperationsSegment>()
+        .As<Ignixa.Application.Features.Metadata.Segments.ICapabilitySegment>()
+        .InstancePerLifetimeScope();
+
     // NOTE: CustomResourceTypeCapabilitySegment removed - custom resource types now included
     // via FhirVersionContext.GetSchemaProvider(version, tenantId) in ResourceInteractionCapabilitySegment
+
+    // PACKAGE FEATURES REGISTRATION
+    // Register package features that declare implementation of loaded FHIR packages
+    // Each feature declares what operations it implements from a package
+    // OperationsSegment uses these to conditionally expose operations in CapabilityStatement
+    containerBuilder.RegisterType<Ignixa.Application.Features.Export.BulkDataExportFeature>()
+        .As<Ignixa.Domain.Abstractions.IPackageFeature>()
+        .SingleInstance();
 
     // Register CapabilityStatementService (orchestrates segments + caching)
     containerBuilder.RegisterType<Ignixa.Application.Features.Metadata.CapabilityStatementService>()
@@ -601,6 +613,15 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .ConfigurePrimaryHttpMessageHandler(sp =>
             sp.GetRequiredService<Ignixa.PackageManagement.Infrastructure.ResilientHttpMessageHandler>());
 
+    // Register HttpClient for NpmPackageSearchService (searches packages.fhir.org catalog)
+    builder.Services.AddHttpClient<Ignixa.PackageManagement.Infrastructure.NpmPackageSearchService>()
+        .ConfigureHttpClient(client =>
+        {
+            client.Timeout = TimeSpan.FromMinutes(2);
+        })
+        .ConfigurePrimaryHttpMessageHandler(sp =>
+            sp.GetRequiredService<Ignixa.PackageManagement.Infrastructure.ResilientHttpMessageHandler>());
+
     // Register embedded packages (discoverable via IEmbeddedPackage)
     containerBuilder.RegisterType<SqlOnFhirEmbeddedPackage>()
         .As<Ignixa.Abstractions.IEmbeddedPackage>()
@@ -698,6 +719,32 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
             c.Resolve<IPackageResourceRepository>(),
             c.Resolve<ILogger<Ignixa.PackageManagement.Infrastructure.ImplementationGuideProvider>>()))
         .SingleInstance();
+
+    // Register NPM package search service for MCP tools (package discovery and name resolution)
+    containerBuilder.Register<Ignixa.PackageManagement.Abstractions.INpmPackageSearchService>(c =>
+    {
+        var configuration = c.Resolve<IConfiguration>();
+        var httpClient = c.Resolve<HttpClient>();
+        var loggerFactory = c.Resolve<ILoggerFactory>();
+
+        // Configure NPM package search options (same registry URL as package loader)
+        var npmOptions = new Ignixa.Abstractions.NpmPackageLoaderOptions
+        {
+            RegistryUrl = configuration.GetValue<string>(
+                "PackageManagement:NpmRegistry:RegistryUrl",
+                "https://packages.fhir.org"),
+            EnableRetryPolicies = configuration.GetValue<bool>(
+                "PackageManagement:NpmRegistry:EnableRetryPolicies",
+                true)
+        };
+
+        return new Ignixa.PackageManagement.Infrastructure.NpmPackageSearchService(
+            httpClient,
+            npmOptions,
+            loggerFactory.CreateLogger<Ignixa.PackageManagement.Infrastructure.NpmPackageSearchService>());
+    })
+    .As<Ignixa.PackageManagement.Abstractions.INpmPackageSearchService>()
+    .SingleInstance();
 
     // Register conformance resource caching
     containerBuilder.RegisterType<Ignixa.Domain.Caching.InMemoryConformanceCache>()
