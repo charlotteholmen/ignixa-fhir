@@ -4,6 +4,7 @@
 // -------------------------------------------------------------------------------------------------
 
 using Ignixa.Abstractions;
+using Ignixa.Domain.Abstractions;
 using Ignixa.Serialization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Primitives;
@@ -11,34 +12,37 @@ using Microsoft.Extensions.Primitives;
 namespace Ignixa.Extensions.ProfileBehaviors.Infrastructure;
 
 /// <summary>
-/// Utility for extracting FHIR version from HTTP headers.
-/// Checks Content-Type and Accept headers for fhirVersion parameter.
+/// Utility for extracting FHIR version from HTTP headers with tenant configuration fallback.
+/// Checks Content-Type and Accept headers for fhirVersion parameter, then falls back to tenant default.
 /// </summary>
 /// <remarks>
 /// Duplicated from Ignixa.Application.Infrastructure.FhirVersionExtractor to avoid circular dependency.
+/// Enhanced to respect tenant default FHIR version configuration.
 /// </remarks>
 internal static class FhirVersionExtractor
 {
     /// <summary>
-    /// Default FHIR version when not specified in headers.
+    /// Fallback FHIR version when tenant configuration is unavailable.
     /// </summary>
-    public const FhirSpecification DefaultFhirVersion = FhirSpecification.R4;
+    public const FhirSpecification FallbackFhirVersion = FhirSpecification.R4;
 
     /// <summary>
     /// Extracts FHIR version from Content-Type or Accept headers.
-    /// Returns DefaultFhirVersion (R4) if not specified.
+    /// Falls back to tenant's configured FHIR version, then to R4 if tenant config unavailable.
     /// </summary>
     /// <param name="context">The HTTP context containing the request headers.</param>
+    /// <param name="tenantConfigStore">Tenant configuration store for retrieving default FHIR version.</param>
+    /// <param name="tenantId">The tenant ID to look up configuration.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>FHIR version enum (e.g., FhirSpecification.R4).</returns>
-    public static FhirSpecification ExtractFhirVersion(HttpContext? context)
+    public static async Task<FhirSpecification> ExtractFhirVersionAsync(
+        HttpContext? context,
+        ITenantConfigurationStore tenantConfigStore,
+        int tenantId,
+        CancellationToken cancellationToken)
     {
-        if (context == null)
-        {
-            return DefaultFhirVersion;
-        }
-
-        // Check Content-Type header first (for PUT/POST requests)
-        if (context.Request.Headers.TryGetValue("Content-Type", out StringValues contentType))
+        // 1. Check Content-Type header first (for PUT/POST requests)
+        if (context?.Request.Headers.TryGetValue("Content-Type", out StringValues contentType) == true)
         {
             var version = ParseFhirVersionFromMediaType(contentType.ToString());
             if (version.HasValue)
@@ -47,8 +51,8 @@ internal static class FhirVersionExtractor
             }
         }
 
-        // Check Accept header (for GET requests and fallback)
-        if (context.Request.Headers.TryGetValue("Accept", out StringValues accept))
+        // 2. Check Accept header (for GET requests and fallback)
+        if (context?.Request.Headers.TryGetValue("Accept", out StringValues accept) == true)
         {
             var version = ParseFhirVersionFromMediaType(accept.ToString());
             if (version.HasValue)
@@ -57,8 +61,19 @@ internal static class FhirVersionExtractor
             }
         }
 
-        // Default to R4 if not specified
-        return DefaultFhirVersion;
+        // 3. Fall back to tenant's configured default FHIR version
+        var tenantConfig = await tenantConfigStore.GetTenantConfigurationAsync(tenantId, cancellationToken);
+        if (tenantConfig != null && !string.IsNullOrEmpty(tenantConfig.FhirVersion))
+        {
+            var tenantVersion = FhirSpecificationExtensions.FromVersionString(tenantConfig.FhirVersion);
+            if (tenantVersion != FhirSpecification.Unknown)
+            {
+                return tenantVersion;
+            }
+        }
+
+        // 4. Final fallback to R4
+        return FallbackFhirVersion;
     }
 
     /// <summary>

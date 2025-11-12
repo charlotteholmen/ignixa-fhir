@@ -41,6 +41,7 @@ public sealed class DataAbsentReasonBehavior<TRequest, TResponse> : IPipelineBeh
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly IProfileDetectionService _profileDetection;
     private readonly IFhirVersionContext _versionContext;
+    private readonly ITenantConfigurationStore _tenantConfigStore;
     private readonly ILogger<DataAbsentReasonBehavior<TRequest, TResponse>> _logger;
 
     /// <summary>
@@ -49,16 +50,19 @@ public sealed class DataAbsentReasonBehavior<TRequest, TResponse> : IPipelineBeh
     /// <param name="httpContextAccessor">HTTP context accessor.</param>
     /// <param name="profileDetection">Profile detection service.</param>
     /// <param name="versionContext">FHIR version context for schema providers.</param>
+    /// <param name="tenantConfigStore">Tenant configuration store for retrieving default FHIR version.</param>
     /// <param name="logger">Logger instance.</param>
     public DataAbsentReasonBehavior(
         IHttpContextAccessor httpContextAccessor,
         IProfileDetectionService profileDetection,
         IFhirVersionContext versionContext,
+        ITenantConfigurationStore tenantConfigStore,
         ILogger<DataAbsentReasonBehavior<TRequest, TResponse>> logger)
     {
         _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
         _profileDetection = profileDetection ?? throw new ArgumentNullException(nameof(profileDetection));
         _versionContext = versionContext ?? throw new ArgumentNullException(nameof(versionContext));
+        _tenantConfigStore = tenantConfigStore ?? throw new ArgumentNullException(nameof(tenantConfigStore));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -86,8 +90,12 @@ public sealed class DataAbsentReasonBehavior<TRequest, TResponse> : IPipelineBeh
             return await next();
         }
 
-        // Get FHIR version from context
-        var fhirVersion = FhirVersionExtractor.ExtractFhirVersion(httpContext);
+        // Get FHIR version from HTTP headers, falling back to tenant's default configuration
+        var fhirVersion = await FhirVersionExtractor.ExtractFhirVersionAsync(
+            httpContext,
+            _tenantConfigStore,
+            tenantId.Value,
+            cancellationToken);
 
         // Get schema provider for this FHIR version (base provider with element definitions)
         var schemaProvider = _versionContext.GetBaseSchemaProvider(fhirVersion);
