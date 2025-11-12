@@ -87,7 +87,7 @@ public sealed class DataAbsentReasonBehavior<TRequest, TResponse> : IPipelineBeh
         }
 
         // Get FHIR version from context
-        var fhirVersion = ExtractFhirVersion(httpContext);
+        var fhirVersion = FhirVersionExtractor.ExtractFhirVersion(httpContext);
 
         // Get schema provider for this FHIR version (base provider with element definitions)
         var schemaProvider = _versionContext.GetBaseSchemaProvider(fhirVersion);
@@ -120,16 +120,5 @@ public sealed class DataAbsentReasonBehavior<TRequest, TResponse> : IPipelineBeh
 
         // Continue to next handler (ValidationBehavior should now pass)
         return await next();
-    }
-
-    /// <summary>
-    /// Extracts FHIR version from HTTP context (defaults to R4).
-    /// </summary>
-    private static FhirSpecification ExtractFhirVersion(HttpContext? context)
-    {
-        // Use same logic as FhirVersionExtractor from Ignixa.Application
-        // For now, default to R4 - can be enhanced later
-        // TODO: Import FhirVersionExtractor or duplicate logic here
-        return FhirSpecification.R4;
     }
 }
