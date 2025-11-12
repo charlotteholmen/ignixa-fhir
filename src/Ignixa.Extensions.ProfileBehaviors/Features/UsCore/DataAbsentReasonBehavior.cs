@@ -98,13 +98,13 @@ public sealed class DataAbsentReasonBehavior<TRequest, TResponse> : IPipelineBeh
         // Get schema provider for this FHIR version (base provider with element definitions)
         var schemaProvider = _versionContext.GetBaseSchemaProvider(fhirVersion);
 
-        // Walk the resource JsonNode and inject data-absent-reason for missing mandatory elements
+        // Visit the resource JsonNode and inject data-absent-reason for missing mandatory elements
         try
         {
-            var visitor = new DataAbsentReasonVisitor();
-            var walker = new ExtensibleJsonNodeWalker(schemaProvider, visitor);
+            var propertyVisitor = new DataAbsentReasonVisitor();
+            var visitor = new ExtensibleJsonNodeVisitor(schemaProvider, propertyVisitor);
 
-            walker.Walk(
+            visitor.Visit(
                 jsonNode.MutableNode,
                 resourceType,
                 fhirVersion,

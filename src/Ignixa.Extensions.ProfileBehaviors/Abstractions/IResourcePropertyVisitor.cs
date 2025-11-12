@@ -9,7 +9,7 @@ using Ignixa.Specification;
 namespace Ignixa.Extensions.ProfileBehaviors.Abstractions;
 
 /// <summary>
-/// Visitor pattern for walking FHIR resource properties with schema metadata.
+/// Visitor pattern for visiting FHIR resource properties with schema metadata.
 /// Enables extensible transformations: filtering, mutation, injection, etc.
 /// </summary>
 /// <remarks>
@@ -21,15 +21,15 @@ namespace Ignixa.Extensions.ProfileBehaviors.Abstractions;
 /// </para>
 /// <para>
 /// <strong>Architecture</strong>:
-/// Two walker implementations:
+/// Two visitor implementations:
 /// - ExtensibleStreamingSerializer: For byte-level transformations (Utf8JsonReader/Writer)
-/// - ExtensibleJsonNodeWalker: For tree mutation (JsonNode.MutableNode)
+/// - ExtensibleJsonNodeVisitor: For tree mutation (JsonNode.MutableNode)
 /// </para>
 /// </remarks>
 public interface IResourcePropertyVisitor
 {
     /// <summary>
-    /// Called when a property is encountered during walking.
+    /// Called when a property is encountered during visitation.
     /// </summary>
     /// <param name="propertyName">The JSON property name (e.g., "name", "birthDate").</param>
     /// <param name="metadata">Schema metadata for this element (cardinality, type, etc.).</param>
@@ -43,7 +43,7 @@ public interface IResourcePropertyVisitor
         VisitorContext context);
 
     /// <summary>
-    /// Called when a mandatory property is missing during walking.
+    /// Called when a mandatory property is missing during visitation.
     /// Only invoked for elements with min > 0 that are not present in the resource.
     /// </summary>
     /// <param name="propertyName">The missing property name.</param>
@@ -59,7 +59,7 @@ public interface IResourcePropertyVisitor
 }
 
 /// <summary>
-/// Result of visiting a property: what action should the walker take?
+/// Result of visiting a property: what action should the visitor take?
 /// </summary>
 public sealed class PropertyVisitResult
 {
@@ -114,7 +114,7 @@ public sealed class PropertyVisitResult
 }
 
 /// <summary>
-/// Actions the walker can take for a property.
+/// Actions the visitor can take for a property.
 /// </summary>
 public enum PropertyAction
 {

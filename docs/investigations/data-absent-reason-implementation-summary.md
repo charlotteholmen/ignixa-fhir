@@ -17,7 +17,7 @@ src/Ignixa.Extensions.ProfileBehaviors/
 ├── Abstractions/
 │   └── IResourcePropertyVisitor.cs        # Shared visitor contract
 ├── Infrastructure/
-│   └── ExtensibleJsonNodeWalker.cs        # JsonNode tree walker with schema metadata
+│   └── ExtensibleJsonNodeVisitor.cs       # JsonNode tree visitor with schema metadata
 ├── Features/
 │   └── UsCore/
 │       ├── DataAbsentReasonBehavior.cs    # Medino pipeline behavior
@@ -32,7 +32,7 @@ src/Ignixa.Extensions.ProfileBehaviors/
 
 The implementation uses a **unified visitor pattern** that supports both:
 
-1. **JsonNode Tree Walking** (for input mutation) - Currently implemented
+1. **JsonNode Tree Visitation** (for input mutation) - Currently implemented
 2. **Streaming Byte Transformation** (for output filtering) - Future extension
 
 #### Visitor Interface
@@ -45,14 +45,14 @@ public interface IResourcePropertyVisitor
         string propertyName,
         ElementMetadata? metadata,
         int depth,
-        WalkingContext context);
+        VisitorContext context);
 
     // Called for missing mandatory properties
     PropertyVisitResult VisitMissingProperty(
         string propertyName,
         ElementMetadata metadata,
         int depth,
-        WalkingContext context);
+        VisitorContext context);
 }
 ```
 
@@ -68,21 +68,21 @@ public enum PropertyAction
 }
 ```
 
-### Walker Implementation
+### Visitor Implementation
 
-**ExtensibleJsonNodeWalker** - Walks a JsonNode tree with schema metadata:
+**ExtensibleJsonNodeVisitor** - Visits a JsonNode tree with schema metadata:
 
 ```csharp
-var walker = new ExtensibleJsonNodeWalker(schemaProvider, visitor);
-walker.Walk(resourceNode, "Patient", FhirSpecification.R4, maxDepth: 0);
+var visitor = new ExtensibleJsonNodeVisitor(schemaProvider, propertyVisitor);
+visitor.Visit(resourceNode, "Patient", FhirSpecification.R4, maxDepth: 0);
 ```
 
-**Two-phase walking**:
-1. Walk existing properties → `VisitProperty()`
+**Two-phase visitation**:
+1. Visit existing properties → `VisitProperty()`
 2. Detect missing mandatory properties → `VisitMissingProperty()`
 
 **Benefits**:
-- ✅ Separates infrastructure (walker) from logic (visitor)
+- ✅ Separates infrastructure (visitor) from logic (property visitor)
 - ✅ Reusable for multiple profile behaviors
 - ✅ Testable in isolation
 - ✅ Schema-aware (knows IsRequired, IsCollection, etc.)
@@ -164,10 +164,10 @@ public class DataAbsentReasonBehavior<TRequest, TResponse> : IPipelineBehavior<T
         var fhirVersion = ExtractFhirVersion(httpContext);
         var schemaProvider = _versionContext.GetBaseSchemaProvider(fhirVersion);
 
-        // 4. Walk and inject
-        var visitor = new DataAbsentReasonVisitor();
-        var walker = new ExtensibleJsonNodeWalker(schemaProvider, visitor);
-        walker.Walk(jsonNode.MutableNode, resourceType, fhirVersion, maxDepth: 0);
+        // 4. Visit and inject
+        var propertyVisitor = new DataAbsentReasonVisitor();
+        var visitor = new ExtensibleJsonNodeVisitor(schemaProvider, propertyVisitor);
+        visitor.Visit(jsonNode.MutableNode, resourceType, fhirVersion, maxDepth: 0);
 
         // 5. Continue to validation (which now passes)
         return await next();
@@ -328,15 +328,15 @@ public void GivenMissingMandatoryElement_WhenVisiting_ThenInjectsDataAbsentReaso
     // Verify structure
 }
 
-// Test walker
+// Test visitor
 [Fact]
-public void GivenResourceWithMissingName_WhenWalking_ThenInjectsExtension()
+public void GivenResourceWithMissingName_WhenVisiting_ThenInjectsExtension()
 {
     var resourceNode = JsonNode.Parse("""{"resourceType":"Patient","id":"123"}""");
-    var visitor = new DataAbsentReasonVisitor();
-    var walker = new ExtensibleJsonNodeWalker(schemaProvider, visitor);
+    var propertyVisitor = new DataAbsentReasonVisitor();
+    var visitor = new ExtensibleJsonNodeVisitor(schemaProvider, propertyVisitor);
 
-    walker.Walk(resourceNode, "Patient", FhirSpecification.R4, maxDepth: 0);
+    visitor.Visit(resourceNode, "Patient", FhirSpecification.R4, maxDepth: 0);
 
     Assert.Contains("name", resourceNode.AsObject());
     Assert.Contains("extension", resourceNode["name"][0].AsObject());
@@ -443,7 +443,7 @@ The extensible visitor pattern provides a **scalable architecture** for:
 - `src/Ignixa.Extensions.ProfileBehaviors/Ignixa.Extensions.ProfileBehaviors.csproj`
 - `src/Ignixa.Extensions.ProfileBehaviors/README.md`
 - `src/Ignixa.Extensions.ProfileBehaviors/Abstractions/IResourcePropertyVisitor.cs`
-- `src/Ignixa.Extensions.ProfileBehaviors/Infrastructure/ExtensibleJsonNodeWalker.cs`
+- `src/Ignixa.Extensions.ProfileBehaviors/Infrastructure/ExtensibleJsonNodeVisitor.cs`
 - `src/Ignixa.Extensions.ProfileBehaviors/Features/UsCore/DataAbsentReasonVisitor.cs`
 - `src/Ignixa.Extensions.ProfileBehaviors/Features/UsCore/DataAbsentReasonBehavior.cs`
 - `src/Ignixa.Extensions.ProfileBehaviors/Features/UsCore/ProfileDetectionService.cs`

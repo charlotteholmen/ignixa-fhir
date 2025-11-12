@@ -18,12 +18,12 @@ This library provides infrastructure for implementing profile-specific transform
 ```
 Ignixa.Extensions.ProfileBehaviors/
 ├── Abstractions/
-│   ├── IResourcePropertyVisitor.cs       # Visitor interface for property walking
+│   ├── IResourcePropertyVisitor.cs       # Visitor interface for property visitation
 │   ├── PropertyVisitResult.cs            # Result actions (Include/Skip/Mutate/Inject)
 │   ├── ElementMetadata.cs                # Lightweight element metadata wrapper
-│   └── WalkingContext.cs                 # Context for walking operations
+│   └── VisitorContext.cs                 # Context for visitor operations
 ├── Infrastructure/
-│   └── ExtensibleJsonNodeWalker.cs       # Walks JsonNode trees with schema metadata
+│   └── ExtensibleJsonNodeVisitor.cs      # Visits JsonNode trees with schema metadata
 └── Features/
     └── UsCore/
         ├── DataAbsentReasonBehavior.cs   # Medino behavior for US Core compliance
@@ -33,12 +33,12 @@ Ignixa.Extensions.ProfileBehaviors/
 
 ### Design Pattern
 
-The library uses a **visitor pattern** to walk FHIR resources:
+The library uses a **visitor pattern** to visit FHIR resources:
 
-1. **ExtensibleJsonNodeWalker**: Infrastructure for walking JsonNode trees
+1. **ExtensibleJsonNodeVisitor**: Infrastructure for visiting JsonNode trees
    - Takes an `IStructureDefinitionSummaryProvider` for schema metadata
    - Takes an `IResourcePropertyVisitor` for transformation logic
-   - Walks existing properties → calls `VisitProperty()`
+   - Visits existing properties → calls `VisitProperty()`
    - Detects missing mandatory properties → calls `VisitMissingProperty()`
 
 2. **IResourcePropertyVisitor**: Interface for custom transformations
@@ -80,7 +80,7 @@ Example:
 `DataAbsentReasonBehavior` automatically injects these extensions:
 
 1. **Detects** when US Core is loaded (via `ProfileDetectionService`)
-2. **Walks** the resource JsonNode with `ExtensibleJsonNodeWalker`
+2. **Visits** the resource JsonNode with `ExtensibleJsonNodeVisitor`
 3. **Injects** data-absent-reason for missing mandatory elements
 4. **Continues** to validation (which now passes)
 

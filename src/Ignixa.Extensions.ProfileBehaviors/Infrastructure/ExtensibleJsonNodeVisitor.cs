@@ -11,7 +11,7 @@ using Ignixa.Extensions.ProfileBehaviors.Abstractions;
 namespace Ignixa.Extensions.ProfileBehaviors.Infrastructure;
 
 /// <summary>
-/// Walks a JsonNode tree representing a FHIR resource, invoking visitor callbacks for each property.
+/// Visits a JsonNode tree representing a FHIR resource, invoking visitor callbacks for each property.
 /// Enables extensible transformations: filtering, mutation, injection of missing elements.
 /// </summary>
 /// <remarks>
@@ -20,29 +20,29 @@ namespace Ignixa.Extensions.ProfileBehaviors.Infrastructure;
 /// Useful for pre-processing resources before validation (e.g., injecting data-absent-reason).
 /// </para>
 /// <para>
-/// <strong>Two-Phase Walking</strong>:
-/// 1. Walk existing properties → VisitProperty()
+/// <strong>Two-Phase Visitation</strong>:
+/// 1. Visit existing properties → VisitProperty()
 /// 2. Detect missing mandatory properties → VisitMissingProperty()
 /// </para>
 /// <para>
 /// <strong>Example Usage</strong>:
 /// <code>
-/// var walker = new ExtensibleJsonNodeWalker(schemaProvider, visitor);
-/// walker.Walk(resourceNode, "Patient", FhirSpecification.R4);
+/// var visitor = new ExtensibleJsonNodeVisitor(schemaProvider, propertyVisitor);
+/// visitor.Visit(resourceNode, "Patient", FhirSpecification.R4);
 /// </code>
 /// </para>
 /// </remarks>
-public sealed class ExtensibleJsonNodeWalker
+public sealed class ExtensibleJsonNodeVisitor
 {
     private readonly IStructureDefinitionSummaryProvider _schemaProvider;
     private readonly IResourcePropertyVisitor _visitor;
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="ExtensibleJsonNodeWalker"/> class.
+    /// Initializes a new instance of the <see cref="ExtensibleJsonNodeVisitor"/> class.
     /// </summary>
     /// <param name="schemaProvider">Provider for FHIR structure definitions.</param>
     /// <param name="visitor">Visitor to invoke for each property.</param>
-    public ExtensibleJsonNodeWalker(
+    public ExtensibleJsonNodeVisitor(
         IStructureDefinitionSummaryProvider schemaProvider,
         IResourcePropertyVisitor visitor)
     {
@@ -51,15 +51,15 @@ public sealed class ExtensibleJsonNodeWalker
     }
 
     /// <summary>
-    /// Walks a resource JsonNode, invoking visitor for each property.
+    /// Visits a resource JsonNode, invoking visitor for each property.
     /// Mutates the JsonNode in-place based on visitor results (Include/Skip/Mutate/Inject).
     /// </summary>
     /// <param name="resourceNode">The root resource JsonNode.</param>
     /// <param name="resourceType">The FHIR resource type (e.g., "Patient").</param>
     /// <param name="fhirVersion">The FHIR version.</param>
-    /// <param name="maxDepth">Maximum depth to walk (0 = root only, -1 = unlimited).</param>
+    /// <param name="maxDepth">Maximum depth to visit (0 = root only, -1 = unlimited).</param>
     /// <param name="options">Custom options for visitor.</param>
-    public void Walk(
+    public void Visit(
         JsonNode resourceNode,
         string resourceType,
         FhirSpecification fhirVersion,
