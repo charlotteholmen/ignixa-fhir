@@ -52,6 +52,11 @@ builder.Services.AddMemoryCache();
 // Register RecyclableMemoryStreamManager as singleton
 builder.Services.AddSingleton<RecyclableMemoryStreamManager>();
 
+// Register MultiTenantSearchIndexCache as singleton (multi-tenant cache consolidation)
+// Provides per-tenant cache instances for search index reference data
+// Uses on-demand caching for large datasets (Systems, QuantityCodes) to prevent memory exhaustion
+builder.Services.AddSingleton<Ignixa.DataLayer.SqlEntityFramework.Indexing.MultiTenantSearchIndexCache>();
+
 // Configure ForwardedHeaders for Docker/container deployments (supports reverse proxies like Azure App Service)
 // Enables X-Forwarded-Host and X-Forwarded-Prefix headers for correct URL generation behind proxies
 if (string.Equals(builder.Configuration["ASPNETCORE_FORWARDEDHEADERS_ENABLED"], "true", StringComparison.OrdinalIgnoreCase))
@@ -91,6 +96,11 @@ builder.Services.Configure<SearchParameterResolutionOptions>(
 // Register IHttpContextFactory and IHttpContextAccessor for bundle entry pipeline routing
 builder.Services.AddSingleton<IHttpContextFactory, DefaultHttpContextFactory>();
 builder.Services.AddHttpContextAccessor();
+
+// Register IFhirRequestContextAccessor for centralized FHIR request context (Phase 1 - IFhirRequestContext pattern)
+// Replaces scattered HttpContext.Items["TenantId"] extractions with strongly-typed context
+// Uses AsyncLocal for thread-safe bundle processing with isolated contexts per entry
+builder.Services.AddScoped<IFhirRequestContextAccessor, FhirRequestContextAccessor>();
 
 // Register IndexLoaderService as hosted service
 builder.Services.AddHostedService<IndexLoaderService>();
@@ -157,9 +167,11 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .SingleInstance();
 
     // SqlEntityFrameworkRepositoryFactory implements both interfaces, register with both names
+    // Also register as itself for handlers that need direct access (e.g., PackageLoadedSearchParameterSyncHandler)
     containerBuilder.RegisterType<SqlEntityFrameworkRepositoryFactory>()
         .Named<IFhirRepositoryFactory>("SqlEf")
         .Named<ISearchServiceFactory>("SqlEf")
+        .AsSelf()
         .SingleInstance();
 
     // Register composite factories as main interfaces
@@ -778,9 +790,16 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
             debounceDelay: TimeSpan.FromSeconds(1)))
         .SingleInstance();
 
-    // Register PackageLoaded event handler
+    // Register PackageLoaded event handlers
     containerBuilder.RegisterType<Ignixa.Application.Events.Package.PackageLoadedNotificationHandler>()
         .As<INotificationHandler<Ignixa.Application.Events.Package.IPackageLoaded>>()
+        .InstancePerDependency();
+
+    // Register PackageLoadedSearchParameterSyncHandler for syncing search parameters to database
+    // CRITICAL: Without this, US Core and other package search parameters won't be in the database
+    // and bundle processing will fail with "SearchParam URL not found" warnings
+    containerBuilder.RegisterType<Ignixa.DataLayer.SqlEntityFramework.Events.PackageLoadedSearchParameterSyncHandler>()
+        .As<INotificationHandler<Ignixa.Application.Events.Package.PackageLoadedEvent>>()
         .InstancePerDependency();
 
     // Register bundle processing services
@@ -833,6 +852,37 @@ if (string.Equals(builder.Configuration["ASPNETCORE_FORWARDEDHEADERS_ENABLED"], 
 // Extracts tenantId from route, validates tenant exists and is active
 // Stores tenant context in HttpContext.Items for downstream handlers
 app.UseMiddleware<TenantResolutionMiddleware>();
+
+// FHIR REQUEST CONTEXT MIDDLEWARE (Phase 1 - IFhirRequestContext pattern)
+// Creates centralized IFhirRequestContext with tenant, FHIR version, resource type, and bundle state
+// Runs AFTER TenantResolutionMiddleware to access tenant information from HttpContext.Items
+// Provides strongly-typed context accessible via IFhirRequestContextAccessor throughout request pipeline
+app.UseMiddleware<FhirRequestContextMiddleware>();
+
+// DEVELOPMENT VALIDATION: Detect middleware ordering issues
+// Ensures TenantResolutionMiddleware runs before FhirRequestContextMiddleware
+// Catches configuration errors early in dev where TenantId would be 0/null
+if (app.Environment.IsDevelopment())
+{
+    app.Use(async (context, next) =>
+    {
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        var fhirContextAccessor = context.RequestServices.GetRequiredService<IFhirRequestContextAccessor>();
+
+        if (context.GetEndpoint() != null &&
+            !context.Items.ContainsKey("TenantId") &&
+            fhirContextAccessor.RequestContext?.TenantId == 0)
+        {
+            logger.LogWarning(
+                "TenantResolutionMiddleware may not have run before FhirRequestContextMiddleware. " +
+                "Route: {Path}, TenantId in context: {TenantId}",
+                context.Request.Path,
+                fhirContextAccessor.RequestContext?.TenantId);
+        }
+
+        await next();
+    });
+}
 
 // CAPABILITY ENFORCEMENT (Phase 3 - ADR-2506)
 // Now handled by CapabilityEnforcementBehavior (Medino pipeline behavior)

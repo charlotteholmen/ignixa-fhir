@@ -24,22 +24,26 @@ namespace Ignixa.Application.Features.Bundle;
 /// <summary>
 /// Executes a single bundle entry by routing through ASP.NET Core pipeline using mini HttpContext objects.
 /// This enables bundle entries to automatically access all FHIR endpoints without manual switch-statement routing.
+/// Creates isolated IFhirRequestContext per entry for thread-safe concurrent processing.
 /// </summary>
 public class BundleEntryExecutor
 {
     private readonly IPipelineExecutor _pipelineExecutor;
     private readonly IHttpContextAccessor _httpContextAccessor;
+    private readonly IFhirRequestContextAccessor _fhirContextAccessor;
     private readonly RecyclableMemoryStreamManager _memoryStreamManager;
     private readonly ILogger<BundleEntryExecutor> _logger;
 
     public BundleEntryExecutor(
         IPipelineExecutor pipelineExecutor,
         IHttpContextAccessor httpContextAccessor,
+        IFhirRequestContextAccessor fhirContextAccessor,
         RecyclableMemoryStreamManager memoryStreamManager,
         ILogger<BundleEntryExecutor> logger)
     {
         _pipelineExecutor = EnsureArg.IsNotNull(pipelineExecutor, nameof(pipelineExecutor));
         _httpContextAccessor = EnsureArg.IsNotNull(httpContextAccessor, nameof(httpContextAccessor));
+        _fhirContextAccessor = EnsureArg.IsNotNull(fhirContextAccessor, nameof(fhirContextAccessor));
         _memoryStreamManager = EnsureArg.IsNotNull(memoryStreamManager, nameof(memoryStreamManager));
         _logger = EnsureArg.IsNotNull(logger, nameof(logger));
     }
@@ -69,6 +73,51 @@ public class BundleEntryExecutor
 
         try
         {
+            // Get parent FHIR request context and clone it for this bundle entry
+            // This creates an isolated context for thread-safe concurrent processing
+            var parentContext = _fhirContextAccessor.RequestContext
+                ?? throw new InvalidOperationException("No parent FHIR request context available for bundle entry execution");
+
+            // Create ISOLATED child context for this bundle entry
+            // AsyncLocal ensures concurrent entries don't interfere with each other
+            var entryContext = new FhirRequestContext
+            {
+                // ===== Inherited from Parent =====
+                TenantId = parentContext.TenantId,
+                TenantConfiguration = parentContext.TenantConfiguration,
+                FhirVersion = parentContext.FhirVersion,
+                VersionContext = parentContext.VersionContext,
+                DeferredWriteCoordinator = deferredWriteCoordinator ?? parentContext.DeferredWriteCoordinator,
+
+                // ===== Bundle-Specific (Shared) =====
+                ExecutingBatchOrTransaction = true,
+                IsBackgroundTask = parentContext.IsBackgroundTask,
+
+                // ===== Entry-Specific (Unique Per Entry) =====
+                BundleEntryIndex = entry.Index,
+                ResourceType = ExtractResourceTypeFromUrl(entry.RequestUrl),
+                BundleAssignedResourceId = entry.AssignedResourceId
+
+                // Note: BundleIssues and Properties are read-only get-only properties
+                // They are auto-initialized in FhirRequestContext constructor
+                // We'll copy parent properties after initialization
+            };
+
+            // Copy parent Properties to child context (shallow copy for isolation)
+            foreach (var kvp in parentContext.Properties)
+            {
+                entryContext.Properties[kvp.Key] = kvp.Value;
+            }
+
+            // Set isolated context for this async execution context (AsyncLocal)
+            _fhirContextAccessor.RequestContext = entryContext;
+
+            _logger.LogDebug(
+                "Created isolated context for bundle entry {EntryIndex}: ResourceType={ResourceType}, TenantId={TenantId}",
+                entry.Index,
+                entryContext.ResourceType,
+                entryContext.TenantId);
+
             // Create mini HttpContext for bundle entry
             var httpContext = new DefaultHttpContext();
             var responseBodyStream = _memoryStreamManager.GetStream("bundle-entry-response");
@@ -79,32 +128,8 @@ public class BundleEntryExecutor
             {
                 httpContext.RequestServices = _httpContextAccessor.HttpContext.RequestServices;
 
-                // CRITICAL: Propagate tenant context from parent HttpContext to bundle entry HttpContext
-                // This ensures DeferredWriteCoordinator can extract tenant context for partition routing
-                // Multi-Tenancy (ADR-2523 Phase 20)
-                if (_httpContextAccessor.HttpContext.Items.TryGetValue("TenantId", out var tenantId))
-                {
-                    httpContext.Items["TenantId"] = tenantId;
-                    _logger.LogDebug(
-                        "Propagated tenant {TenantId} to bundle entry {Index}",
-                        tenantId,
-                        entry.Index);
-                }
-
-                if (_httpContextAccessor.HttpContext.Items.TryGetValue("TenantConfiguration", out var tenantConfig))
-                {
-                    httpContext.Items["TenantConfiguration"] = tenantConfig;
-                }
-
-                // Propagate validation tier override from parent HttpContext (for Prefer header)
-                if (_httpContextAccessor.HttpContext.Items.TryGetValue("ValidationTierOverride", out var validationOverride))
-                {
-                    httpContext.Items["ValidationTierOverride"] = validationOverride;
-                    _logger.LogDebug(
-                        "Propagated validation tier override to bundle entry {Index}: {ValidationTier}",
-                        entry.Index,
-                        validationOverride);
-                }
+                // NOTE: Tenant context propagation now handled by IFhirRequestContext (AsyncLocal storage)
+                // No need to copy HttpContext.Items - the isolated context is already set above (lines 76-106)
             }
 
             // Set request properties
@@ -145,33 +170,11 @@ public class BundleEntryExecutor
                 httpContext.Request.ContentType = "application/fhir+json";
             }
 
-            // Pass coordinator via HttpContext.Items for deferred writes
-            // This enables handlers to detect bundle context and queue writes appropriately
-            if (deferredWriteCoordinator != null)
-            {
-                httpContext.Items["DeferredWriteCoordinator"] = deferredWriteCoordinator;
-
-                // Use AsyncLocal instead of HttpContext.Items to avoid race conditions
-                // when processing bundle entries concurrently
-                httpContext.SetBundleEntryIndex(entry.Index);
-
-                _logger.LogWarning(
-                    "EXECUTOR: Set entry index {EntryIndex} in AsyncLocal for {Verb} {Url}",
-                    entry.Index,
-                    entry.HttpVerb,
-                    entry.RequestUrl);
-            }
-
-            // Pass assigned resource ID for POST operations with urn:uuid fullUrls
-            // This ensures conditional creates use the pre-assigned ID for reference resolution
-            if (!string.IsNullOrWhiteSpace(entry.AssignedResourceId))
-            {
-                httpContext.Items["BundleAssignedResourceId"] = entry.AssignedResourceId;
-                _logger.LogDebug(
-                    "Passed assigned resource ID to entry {Index}: {AssignedId}",
-                    entry.Index,
-                    entry.AssignedResourceId);
-            }
+            // NOTE: Bundle processing context is now fully managed by IFhirRequestContext (AsyncLocal)
+            // No need to set HttpContext.Items - all context is already set in entryContext above (lines 83-104)
+            // - DeferredWriteCoordinator: Set in entryContext.DeferredWriteCoordinator
+            // - BundleAssignedResourceId: Set in entryContext.BundleAssignedResourceId
+            // - BundleEntryIndex: Set in entryContext.BundleEntryIndex
 
             // Execute through ASP.NET Core pipeline
             // This automatically routes to correct endpoint handler (FhirEndpoints)
@@ -248,6 +251,28 @@ public class BundleEntryExecutor
                 LastModified = null
             };
         }
+    }
+
+    // CA1861: Prefer static readonly for repeated array arguments
+    private static readonly char[] UrlSeparators = { '/', '?' };
+
+    /// <summary>
+    /// Extracts resource type from bundle entry's request URL.
+    /// Examples: "Patient" from "Patient/123", "Observation" from "Observation?subject=Patient/123"
+    /// </summary>
+    private static string? ExtractResourceTypeFromUrl(string requestUrl)
+    {
+        if (string.IsNullOrWhiteSpace(requestUrl))
+        {
+            return null;
+        }
+
+        // Remove leading slash and split by / and ?
+        var url = requestUrl.TrimStart('/');
+        var segments = url.Split(UrlSeparators, StringSplitOptions.RemoveEmptyEntries);
+
+        // First segment is the resource type (e.g., "Patient/123" → "Patient")
+        return segments.Length > 0 ? segments[0] : null;
     }
 
     /// <summary>

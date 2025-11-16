@@ -87,12 +87,15 @@ public class SearchParameterConflictResolver
         }
 
         // Try explicit priority first
+        SearchParameterInfo winnerParameter;
         if (_options.PackagePriorityOrder != null && _options.PackagePriorityOrder.Count > 0)
         {
             var winner = ResolveByPriority(enrichedCandidates, code, resourceType);
             if (winner != null)
             {
-                return winner.Parameter;
+                winnerParameter = winner.Parameter;
+                PopulateOverridesUrl(winnerParameter, enrichedCandidates);
+                return winnerParameter;
             }
         }
 
@@ -100,7 +103,9 @@ public class SearchParameterConflictResolver
         if (_options.UseSemanticVersioning)
         {
             var winner = ResolveBySemanticVersion(enrichedCandidates, code, resourceType);
-            return winner.Parameter;
+            winnerParameter = winner.Parameter;
+            PopulateOverridesUrl(winnerParameter, enrichedCandidates);
+            return winnerParameter;
         }
 
         // Last resort: first in list (should never happen with proper config)
@@ -109,7 +114,9 @@ public class SearchParameterConflictResolver
             code,
             resourceType);
 
-        return candidates[0];
+        winnerParameter = candidates[0];
+        PopulateOverridesUrl(winnerParameter, enrichedCandidates);
+        return winnerParameter;
     }
 
     /// <summary>
@@ -142,16 +149,17 @@ public class SearchParameterConflictResolver
         if (_options.LogConflicts && candidates.Count > 1)
         {
             var conflictInfo = string.Join(", ", candidates.Select(c =>
-                $"{c.Metadata.PackageId}#{c.Metadata.PackageVersion} (rank {_options.GetPriorityRank(c.Metadata.PackageId)})"));
+                $"{c.Metadata.PackageId}#{c.Metadata.PackageVersion} (URL: {c.Parameter.Url}, rank {_options.GetPriorityRank(c.Metadata.PackageId)})"));
 
             _logger.LogWarning(
                 "SearchParameter '{Code}' for {ResourceType}: Conflict between [{Conflicts}]. " +
-                "Winner: {WinnerPackage}#{WinnerVersion} (priority rank {WinnerRank})",
+                "Winner: {WinnerPackage}#{WinnerVersion} (URL: {WinnerUrl}, priority rank {WinnerRank}, resolution: explicit priority)",
                 code,
                 resourceType,
                 conflictInfo,
                 winner.Candidate.Metadata.PackageId,
                 winner.Candidate.Metadata.PackageVersion,
+                winner.Candidate.Parameter.Url,
                 winner.Rank);
         }
 
@@ -183,16 +191,18 @@ public class SearchParameterConflictResolver
         if (_options.LogConflicts && candidates.Count > 1)
         {
             var conflictInfo = string.Join(", ", sorted.Select(s =>
-                $"{s.Candidate.Metadata.PackageId}#{s.Candidate.Metadata.PackageVersion}"));
+                $"{s.Candidate.Metadata.PackageId}#{s.Candidate.Metadata.PackageVersion} (URL: {s.Candidate.Parameter.Url})"));
 
             _logger.LogWarning(
                 "SearchParameter '{Code}' for {ResourceType}: Conflict between [{Conflicts}]. " +
-                "Winner: {WinnerPackage}#{WinnerVersion} (semantic version resolution)",
+                "Winner: {WinnerPackage}#{WinnerVersion} (URL: {WinnerUrl}, resolution: semantic version {WinnerSemanticVersion})",
                 code,
                 resourceType,
                 conflictInfo,
                 winner.Candidate.Metadata.PackageId,
-                winner.Candidate.Metadata.PackageVersion);
+                winner.Candidate.Metadata.PackageVersion,
+                winner.Candidate.Parameter.Url,
+                winner.Version ?? new SemanticVersion(0, 0, 0));
         }
 
         return winner.Candidate;
@@ -287,6 +297,49 @@ public class SearchParameterConflictResolver
 
             // Note: We continue anyway to avoid breaking resolution, but this is a serious bug indicator
         }
+    }
+
+    /// <summary>
+    /// Populates the OverridesUrl property on the winner if it overrides a base FHIR parameter.
+    /// This allows database syncing to alias package parameters to base parameter IDs.
+    /// </summary>
+    /// <param name="winner">The winning search parameter after conflict resolution.</param>
+    /// <param name="allCandidates">All candidates that were considered (including the winner).</param>
+    private void PopulateOverridesUrl(
+        SearchParameterInfo winner,
+        List<EnrichedCandidate> allCandidates)
+    {
+        if (winner == null || allCandidates.Count <= 1)
+        {
+            return;
+        }
+
+        // Find base FHIR parameter(s) among losers
+        var baseParameter = allCandidates
+            .Where(c => c.Parameter != winner)  // Exclude the winner itself
+            .Where(c => IsBaseFhirParameter(c.Metadata))
+            .Select(c => c.Parameter)
+            .FirstOrDefault();
+
+        if (baseParameter != null && baseParameter.Url != null && winner.Url != baseParameter.Url)
+        {
+            winner.OverridesUrl = baseParameter.Url;
+            _logger.LogInformation(
+                "SearchParameter {WinnerUrl} overrides base parameter {BaseUrl} (code: {Code})",
+                winner.Url,
+                baseParameter.Url,
+                winner.Code);
+        }
+    }
+
+    /// <summary>
+    /// Checks if a package is a base FHIR specification package (not an IG).
+    /// </summary>
+    private static bool IsBaseFhirParameter(PackageMetadata metadata)
+    {
+        // Base FHIR packages follow pattern: hl7.fhir.r{version}.core
+        return metadata.PackageId.StartsWith("hl7.fhir.r", StringComparison.OrdinalIgnoreCase) &&
+               metadata.PackageId.EndsWith(".core", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
