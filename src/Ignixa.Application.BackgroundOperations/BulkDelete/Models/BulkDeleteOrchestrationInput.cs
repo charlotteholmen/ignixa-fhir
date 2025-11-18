@@ -7,7 +7,7 @@ namespace Ignixa.Application.BackgroundOperations.BulkDelete.Models;
 
 /// <summary>
 /// Orchestration input for bulk delete operation.
-/// Initiates the entire bulk delete job.
+/// Initiates the entire bulk delete job with range-based partitioning.
 /// </summary>
 public record BulkDeleteOrchestrationInput(
     /// <summary>
@@ -53,4 +53,12 @@ public record BulkDeleteOrchestrationInput(
     /// <summary>
     /// Targets resources unreferenced by specified resource types.
     /// </summary>
-    IReadOnlyCollection<string>? NotReferencedBy = null);
+    IReadOnlyCollection<string>? NotReferencedBy = null,
+
+    /// <summary>
+    /// Optional: Number of surrogate ID ranges per resource type for parallel processing.
+    /// Default is 4 (conservative for delete operations). Valid range: 1-16.
+    /// More ranges = more parallelism but higher DurableTask overhead.
+    /// Example: 4 types × 4 ranges = 16 concurrent workers.
+    /// </summary>
+    int? NumberOfRangesPerType = null);

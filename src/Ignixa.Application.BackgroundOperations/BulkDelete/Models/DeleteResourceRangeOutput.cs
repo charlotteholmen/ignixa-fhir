@@ -6,36 +6,36 @@
 namespace Ignixa.Application.BackgroundOperations.BulkDelete.Models;
 
 /// <summary>
-/// Input for DeleteResourceBatchActivity.
-/// Specifies a batch of resources to delete.
+/// Output from DeleteResourceRangeActivity.
+/// Reports the result of deleting resources in a surrogate ID range.
 /// </summary>
-public record DeleteResourceBatchInput(
+public record DeleteResourceRangeOutput(
     /// <summary>
-    /// Job ID for tracking.
-    /// </summary>
-    string JobId,
-
-    /// <summary>
-    /// Tenant ID for multi-tenancy isolation.
-    /// </summary>
-    int TenantId,
-
-    /// <summary>
-    /// Resource type being deleted.
+    /// Resource type that was processed.
     /// </summary>
     string ResourceType,
 
     /// <summary>
-    /// List of resource IDs to delete in this batch.
+    /// Start of surrogate ID range (inclusive).
     /// </summary>
-    IReadOnlyList<string> ResourceIds,
+    long StartSurrogateId,
 
     /// <summary>
-    /// If true, permanently removes resources.
+    /// End of surrogate ID range (inclusive).
     /// </summary>
-    bool HardDelete,
+    long EndSurrogateId,
 
     /// <summary>
-    /// If true, deletes version history.
+    /// Number of resources successfully deleted in this range.
     /// </summary>
-    bool PurgeHistory);
+    long DeletedCount,
+
+    /// <summary>
+    /// Number of resources that failed to delete.
+    /// </summary>
+    long FailedCount,
+
+    /// <summary>
+    /// Sample error messages (max 10) for failed deletions.
+    /// </summary>
+    IReadOnlyList<string>? Errors = null);
