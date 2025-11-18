@@ -61,4 +61,12 @@ public record BulkDeleteOrchestrationInput(
     /// More ranges = more parallelism but higher DurableTask overhead.
     /// Example: 4 types × 4 ranges = 16 concurrent workers.
     /// </summary>
-    int? NumberOfRangesPerType = null);
+    int? NumberOfRangesPerType = null,
+
+    /// <summary>
+    /// All resource types for the tenant's FHIR version (R4, R4B, R5, STU3, etc.).
+    /// Resolved from IFhirSchemaProvider.ResourceTypeNames in the handler.
+    /// Used for system-level deletes when ResourceType is null.
+    /// Empty for type-specific deletes.
+    /// </summary>
+    IReadOnlyCollection<string>? AllResourceTypes = null);

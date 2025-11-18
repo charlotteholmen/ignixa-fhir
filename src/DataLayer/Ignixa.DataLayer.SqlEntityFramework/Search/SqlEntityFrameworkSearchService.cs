@@ -410,24 +410,30 @@ public class SqlEntityFrameworkSearchService : ISearchService
         short? resourceTypeId,
         CancellationToken ct)
     {
-        // Start with base query for current (non-history, non-deleted) resources
+        // Start with base query
         IQueryable<ResourceEntity> baseQuery;
 
         if (resourceTypeId.HasValue)
         {
             // Single-type search: filter by specific resource type
             baseQuery = _context.Resources
-                .Where(r => r.ResourceTypeId == resourceTypeId.Value
-                    && !r.IsHistory
-                    && !r.IsDeleted);
+                .Where(r => r.ResourceTypeId == resourceTypeId.Value);
+
+            // Apply history/deleted filters unless IncludeHistory is requested
+            if (!options.IncludeHistory)
+            {
+                baseQuery = baseQuery.Where(r => !r.IsHistory && !r.IsDeleted);
+            }
         }
         else
         {
             // Multi-type search: no resource type filter
-            // Resource type filtering will be handled by the expression tree
-            baseQuery = _context.Resources
-                .Where(r => !r.IsHistory
-                    && !r.IsDeleted);
+            baseQuery = _context.Resources.AsQueryable();
+
+            if (!options.IncludeHistory)
+            {
+                baseQuery = baseQuery.Where(r => !r.IsHistory && !r.IsDeleted);
+            }
         }
 
         // Apply search expression filters
@@ -446,6 +452,24 @@ public class SqlEntityFrameworkSearchService : ISearchService
         else
         {
             filteredQuery = baseQuery;
+        }
+
+        // Apply _not-referenced filters
+        foreach (var notReferencedType in options.NotReferencedFilters)
+        {
+            var notReferencedTypeId = await GetResourceTypeIdAsync(notReferencedType, ct);
+            if (!notReferencedTypeId.HasValue)
+            {
+                _logger.LogWarning("Not-referenced resource type not found: {NotReferencedType}", notReferencedType);
+                continue; // Skip this filter
+            }
+
+            filteredQuery = filteredQuery.Where(r => !_context.ReferenceSearchParams.Any(rsp =>
+                rsp.ReferenceResourceTypeId == r.ResourceTypeId && // Our resource is referenced
+                rsp.ReferenceResourceId == r.ResourceId &&         // Our resource is referenced
+                rsp.ResourceTypeId == notReferencedTypeId.Value)); // The reference comes from the specified type
+
+            _logger.LogDebug("Applied _not-referenced filter for type: {NotReferencedType}", notReferencedType);
         }
 
         // Apply surrogate ID range filtering for export partitioning

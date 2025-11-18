@@ -5,7 +5,7 @@
 
 using Ignixa.Domain.Abstractions;
 
-namespace Ignixa.Abstractions;
+namespace Ignixa.Domain.Models;
 
 /// <summary>
 /// Immutable bulk delete job definition (input parameters) for use with BackgroundJob&lt;BulkDeleteJobDefinition&gt;.

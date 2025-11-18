@@ -49,4 +49,10 @@ public record DeleteResourceRangeInput(
     /// <summary>
     /// If true, deletes version history.
     /// </summary>
-    bool PurgeHistory);
+    bool PurgeHistory,
+
+    /// <summary>
+    /// Targets resources unreferenced by specified resource types.
+    /// Example: ["Patient", "Encounter"]
+    /// </summary>
+    IReadOnlyCollection<string> NotReferencedBy);

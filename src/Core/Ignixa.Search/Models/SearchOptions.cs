@@ -87,6 +87,20 @@ public class SearchOptions
     /// Must be set together with StartSurrogateId to take effect.
     /// </summary>
     public long? EndSurrogateId { get; set; }
+
+    /// <summary>
+    /// Optional: When set to true, includes historical versions in the search results.
+    /// Used for bulk delete (purge history) operations.
+    /// </summary>
+    public bool IncludeHistory { get; set; }
+
+    /// <summary>
+    /// Optional: List of resource types to check for reverse references.
+    /// If a resource is referenced by any of these types, it will be excluded from the search.
+    /// Used for _not-referenced bulk delete operations.
+    /// Example: ["Encounter", "Observation"] means exclude resources referenced by Encounter OR Observation.
+    /// </summary>
+    public IReadOnlyList<string> NotReferencedFilters { get; set; } = Array.Empty<string>();
 }
 
 /// <summary>

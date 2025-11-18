@@ -250,7 +250,7 @@ public static class BulkDeleteEndpoints
 
         // Check Accept header
         if (!httpContext.Request.Headers.TryGetValue("Accept", out var acceptHeader) ||
-            !acceptHeader.ToString().Contains("application/fhir+json"))
+            !acceptHeader.ToString().Contains("application/fhir+json", StringComparison.OrdinalIgnoreCase))
         {
             error = FhirResults.BadRequest("Accept header must include 'application/fhir+json'");
             return false;
@@ -258,7 +258,7 @@ public static class BulkDeleteEndpoints
 
         // Check Prefer header
         if (!httpContext.Request.Headers.TryGetValue("Prefer", out var preferHeader) ||
-            !preferHeader.ToString().Contains("respond-async"))
+            !preferHeader.ToString().Contains("respond-async", StringComparison.OrdinalIgnoreCase))
         {
             error = FhirResults.BadRequest("Prefer header must include 'respond-async'");
             return false;
@@ -301,7 +301,7 @@ public static class BulkDeleteEndpoints
         if (jobStatus.Result != null)
         {
             var resultDynamic = jobStatus.Result as dynamic;
-            var deletedByType = resultDynamic?.deletedResourcesByType as Dictionary<string, long>;
+            var deletedByType = resultDynamic?.deletedResourcesByType as Dictionary<string, long>; // This might need checking given JsonNode
 
             if (deletedByType != null)
             {
@@ -310,7 +310,7 @@ public static class BulkDeleteEndpoints
                     parameters.Add(new
                     {
                         name = "ResourceDeletedCount",
-                        part = new[]
+                        part = new object[]
                         {
                             new { name = "ResourceType", valueString = resourceType },
                             new { name = "Count", valueInteger64 = count }

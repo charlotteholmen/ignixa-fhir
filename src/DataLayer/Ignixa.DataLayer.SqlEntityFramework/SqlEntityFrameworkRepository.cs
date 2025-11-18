@@ -892,4 +892,78 @@ public class SqlEntityFrameworkRepository : IFhirRepository
             }
         }
     }
+
+    /// <inheritdoc />
+    public async ValueTask HardDeleteAsync(ResourceKey key, CancellationToken ct = default)
+    {
+        // Resolve ResourceTypeId
+        var resourceTypeId = _cache.TryGetResourceTypeIdFromCache(key.ResourceType);
+        if (resourceTypeId == 0)
+        {
+            var typeEntity = await _context.ResourceTypes.FirstOrDefaultAsync(rt => rt.Name == key.ResourceType, ct);
+            if (typeEntity == null) return; // Resource type doesn't exist, nothing to delete
+            resourceTypeId = typeEntity.ResourceTypeId;
+        }
+
+        IQueryable<ResourceEntity> query = _context.Resources
+            .Where(r => r.ResourceTypeId == resourceTypeId && r.ResourceId == key.Id);
+
+        // If specific version requested (e.g. for PurgeHistory), filter by it
+        if (!string.IsNullOrEmpty(key.VersionId) && int.TryParse(key.VersionId, out int version))
+        {
+            query = query.Where(r => r.Version == version);
+        }
+
+        // Get the list of SurrogateIDs to delete
+        // We need this to target the search parameter tables (which are keyed by SurrogateID)
+        // For a single resource delete, this list will contain 1 (or few) IDs.
+        var surrogateIds = await query.Select(r => r.ResourceSurrogateId).ToListAsync(ct);
+
+        if (surrogateIds.Count == 0)
+        {
+            return;
+        }
+
+        // Manually delete from all search index tables (in case database CASCADE DELETE is missing)
+        // Note: We delete by ResourceTypeId AND ResourceSurrogateId to use the clustered index efficiently
+        
+        // 1. StringSearchParams
+        await _context.StringSearchParams
+            .Where(x => x.ResourceTypeId == resourceTypeId && surrogateIds.Contains(x.ResourceSurrogateId))
+            .ExecuteDeleteAsync(ct);
+
+        // 2. TokenSearchParams
+        await _context.TokenSearchParams
+            .Where(x => x.ResourceTypeId == resourceTypeId && surrogateIds.Contains(x.ResourceSurrogateId))
+            .ExecuteDeleteAsync(ct);
+
+        // 3. NumberSearchParams
+        await _context.NumberSearchParams
+            .Where(x => x.ResourceTypeId == resourceTypeId && surrogateIds.Contains(x.ResourceSurrogateId))
+            .ExecuteDeleteAsync(ct);
+
+        // 4. DateTimeSearchParams
+        await _context.DateTimeSearchParams
+            .Where(x => x.ResourceTypeId == resourceTypeId && surrogateIds.Contains(x.ResourceSurrogateId))
+            .ExecuteDeleteAsync(ct);
+
+        // 5. QuantitySearchParams
+        await _context.QuantitySearchParams
+            .Where(x => x.ResourceTypeId == resourceTypeId && surrogateIds.Contains(x.ResourceSurrogateId))
+            .ExecuteDeleteAsync(ct);
+
+        // 6. UriSearchParams
+        await _context.UriSearchParams
+            .Where(x => x.ResourceTypeId == resourceTypeId && surrogateIds.Contains(x.ResourceSurrogateId))
+            .ExecuteDeleteAsync(ct);
+
+        // 7. ReferenceSearchParams
+        // Note: Deleting OUTGOING references (indexes on this resource)
+        await _context.ReferenceSearchParams
+            .Where(x => x.ResourceTypeId == resourceTypeId && surrogateIds.Contains(x.ResourceSurrogateId))
+            .ExecuteDeleteAsync(ct);
+
+        // Efficiently delete matching rows without loading them into memory
+        await query.ExecuteDeleteAsync(ct);
+    }
 }

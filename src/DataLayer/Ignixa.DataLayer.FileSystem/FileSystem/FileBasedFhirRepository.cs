@@ -1216,4 +1216,79 @@ public sealed class FileBasedFhirRepository : IFhirRepository, IDisposable
         public string ResourceType { get; set; } = string.Empty;
         public string ResourceId { get; set; } = string.Empty;
     }
+
+    /// <inheritdoc />
+    public async ValueTask HardDeleteAsync(ResourceKey key, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            string internalResourceDir = Path.Combine(_baseDirectory, "_internal", key.ResourceType, key.Id);
+            if (!Directory.Exists(internalResourceDir))
+            {
+                _logger.LogDebug("HardDeleteAsync: Resource {ResourceType}/{Id} not found in _internal directory.", key.ResourceType, key.Id);
+                return; // Resource or its internal metadata directory does not exist.
+            }
+
+            if (string.IsNullOrEmpty(key.VersionId))
+            {
+                // If VersionId is not specified, delete the entire resource (all versions)
+                Directory.Delete(internalResourceDir, recursive: true);
+                _logger.LogInformation("Hard deleted resource (all versions): {ResourceType}/{Id}", key.ResourceType, key.Id);
+            }
+            else
+            {
+                // If VersionId is specified, delete only that specific version's metadata file
+                // Find the metadata file corresponding to the given VersionId
+                var metadataFiles = Directory.GetFiles(internalResourceDir, "*.metadata.json", SearchOption.TopDirectoryOnly);
+                string? fileToDelete = null;
+
+                foreach (var file in metadataFiles)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var metadata = await ReadMetadataFileAsync(file, ct).ConfigureAwait(false);
+                        if (metadata.VersionId == key.VersionId)
+                        {
+                            fileToDelete = file;
+                            break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to read metadata file {File} during HardDeleteAsync version lookup.", file);
+                    }
+                }
+
+                if (fileToDelete != null)
+                {
+                    File.Delete(fileToDelete);
+                    _logger.LogInformation("Hard deleted resource version: {ResourceType}/{Id} v{VersionId}", key.ResourceType, key.Id, key.VersionId);
+
+                    // If this was the last metadata file for the resource, also delete the resourceId directory
+                    if (Directory.GetFiles(internalResourceDir, "*.metadata.json", SearchOption.TopDirectoryOnly).Length == 0)
+                    {
+                        Directory.Delete(internalResourceDir, recursive: false); // Should be empty now
+                        _logger.LogDebug("HardDeleteAsync: Removed empty resource ID directory {Path}", internalResourceDir);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("HardDeleteAsync: Version {VersionId} not found for resource {ResourceType}/{Id}.", key.VersionId, key.ResourceType, key.Id);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to hard delete resource {ResourceType}/{Id} v{VersionId} in file system.", key.ResourceType, key.Id, key.VersionId);
+            throw;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
 }

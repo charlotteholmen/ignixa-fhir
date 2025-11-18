@@ -5,6 +5,7 @@
 
 using System.Text.Json;
 using DurableTask.Core;
+using Ignixa.Application.BackgroundOperations.BulkDelete.Models;
 using Ignixa.Application.BackgroundOperations.Import.Models;
 using Ignixa.Domain.Abstractions;
 using Ignixa.Domain.Models;
@@ -286,9 +287,17 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
                             var jobResult = new BulkDeleteJobResult
                             {
                                 TotalResourcesDeleted = output.TotalResourcesDeleted,
-                                DeletedResourcesByType = output.DeletedResourcesByType?.ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
                                 ErrorMessage = output.ErrorMessage
                             };
+
+                            if (output.DeletedResourcesByType != null)
+                            {
+                                foreach (var kvp in output.DeletedResourcesByType)
+                                {
+                                    jobResult.DeletedResourcesByType[kvp.Key] = kvp.Value;
+                                }
+                            }
+
                             job.Result = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(jobResult));
                         }
                     }

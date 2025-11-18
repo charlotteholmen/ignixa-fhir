@@ -6,8 +6,13 @@
 using DurableTask.Core;
 using Ignixa.Application.BackgroundOperations.BulkDelete.Orchestrations;
 using Ignixa.Application.BackgroundOperations.BulkDelete.Models;
+using Ignixa.Domain;
 using Ignixa.Domain.Abstractions;
 using Ignixa.Domain.Models;
+using Ignixa.Application.Features.Search;
+using Ignixa.Search.Parsing;
+using Ignixa.Serialization;
+using Ignixa.Specification;
 using Medino;
 
 namespace Ignixa.Application.BackgroundOperations.BulkDelete;
@@ -15,18 +20,25 @@ namespace Ignixa.Application.BackgroundOperations.BulkDelete;
 /// <summary>
 /// Handler for creating and starting FHIR bulk delete jobs.
 /// Validates input parameters, creates job metadata, and starts the DurableTask orchestration.
+/// Resolves all resource types from IFhirSchemaProvider for system-level deletes.
 /// </summary>
 public class CreateBulkDeleteJobHandler : IRequestHandler<CreateBulkDeleteJobCommand, CreateBulkDeleteJobResult>
 {
     private readonly TaskHubClient _taskHubClient;
     private readonly IBackgroundJobRepository<BulkDeleteJobDefinition> _jobRepository;
+    private readonly ITenantConfigurationStore _tenantConfigurationStore;
+    private readonly IFhirVersionContext _fhirVersionContext;
 
     public CreateBulkDeleteJobHandler(
         TaskHubClient taskHubClient,
-        IBackgroundJobRepository<BulkDeleteJobDefinition> jobRepository)
+        IBackgroundJobRepository<BulkDeleteJobDefinition> jobRepository,
+        ITenantConfigurationStore tenantConfigurationStore,
+        IFhirVersionContext fhirVersionContext)
     {
         _taskHubClient = taskHubClient ?? throw new ArgumentNullException(nameof(taskHubClient));
         _jobRepository = jobRepository ?? throw new ArgumentNullException(nameof(jobRepository));
+        _tenantConfigurationStore = tenantConfigurationStore ?? throw new ArgumentNullException(nameof(tenantConfigurationStore));
+        _fhirVersionContext = fhirVersionContext ?? throw new ArgumentNullException(nameof(fhirVersionContext));
     }
 
     public async Task<CreateBulkDeleteJobResult> HandleAsync(
@@ -39,6 +51,31 @@ public class CreateBulkDeleteJobHandler : IRequestHandler<CreateBulkDeleteJobCom
             throw new ArgumentException(
                 "HardDelete and PurgeHistory cannot both be true.",
                 nameof(request));
+        }
+
+        // Get tenant configuration to resolve FHIR version
+        var tenantConfig = await _tenantConfigurationStore.GetTenantConfigurationAsync(
+            request.TenantId,
+            cancellationToken);
+
+        if (tenantConfig == null)
+        {
+            throw new InvalidOperationException($"Tenant {request.TenantId} not found or inactive");
+        }
+
+        // Get all resource types from schema provider for this tenant's FHIR version
+        // This ensures we use the correct types for R4, R4B, R5, STU3, etc.
+        IReadOnlyCollection<string> allResourceTypes;
+        if (string.IsNullOrEmpty(request.ResourceType))
+        {
+            var fhirVersion = FhirSpecificationExtensions.FromVersionString(tenantConfig.FhirVersion);
+            var schemaProvider = _fhirVersionContext.GetSchemaProvider(fhirVersion, request.TenantId);
+            allResourceTypes = schemaProvider.ResourceTypeNames.ToList();
+        }
+        else
+        {
+            // Type-specific delete - no need to resolve all types
+            allResourceTypes = Array.Empty<string>();
         }
 
         // Generate job ID
@@ -77,7 +114,8 @@ public class CreateBulkDeleteJobHandler : IRequestHandler<CreateBulkDeleteJobCom
             PurgeHistory: request.PurgeHistory,
             ExcludedResourceTypes: request.ExcludedResourceTypes,
             RemoveReferences: request.RemoveReferences,
-            NotReferencedBy: request.NotReferencedBy);
+            NotReferencedBy: request.NotReferencedBy,
+            AllResourceTypes: allResourceTypes);
 
         var instance = await _taskHubClient.CreateOrchestrationInstanceAsync(
             typeof(BulkDeleteOrchestration),

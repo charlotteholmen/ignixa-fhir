@@ -92,7 +92,8 @@ public class BulkDeleteOrchestration : TaskOrchestration<BulkDeleteOrchestration
                             EndSurrogateId: endId,
                             SearchQuery: input.SearchQuery,
                             HardDelete: input.HardDelete,
-                            PurgeHistory: input.PurgeHistory);
+                            PurgeHistory: input.PurgeHistory,
+                            NotReferencedBy: input.NotReferencedBy ?? Array.Empty<string>());
 
                         // Schedule worker task (doesn't wait - queues for parallel execution)
                         var workerTask = context.ScheduleTask<DeleteResourceRangeOutput>(
@@ -197,9 +198,17 @@ public class BulkDeleteOrchestration : TaskOrchestration<BulkDeleteOrchestration
             return new List<string> { input.ResourceType };
         }
 
-        // System-level delete: get all resource types except excluded ones
-        var allTypes = GetDefaultResourceTypes();
+        // System-level delete: use all resource types from schema provider (resolved in handler)
+        if (input.AllResourceTypes == null || input.AllResourceTypes.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "System-level bulk delete requires AllResourceTypes to be populated by handler. " +
+                "This should be resolved from IFhirSchemaProvider.ResourceTypeNames for the tenant's FHIR version.");
+        }
 
+        var allTypes = input.AllResourceTypes.ToList();
+
+        // Apply exclusions if specified
         if (input.ExcludedResourceTypes != null && input.ExcludedResourceTypes.Count > 0)
         {
             var excluded = new HashSet<string>(input.ExcludedResourceTypes, StringComparer.OrdinalIgnoreCase);
@@ -207,27 +216,5 @@ public class BulkDeleteOrchestration : TaskOrchestration<BulkDeleteOrchestration
         }
 
         return allTypes;
-    }
-
-    private static List<string> GetDefaultResourceTypes()
-    {
-        // Default FHIR resource types (same as export)
-        return new List<string>
-        {
-            "Patient",
-            "Observation",
-            "Condition",
-            "MedicationRequest",
-            "Encounter",
-            "Procedure",
-            "DiagnosticReport",
-            "AllergyIntolerance",
-            "Immunization",
-            "CarePlan",
-            "Goal",
-            "Claim",
-            "Coverage",
-            "ExplanationOfBenefit",
-        };
     }
 }

@@ -5,6 +5,7 @@
 
 using DurableTask.Core;
 using Ignixa.Application.BackgroundOperations.BulkDelete.Models;
+using Ignixa.Abstractions;
 using Ignixa.Domain;
 using Ignixa.Domain.Abstractions;
 using Ignixa.Domain.Models;
@@ -103,6 +104,8 @@ public class DeleteResourceRangeActivity : AsyncTaskActivity<DeleteResourceRange
                 searchOptions.MaxItemCount = 1000;  // Process in smaller batches for delete
                 searchOptions.StartSurrogateId = input.StartSurrogateId;
                 searchOptions.EndSurrogateId = input.EndSurrogateId;
+                searchOptions.IncludeHistory = input.PurgeHistory;
+                searchOptions.NotReferencedFilters = input.NotReferencedBy.ToList();
 
                 // Log filter application
                 if (filterParams.Count > 0)
@@ -120,30 +123,34 @@ public class DeleteResourceRangeActivity : AsyncTaskActivity<DeleteResourceRange
                 {
                     try
                     {
-                        var key = new ResourceKey(input.ResourceType, resource.ResourceId, null);
+                        // If purging history, we target the specific version returned by search
+                        // If hard deleting current, we might target version or just resource ID (depending on repo impl)
+                        var targetVersion = input.PurgeHistory ? resource.VersionId : null;
+                        var key = new ResourceKey(input.ResourceType, resource.ResourceId, targetVersion);
 
-                        var request = new ResourceRequest
+                        if (input.HardDelete)
                         {
-                            Method = "DELETE",
-                            Url = $"/{input.ResourceType}/{resource.ResourceId}",
-                            Timestamp = DateTimeOffset.UtcNow
-                        };
-
-                        // Perform delete (soft delete by default per FHIR R4 spec)
-                        // TODO: Implement hard delete when input.HardDelete is true
-                        var result = await repository.DeleteAsync(key, request, null, CancellationToken.None);
-
-                        if (result != null)
-                        {
+                            await repository.HardDeleteAsync(key, CancellationToken.None);
                             deletedCount++;
                         }
                         else
                         {
-                            // Resource never existed (should be rare in range-based query)
-                            failedCount++;
-                            if (errors.Count < MaxErrorsToCapture)
+                            // Perform soft delete (standard FHIR delete)
+                            var request = new ResourceRequest("DELETE", $"/{input.ResourceType}/{resource.ResourceId}");
+                            var result = await repository.DeleteAsync(key, request, null, CancellationToken.None);
+
+                            if (result != null)
                             {
-                                errors.Add($"{input.ResourceType}/{resource.ResourceId}: Resource not found");
+                                deletedCount++;
+                            }
+                            else
+                            {
+                                // Resource never existed (should be rare in range-based query)
+                                failedCount++;
+                                if (errors.Count < MaxErrorsToCapture)
+                                {
+                                    errors.Add($"{input.ResourceType}/{resource.ResourceId}: Resource not found");
+                                }
                             }
                         }
 

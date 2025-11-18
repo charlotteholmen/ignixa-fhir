@@ -20,7 +20,7 @@ public class BulkDeleteJobResult
     /// Dictionary mapping resource type to count of deleted resources.
     /// Example: { "Patient": 150, "Observation": 1200 }
     /// </summary>
-    public Dictionary<string, long>? DeletedResourcesByType { get; set; }
+    public Dictionary<string, long> DeletedResourcesByType { get; } = new();
 
     /// <summary>
     /// Any error messages from the operation.
