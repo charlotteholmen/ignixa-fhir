@@ -1066,9 +1066,10 @@ if (app.Environment.IsDevelopment())
 app.MapHealthCheckEndpoints();
 
 // IMPORTANT: Register bulk operations BEFORE generic FHIR endpoints
-// This ensures /$import and /$export routes match before the generic /{resourceType} catch-all
+// This ensures /$import, /$export, and /$bulk-delete routes match before the generic /{resourceType} catch-all
 app.MapExportEndpoints(); // Bulk export endpoints (DurableTask)
 app.MapImportEndpoints(); // Bulk import endpoints (DurableTask)
+app.MapBulkDeleteEndpoints(); // Bulk delete endpoints (DurableTask)
 app.MapAdminPackageEndpoints(); // Admin package management endpoints (/admin/packages)
 
 app.MapFhirEndpoints();

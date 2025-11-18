@@ -3,41 +3,39 @@
 // Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // -------------------------------------------------------------------------------------------------
 
-namespace Ignixa.Domain.Models;
+namespace Ignixa.Application.BackgroundOperations.BulkDelete.Models;
 
 /// <summary>
-/// Job type discriminator for background job repository.
-/// Maps to JobType field in BackgroundJob table for multi-purpose storage.
+/// Input for DeleteResourceBatchActivity.
+/// Specifies a batch of resources to delete.
 /// </summary>
-public enum BackgroundJobType
-{
+public record DeleteResourceBatchInput(
     /// <summary>
-    /// Undefined job type (default, should not be used).
+    /// Job ID for tracking.
     /// </summary>
-    None = 0,
+    string JobId,
 
     /// <summary>
-    /// FHIR bulk data export operation.
+    /// Tenant ID for multi-tenancy isolation.
     /// </summary>
-    Export = 1,
+    int TenantId,
 
     /// <summary>
-    /// FHIR bulk data import operation.
+    /// Resource type being deleted.
     /// </summary>
-    Import = 2,
+    string ResourceType,
 
     /// <summary>
-    /// FHIR validation operation (for future use).
+    /// List of resource IDs to delete in this batch.
     /// </summary>
-    Validate = 3,
+    IReadOnlyList<string> ResourceIds,
 
     /// <summary>
-    /// Index rebuild operation (for future use).
+    /// If true, permanently removes resources.
     /// </summary>
-    Reindex = 4,
+    bool HardDelete,
 
     /// <summary>
-    /// FHIR bulk delete operation.
+    /// If true, deletes version history.
     /// </summary>
-    BulkDelete = 5,
-}
+    bool PurgeHistory);

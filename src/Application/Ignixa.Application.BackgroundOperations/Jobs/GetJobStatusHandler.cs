@@ -22,15 +22,18 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
     private readonly TaskHubClient _taskHubClient;
     private readonly IBackgroundJobRepository<ImportJobDefinition> _importRepository;
     private readonly IBackgroundJobRepository<ExportJobDefinition> _exportRepository;
+    private readonly IBackgroundJobRepository<BulkDeleteJobDefinition> _bulkDeleteRepository;
 
     public GetJobStatusHandler(
         TaskHubClient taskHubClient,
         IBackgroundJobRepository<ImportJobDefinition> importRepository,
-        IBackgroundJobRepository<ExportJobDefinition> exportRepository)
+        IBackgroundJobRepository<ExportJobDefinition> exportRepository,
+        IBackgroundJobRepository<BulkDeleteJobDefinition> bulkDeleteRepository)
     {
         _taskHubClient = taskHubClient ?? throw new ArgumentNullException(nameof(taskHubClient));
         _importRepository = importRepository ?? throw new ArgumentNullException(nameof(importRepository));
         _exportRepository = exportRepository ?? throw new ArgumentNullException(nameof(exportRepository));
+        _bulkDeleteRepository = bulkDeleteRepository ?? throw new ArgumentNullException(nameof(bulkDeleteRepository));
     }
 
     public async Task<GetJobStatusResult> HandleAsync(
@@ -38,10 +41,10 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
         CancellationToken cancellationToken)
     {
         // Validate job type
-        if (request.JobType != "Import" && request.JobType != "Export")
+        if (request.JobType != "Import" && request.JobType != "Export" && request.JobType != "BulkDelete")
         {
             throw new ArgumentException(
-                $"Invalid jobType '{request.JobType}'. Must be 'Import' or 'Export'.",
+                $"Invalid jobType '{request.JobType}'. Must be 'Import', 'Export', or 'BulkDelete'.",
                 nameof(request));
         }
 
@@ -108,7 +111,7 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
                 result = null;
             }
         }
-        else // Export
+        else if (request.JobType == "Export")
         {
             var job = await _exportRepository.GetAsync(request.JobId, request.TenantId, cancellationToken);
             if (job == null)
@@ -152,6 +155,60 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
                 {
                     outputFiles = exportResult?.ExportedFiles ?? new Dictionary<string, string>(),
                     totalResources = exportResult?.TotalResources ?? 0
+                };
+            }
+            else
+            {
+                result = null;
+            }
+        }
+        else // BulkDelete
+        {
+            var job = await _bulkDeleteRepository.GetAsync(request.JobId, request.TenantId, cancellationToken);
+            if (job == null)
+            {
+                throw new InvalidOperationException(
+                    $"BulkDelete job '{request.JobId}' not found for tenant {request.TenantId}");
+            }
+
+            // Update job status from orchestration
+            await UpdateJobStatusFromOrchestrationAsync(job, request.TenantId, cancellationToken);
+
+            status = job.Status;
+            createDate = job.CreateDate;
+            startDate = job.StartDate;
+            endDate = job.EndDate;
+            errorMessage = job.ErrorMessage;
+
+            definition = new
+            {
+                resourceType = job.Definition.ResourceType,
+                searchQuery = job.Definition.SearchQuery,
+                hardDelete = job.Definition.HardDelete,
+                purgeHistory = job.Definition.PurgeHistory,
+                excludedResourceTypes = job.Definition.ExcludedResourceTypes,
+                removeReferences = job.Definition.RemoveReferences,
+                notReferencedBy = job.Definition.NotReferencedBy
+            };
+
+            // Parse progress if available
+            if (job.Progress != null)
+            {
+                var progress = JsonSerializer.Deserialize<BulkDeleteJobProgress>(job.Progress.ToJsonString());
+                progressPercentage = progress?.ProgressPercentage;
+                progressDescription = progress != null
+                    ? $"{progress.ProgressPercentage:F2}% ({progress.ResourcesDeleted} resources deleted)"
+                    : status;
+            }
+
+            // Parse result if available
+            if (job.Result != null)
+            {
+                var bulkDeleteResult = JsonSerializer.Deserialize<BulkDeleteJobResult>(job.Result.ToJsonString());
+                result = new
+                {
+                    deletedResourcesByType = bulkDeleteResult?.DeletedResourcesByType ?? new Dictionary<string, long>(),
+                    totalResourcesDeleted = bulkDeleteResult?.TotalResourcesDeleted ?? 0
                 };
             }
             else
@@ -220,6 +277,21 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
                             job.Result = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(jobResult));
                         }
                     }
+                    // Extract output from orchestration for bulk delete jobs
+                    else if (job is BackgroundJob<BulkDeleteJobDefinition> && state.Output != null)
+                    {
+                        var output = JsonSerializer.Deserialize<BulkDeleteOrchestrationOutput>(state.Output);
+                        if (output != null)
+                        {
+                            var jobResult = new BulkDeleteJobResult
+                            {
+                                TotalResourcesDeleted = output.TotalResourcesDeleted,
+                                DeletedResourcesByType = output.DeletedResourcesByType?.ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
+                                ErrorMessage = output.ErrorMessage
+                            };
+                            job.Result = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(jobResult));
+                        }
+                    }
                     break;
 
                 case OrchestrationStatus.Failed:
@@ -242,6 +314,10 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
             else if (job is BackgroundJob<ExportJobDefinition> exportJob)
             {
                 await _exportRepository.UpdateAsync(exportJob, tenantId, cancellationToken);
+            }
+            else if (job is BackgroundJob<BulkDeleteJobDefinition> bulkDeleteJob)
+            {
+                await _bulkDeleteRepository.UpdateAsync(bulkDeleteJob, tenantId, cancellationToken);
             }
         }
     }
