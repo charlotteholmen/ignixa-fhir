@@ -4,6 +4,7 @@
 // -------------------------------------------------------------------------------------------------
 
 using DurableTask.Core;
+using Ignixa.Api.Http;
 using Ignixa.Application.BackgroundOperations.BulkDelete;
 using Ignixa.Application.BackgroundOperations.Jobs;
 using Ignixa.Domain.Abstractions;
@@ -100,19 +101,7 @@ public static class BulkDeleteEndpoints
         }
         catch (ArgumentException ex)
         {
-            return Results.BadRequest(new
-            {
-                resourceType = "OperationOutcome",
-                issue = new[]
-                {
-                    new
-                    {
-                        severity = "error",
-                        code = "invalid",
-                        diagnostics = ex.Message
-                    }
-                }
-            });
+            return FhirResults.BadRequest(ex.Message);
         }
     }
 
@@ -162,19 +151,7 @@ public static class BulkDeleteEndpoints
         }
         catch (ArgumentException ex)
         {
-            return Results.BadRequest(new
-            {
-                resourceType = "OperationOutcome",
-                issue = new[]
-                {
-                    new
-                    {
-                        severity = "error",
-                        code = "invalid",
-                        diagnostics = ex.Message
-                    }
-                }
-            });
+            return FhirResults.BadRequest(ex.Message);
         }
     }
 
@@ -275,19 +252,7 @@ public static class BulkDeleteEndpoints
         if (!httpContext.Request.Headers.TryGetValue("Accept", out var acceptHeader) ||
             !acceptHeader.ToString().Contains("application/fhir+json"))
         {
-            error = Results.BadRequest(new
-            {
-                resourceType = "OperationOutcome",
-                issue = new[]
-                {
-                    new
-                    {
-                        severity = "error",
-                        code = "invalid",
-                        diagnostics = "Accept header must include 'application/fhir+json'"
-                    }
-                }
-            });
+            error = FhirResults.BadRequest("Accept header must include 'application/fhir+json'");
             return false;
         }
 
@@ -295,19 +260,7 @@ public static class BulkDeleteEndpoints
         if (!httpContext.Request.Headers.TryGetValue("Prefer", out var preferHeader) ||
             !preferHeader.ToString().Contains("respond-async"))
         {
-            error = Results.BadRequest(new
-            {
-                resourceType = "OperationOutcome",
-                issue = new[]
-                {
-                    new
-                    {
-                        severity = "error",
-                        code = "invalid",
-                        diagnostics = "Prefer header must include 'respond-async'"
-                    }
-                }
-            });
+            error = FhirResults.BadRequest("Prefer header must include 'respond-async'");
             return false;
         }
 

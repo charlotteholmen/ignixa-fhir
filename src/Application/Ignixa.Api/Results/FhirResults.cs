@@ -48,4 +48,67 @@ public static class FhirResults
     {
         return new FhirResult(StatusCodes.Status304NotModified);
     }
+
+    /// <summary>
+    /// Creates a 400 Bad Request response with FHIR OperationOutcome.
+    /// </summary>
+    /// <param name="diagnostics">Human-readable error message</param>
+    /// <param name="code">FHIR issue type code (default: "invalid")</param>
+    public static IResult BadRequest(string diagnostics, string code = "invalid")
+    {
+        return OperationOutcome(StatusCodes.Status400BadRequest, "error", code, diagnostics);
+    }
+
+    /// <summary>
+    /// Creates a 404 Not Found response with FHIR OperationOutcome.
+    /// </summary>
+    /// <param name="diagnostics">Human-readable error message</param>
+    public static IResult NotFound(string diagnostics)
+    {
+        return OperationOutcome(StatusCodes.Status404NotFound, "error", "not-found", diagnostics);
+    }
+
+    /// <summary>
+    /// Creates a 409 Conflict response with FHIR OperationOutcome.
+    /// </summary>
+    /// <param name="diagnostics">Human-readable error message</param>
+    public static IResult Conflict(string diagnostics)
+    {
+        return OperationOutcome(StatusCodes.Status409Conflict, "error", "conflict", diagnostics);
+    }
+
+    /// <summary>
+    /// Creates a 422 Unprocessable Entity response with FHIR OperationOutcome.
+    /// </summary>
+    /// <param name="diagnostics">Human-readable error message</param>
+    public static IResult UnprocessableEntity(string diagnostics)
+    {
+        return OperationOutcome(StatusCodes.Status422UnprocessableEntity, "error", "processing", diagnostics);
+    }
+
+    /// <summary>
+    /// Creates a custom status code response with FHIR OperationOutcome.
+    /// </summary>
+    /// <param name="statusCode">HTTP status code</param>
+    /// <param name="severity">FHIR issue severity (error, warning, information)</param>
+    /// <param name="code">FHIR issue type code</param>
+    /// <param name="diagnostics">Human-readable error message</param>
+    public static IResult OperationOutcome(int statusCode, string severity, string code, string diagnostics)
+    {
+        var outcome = new
+        {
+            resourceType = "OperationOutcome",
+            issue = new[]
+            {
+                new
+                {
+                    severity,
+                    code,
+                    diagnostics
+                }
+            }
+        };
+
+        return Results.Json(outcome, statusCode: statusCode, contentType: KnownContentTypes.ApplicationFhirJson);
+    }
 }
