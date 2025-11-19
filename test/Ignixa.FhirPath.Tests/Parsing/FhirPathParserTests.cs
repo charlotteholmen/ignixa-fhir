@@ -7,6 +7,7 @@
 
 using Ignixa.FhirPath;
 using Ignixa.FhirPath.Expressions;
+using Ignixa.FhirPath.Parser;
 using Xunit;
 
 namespace Ignixa.FhirPath.Tests.Parsing;
@@ -16,7 +17,7 @@ namespace Ignixa.FhirPath.Tests.Parsing;
 /// </summary>
 public class FhirPathParserTests
 {
-    private readonly FhirPathCompiler _compiler = new();
+    private readonly FhirPathParser _parser = new();
 
     #region Type Specifier Tests
 
@@ -28,7 +29,7 @@ public class FhirPathParserTests
     public void GivenOfTypeWithPrimitiveType_WhenParsed_ThenArgumentIsIdentifierExpression()
     {
         // Arrange & Act
-        var expression = _compiler.Parse("value.ofType(string)");
+        var expression = _parser.Parse("value.ofType(string)");
 
         // Assert
         Assert.IsType<FunctionCallExpression>(expression);
@@ -52,7 +53,7 @@ public class FhirPathParserTests
     public void GivenOfTypeWithComplexType_WhenParsed_ThenArgumentIsIdentifierExpression()
     {
         // Arrange & Act
-        var expression = _compiler.Parse("value.ofType(Quantity)");
+        var expression = _parser.Parse("value.ofType(Quantity)");
 
         // Assert
         var funcExpr = Assert.IsType<FunctionCallExpression>(expression);
@@ -71,7 +72,7 @@ public class FhirPathParserTests
     public void GivenIsWithType_WhenParsed_ThenArgumentIsIdentifierExpression()
     {
         // Arrange & Act
-        var expression = _compiler.Parse("value is string");
+        var expression = _parser.Parse("value is string");
 
         // Assert - is() is parsed as BinaryExpression
         var binaryExpr = Assert.IsType<BinaryExpression>(expression);
@@ -90,7 +91,7 @@ public class FhirPathParserTests
     public void GivenBareOfType_WhenParsed_ThenIsFunctionCallExpression()
     {
         // Arrange & Act
-        var expression = _compiler.Parse("ofType(Patient)");
+        var expression = _parser.Parse("ofType(Patient)");
 
         // Assert
         var funcExpr = Assert.IsType<FunctionCallExpression>(expression);
@@ -109,28 +110,23 @@ public class FhirPathParserTests
 
     #endregion
 
-    #region Current Parser Behavior (Will Fail Until Fixed)
+    #region OfType Function Tests
 
-    /// <summary>
-    /// This test documents the CURRENT (incorrect) parser behavior.
-    /// It should FAIL until we fix the parser to handle type specifiers properly.
-    /// Once fixed, this test should be removed or inverted.
-    /// </summary>
-    [Fact(Skip = "Documents current parser bug - will fail until parser is fixed")]
-    public void CurrentParserBehavior_OfTypeArgumentIsFunctionCall_ShouldBeIdentifier()
+    [Fact]
+    public void GivenOfTypeFunction_WhenStringTypeArgument_ThenParsesAsIdentifier()
     {
         // Arrange & Act
-        var expression = _compiler.Parse("value.ofType(string)");
+        var expression = _parser.Parse("value.ofType(string)");
 
-        // Assert - documenting current WRONG behavior
+        // Assert
         var funcExpr = (FunctionCallExpression)expression;
-        var argExpr = funcExpr.Arguments[0];
+        Assert.Equal("ofType", funcExpr.FunctionName);
 
-        // Currently, this IS a FunctionCallExpression (which is wrong)
-        Assert.IsType<FunctionCallExpression>(argExpr);
-        var wrongFuncExpr = (FunctionCallExpression)argExpr;
-        Assert.Equal("string", wrongFuncExpr.FunctionName);
-        Assert.Empty(wrongFuncExpr.Arguments);
+        // The argument should be an IdentifierExpression, not a FunctionCallExpression
+        var argExpr = funcExpr.Arguments[0];
+        Assert.IsType<IdentifierExpression>(argExpr);
+        var identExpr = (IdentifierExpression)argExpr;
+        Assert.Equal("string", identExpr.Name);
     }
 
     #endregion
