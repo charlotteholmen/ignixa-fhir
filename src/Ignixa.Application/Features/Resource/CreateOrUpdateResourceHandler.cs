@@ -14,6 +14,10 @@ using Ignixa.Domain;
 using Ignixa.Specification;
 using Ignixa.Search.Indexing;
 using Ignixa.Serialization;
+using Ignixa.Serialization.Models;
+using Ignixa.Validation;
+using Ignixa.Validation.Abstractions;
+using System.Text.Json.Nodes;
 
 namespace Ignixa.Application.Features.Resource;
 
@@ -36,6 +40,7 @@ public class CreateOrUpdateResourceHandler : IRequestHandler<CreateOrUpdateResou
     private readonly IFhirRepositoryFactory _repositoryFactory;
     private readonly IFhirRequestContextAccessor _contextAccessor;
     private readonly IFhirVersionContext _fhirVersionContext;
+    private readonly Func<FhirSpecification, IValidationSchemaResolver> _schemaResolverFactory;
     private readonly ILogger<CreateOrUpdateResourceHandler> _logger;
 
     public CreateOrUpdateResourceHandler(
@@ -43,12 +48,14 @@ public class CreateOrUpdateResourceHandler : IRequestHandler<CreateOrUpdateResou
         IFhirRepositoryFactory repositoryFactory,
         IFhirRequestContextAccessor contextAccessor,
         IFhirVersionContext fhirVersionContext,
+        Func<FhirSpecification, IValidationSchemaResolver> schemaResolverFactory,
         ILogger<CreateOrUpdateResourceHandler> logger)
     {
         _partitionStrategy = partitionStrategy ?? throw new ArgumentNullException(nameof(partitionStrategy));
         _repositoryFactory = repositoryFactory ?? throw new ArgumentNullException(nameof(repositoryFactory));
         _contextAccessor = contextAccessor ?? throw new ArgumentNullException(nameof(contextAccessor));
         _fhirVersionContext = fhirVersionContext ?? throw new ArgumentNullException(nameof(fhirVersionContext));
+        _schemaResolverFactory = schemaResolverFactory ?? throw new ArgumentNullException(nameof(schemaResolverFactory));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -164,6 +171,25 @@ public class CreateOrUpdateResourceHandler : IRequestHandler<CreateOrUpdateResou
 
             // 5. Write immediately to repository - returns UpdateResult with ResourceKey + raw bytes
             result = await repository.CreateOrUpdateAsync(wrapper, cancellationToken);
+
+            // 6. Process X-Provenance header if provided (only for standalone operations)
+            // Provenance cannot be processed in bundle/deferred context because the main resource isn't persisted yet
+            if (command.ProvenanceResource != null)
+            {
+                _logger.LogInformation(
+                    "Processing X-Provenance header for {ResourceType}/{Id}",
+                    result.Key.ResourceType,
+                    result.Key.Id);
+
+                await ProcessProvenanceAsync(
+                    command.ProvenanceResource,
+                    result,
+                    fhirVersionEnum,
+                    schemaProvider,
+                    tenantId,
+                    repository,
+                    cancellationToken);
+            }
         }
 
         // Success logging - always runs for both bundle and standalone operations
@@ -243,5 +269,142 @@ public class CreateOrUpdateResourceHandler : IRequestHandler<CreateOrUpdateResou
             FhirVersion = fhirVersionEnum.ToVersionString(), // Convert enum to string for storage
             SearchIndices = searchIndices?.ToArray()
         };
+    }
+
+    /// <summary>
+    /// Processes the Provenance resource from X-Provenance header.
+    /// Fills in the target reference to point to the created/updated resource and persists the Provenance.
+    /// </summary>
+    /// <param name="provenanceTemplate">The Provenance resource from X-Provenance header (without target).</param>
+    /// <param name="mainResourceResult">The result from creating/updating the main resource.</param>
+    /// <param name="fhirVersion">The FHIR version being used.</param>
+    /// <param name="schemaProvider">The schema provider for the FHIR version.</param>
+    /// <param name="tenantId">The tenant ID for search indexing.</param>
+    /// <param name="repository">The repository to persist the Provenance resource.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    private async Task ProcessProvenanceAsync(
+        ProvenanceJsonNode provenanceTemplate,
+        UpdateResult mainResourceResult,
+        FhirSpecification fhirVersion,
+        IFhirSchemaProvider schemaProvider,
+        int? tenantId,
+        IFhirRepository repository,
+        CancellationToken cancellationToken)
+    {
+        // Generate ID for the Provenance resource (using same strategy as main resource creation)
+        var provenanceId = Guid.NewGuid().ToString();
+
+        // Set ID on the provenance resource
+        provenanceTemplate.Id = provenanceId;
+
+        // Add target reference with version-specific reference to the created/updated resource
+        // Uses type-safe AddTarget method from ProvenanceJsonNode
+        provenanceTemplate.AddTarget(
+            mainResourceResult.Key.ResourceType,
+            mainResourceResult.Key.Id,
+            mainResourceResult.Key.VersionId!);
+
+        _logger.LogDebug(
+            "Created Provenance resource {ProvenanceId} with target reference: {TargetType}/{TargetId}/_history/{TargetVersion}",
+            provenanceId,
+            mainResourceResult.Key.ResourceType,
+            mainResourceResult.Key.Id,
+            mainResourceResult.Key.VersionId);
+
+        // Set meta values
+        provenanceTemplate.Meta.LastUpdated = DateTimeOffset.UtcNow;
+        provenanceTemplate.Meta.VersionId = "1";
+
+        // Validate the Provenance resource before persisting
+        // This ensures X-Provenance resources go through the same validation as normal resources
+        ValidateProvenance(provenanceTemplate, fhirVersion);
+
+        // Create ResourceWrapper for the Provenance resource
+        var request = new ResourceRequest("POST", $"Provenance/{provenanceId}");
+
+        // Extract search indices for Provenance
+        var searchIndexer = _fhirVersionContext.GetSearchIndexer(fhirVersion, tenantId);
+        IReadOnlyCollection<SearchIndexEntry>? searchIndices = null;
+        try
+        {
+            var typedElement = provenanceTemplate.ToTypedElement(schemaProvider);
+            searchIndices = searchIndexer.Extract(typedElement);
+
+            _logger.LogDebug(
+                "Extracted {Count} search indices for Provenance/{Id}",
+                searchIndices.Count,
+                provenanceId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to extract search indices for Provenance/{Id}",
+                provenanceId);
+        }
+
+        var provenanceWrapper = new ResourceWrapper(
+            "Provenance",
+            provenanceId,
+            provenanceTemplate.Meta.VersionId!,
+            provenanceTemplate.Meta.LastUpdated!.Value,
+            provenanceTemplate, // ProvenanceJsonNode extends ResourceJsonNode, so this works
+            request,
+            false) // isDeleted
+        {
+            FhirVersion = fhirVersion.ToVersionString(),
+            SearchIndices = searchIndices?.ToArray()
+        };
+
+        // Persist the Provenance resource (validation was performed above by ValidateProvenance)
+        var provenanceResult = await repository.CreateOrUpdateAsync(provenanceWrapper, cancellationToken);
+
+        _logger.LogInformation(
+            "Created Provenance resource {ProvenanceId} (version {VersionId}) for {TargetType}/{TargetId}",
+            provenanceResult.Key.Id,
+            provenanceResult.Key.VersionId,
+            mainResourceResult.Key.ResourceType,
+            mainResourceResult.Key.Id);
+    }
+
+    /// <summary>
+    /// Validates a Provenance resource using the same validation logic as the ValidationBehavior pipeline.
+    /// Ensures X-Provenance header resources are validated before persistence.
+    /// </summary>
+    /// <param name="provenance">The Provenance resource to validate.</param>
+    /// <param name="fhirVersion">The FHIR version to use for validation.</param>
+    /// <exception cref="ValidationException">Thrown when validation fails.</exception>
+    private void ValidateProvenance(ProvenanceJsonNode provenance, FhirSpecification fhirVersion)
+    {
+        _logger.LogDebug("Validating Provenance resource from X-Provenance header");
+
+        var schemaResolver = _schemaResolverFactory(fhirVersion);
+        var schema = schemaResolver.GetSchema("Provenance");
+
+        if (schema == null)
+        {
+            _logger.LogWarning("No validation schema found for Provenance resource type");
+            return;
+        }
+
+        var sourceNode = provenance.ToSourceNode();
+        var settings = new ValidationSettings
+        {
+            Depth = ValidationDepth.Spec // Use Spec-level validation for X-Provenance
+        };
+        var state = new ValidationState();
+        var validationResult = schema.Validate(sourceNode, settings, state);
+
+        if (!validationResult.IsValid)
+        {
+            _logger.LogWarning(
+                "X-Provenance validation failed: {ErrorCount} error(s), {WarningCount} warning(s)",
+                validationResult.Issues.Count(i => i.Severity == IssueSeverity.Error || i.Severity == IssueSeverity.Fatal),
+                validationResult.Issues.Count(i => i.Severity == IssueSeverity.Warning));
+
+            throw new ValidationException(validationResult);
+        }
+
+        _logger.LogDebug("X-Provenance validation passed");
     }
 }
