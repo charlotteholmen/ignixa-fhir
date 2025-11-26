@@ -6,6 +6,7 @@
 using Ignixa.FhirPath;
 using Ignixa.FhirPath.Evaluation;
 using Ignixa.Abstractions;
+using Ignixa.Domain.Models;
 using Ignixa.FhirPath.Parser;
 using Ignixa.Serialization.SourceNodes;
 using Ignixa.Specification;
@@ -15,7 +16,7 @@ namespace Ignixa.Validation.Checks;
 
 /// <summary>
 /// Validates FHIRPath invariant constraints.
-/// Tier 2 validator - used in Spec validation tier.
+/// Used in Spec and Full validation depths.
 /// </summary>
 /// <remarks>
 /// This check evaluates FHIRPath constraint expressions defined in FHIR StructureDefinitions.
@@ -77,8 +78,8 @@ public class FhirPathInvariantCheck : IValidationCheck
     /// <returns>A validation result indicating success or failure.</returns>
     public ValidationResult Validate(ISourceNode node, ValidationSettings settings, ValidationState state)
     {
-        // Skip invariant validation if tier is Fast (invariants are Spec tier and above)
-        if (settings.Tier < ValidationTier.Spec)
+        // Skip invariant validation if depth is Minimal (invariants are Spec depth and above)
+        if (settings.Depth < ValidationDepth.Spec)
         {
             return ValidationResult.Success();
         }

@@ -6,9 +6,11 @@ using DurableTask.Core;
 using Ignixa.Application.BackgroundOperations.Export.Activities;
 using Ignixa.Application.BackgroundOperations.Export.Orchestrations;
 using Ignixa.Application.BackgroundOperations.Import.Orchestrations;
+using Ignixa.Application.BackgroundOperations.Terminology.Orchestrations;
 using Ignixa.DataLayer.FileSystem.DurableTask;
 using ExportCompleteJobActivity = Ignixa.Application.BackgroundOperations.Export.Activities.CompleteJobActivity;
 using ImportActivities = Ignixa.Application.BackgroundOperations.Import.Activities;
+using TerminologyActivities = Ignixa.Application.BackgroundOperations.Terminology.Activities;
 
 namespace Ignixa.Api.Infrastructure;
 
@@ -43,6 +45,7 @@ public static class DurableTaskConfiguration
             // Register orchestrations
             worker.AddTaskOrchestrations(typeof(ExportOrchestration));
             worker.AddTaskOrchestrations(typeof(ImportOrchestration));
+            worker.AddTaskOrchestrations(typeof(TerminologyImportOrchestration));
 
             // Register Export activities with service provider for DI
             worker.AddTaskActivitiesFromInterface<SearchAndWriteChunkActivity>(sp);
@@ -53,6 +56,9 @@ public static class DurableTaskConfiguration
             worker.AddTaskActivitiesFromInterface<ImportActivities.StreamingImportFileActivity>(sp);
             worker.AddTaskActivitiesFromInterface<ImportActivities.UpdateProgressActivity>(sp);
             worker.AddTaskActivitiesFromInterface<ImportActivities.CompleteJobActivity>(sp);
+
+            // Register Terminology activities with service provider for DI
+            worker.AddTaskActivitiesFromInterface<TerminologyActivities.ImportTerminologyResourceActivity>(sp);
 
             return worker;
         });
@@ -163,8 +169,10 @@ internal static class TaskHubWorkerExtensions
         IServiceProvider serviceProvider)
         where TActivity : TaskActivity
     {
-        var activityCreator = new ServiceProviderObjectCreator<TActivity>(serviceProvider);
-        worker.AddTaskActivities(activityCreator.Create());
+        // CRITICAL: Use AddTaskActivities overload that accepts ObjectCreator<TaskActivity>
+        // This ensures a new activity instance is created for each execution with fresh dependencies
+        var activityCreator = new ServiceProviderObjectCreator<TaskActivity>(serviceProvider, typeof(TActivity));
+        worker.AddTaskActivities(activityCreator);
         return worker;
     }
 }
@@ -172,19 +180,41 @@ internal static class TaskHubWorkerExtensions
 /// <summary>
 /// Object creator that resolves activities from the service provider.
 /// Enables dependency injection for DurableTask activities.
+/// Supports both generic type parameter and explicit type specification for flexible registration.
 /// </summary>
 internal class ServiceProviderObjectCreator<T> : ObjectCreator<T>
     where T : class
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly Type? _concreteType;
 
-    public ServiceProviderObjectCreator(IServiceProvider serviceProvider)
+    public ServiceProviderObjectCreator(IServiceProvider serviceProvider, Type? concreteType = null)
     {
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
+        _concreteType = concreteType;
+
+        // Set Name and Version for DurableTask's activity registration
+        // Name must be unique to avoid "Duplicate entry detected" errors
+        Name = GetActivityName(concreteType ?? typeof(T));
+        Version = string.Empty;
     }
 
     public override T Create()
     {
+        // If explicit type provided, resolve that type and cast to T
+        // Otherwise, resolve T directly
+        if (_concreteType != null)
+        {
+            return (T)_serviceProvider.GetRequiredService(_concreteType);
+        }
+
         return _serviceProvider.GetRequiredService<T>();
+    }
+
+    private static string GetActivityName(Type type)
+    {
+        // Use the full type name for uniqueness (e.g., "Ignixa.Application.BackgroundOperations.Export.Activities.SearchAndWriteChunkActivity")
+        // DurableTask uses this name to route work items to the correct activity implementation
+        return type.FullName ?? type.Name;
     }
 }

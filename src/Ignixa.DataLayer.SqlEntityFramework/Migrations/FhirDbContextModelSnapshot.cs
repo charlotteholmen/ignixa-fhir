@@ -187,11 +187,33 @@ namespace Ignixa.DataLayer.SqlEntityFramework.Migrations
                         .HasColumnType("nvarchar(512)")
                         .HasColumnName("Canonical");
 
+                    b.Property<string>("ContentHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("ContentHash");
+
                     b.Property<string>("FhirVersion")
                         .IsRequired()
                         .HasMaxLength(10)
                         .HasColumnType("nvarchar(10)")
                         .HasColumnName("FhirVersion");
+
+                    b.Property<DateTimeOffset?>("ImportCompletedDate")
+                        .HasColumnType("datetimeoffset")
+                        .HasColumnName("ImportCompletedDate");
+
+                    b.Property<string>("ImportErrorMessage")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("ImportErrorMessage");
+
+                    b.Property<DateTimeOffset?>("ImportStartDate")
+                        .HasColumnType("datetimeoffset")
+                        .HasColumnName("ImportStartDate");
+
+                    b.Property<int?>("ImportedConceptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("ImportedConceptCount");
 
                     b.Property<bool>("IsActive")
                         .ValueGeneratedOnAdd()
@@ -233,6 +255,11 @@ namespace Ignixa.DataLayer.SqlEntityFramework.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)")
                         .HasColumnName("ResourceType");
+
+                    b.Property<string>("TerminologyImportStatus")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("TerminologyImportStatus");
 
                     b.Property<string>("Version")
                         .HasMaxLength(100)
@@ -485,26 +512,35 @@ namespace Ignixa.DataLayer.SqlEntityFramework.Migrations
 
             modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.SearchParamEntity", b =>
                 {
+                    b.Property<string>("Uri")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<bool>("IsPartiallySupported")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset>("LastUpdated")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<short>("SearchParamId")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("smallint");
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<short>("SearchParamId"));
 
-                    b.Property<bool>("IsPartiallySupported")
-                        .HasColumnType("bit");
-
-                    b.Property<string>("Uri")
+                    b.Property<string>("Status")
                         .IsRequired()
-                        .HasMaxLength(300)
-                        .HasColumnType("nvarchar(300)");
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
 
-                    b.HasKey("SearchParamId")
-                        .HasName("PK_SearchParam");
+                    b.HasKey("Uri")
+                        .HasName("PKC_SearchParam");
 
-                    b.HasIndex("Uri")
+                    SqlServerKeyBuilderExtensions.IsClustered(b.HasKey("Uri"));
+
+                    b.HasIndex("SearchParamId")
                         .IsUnique()
-                        .HasDatabaseName("UQ_SearchParam_Uri");
+                        .HasDatabaseName("UQ_SearchParam_SearchParamId");
 
                     b.ToTable("SearchParam");
                 });
@@ -570,6 +606,426 @@ namespace Ignixa.DataLayer.SqlEntityFramework.Migrations
                         .HasDatabaseName("UQ_System_Value");
 
                     b.ToTable("System");
+                });
+
+            modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermCodeSystemEntity", b =>
+                {
+                    b.Property<long>("TermCodeSystemId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("TermCodeSystemId");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("TermCodeSystemId"));
+
+                    b.Property<bool>("CaseSensitive")
+                        .HasColumnType("bit")
+                        .HasColumnName("CaseSensitive");
+
+                    b.Property<bool>("Compositional")
+                        .HasColumnType("bit")
+                        .HasColumnName("Compositional");
+
+                    b.Property<int>("ConceptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("ConceptCount");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasColumnName("Content");
+
+                    b.Property<DateTimeOffset>("ImportedDate")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetimeoffset")
+                        .HasColumnName("ImportedDate")
+                        .HasDefaultValueSql("GETUTCDATE()");
+
+                    b.Property<bool>("IsHierarchical")
+                        .HasColumnType("bit")
+                        .HasColumnName("IsHierarchical");
+
+                    b.Property<long>("PackageResourceId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("PackageResourceId");
+
+                    b.Property<int>("SystemId")
+                        .HasColumnType("int")
+                        .HasColumnName("SystemId");
+
+                    b.Property<string>("Version")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("Version");
+
+                    b.HasKey("TermCodeSystemId")
+                        .HasName("PK_TermCodeSystem");
+
+                    b.HasIndex("PackageResourceId")
+                        .HasDatabaseName("IX_TermCodeSystem_PackageResourceId");
+
+                    b.HasIndex("SystemId", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("UQ_TermCodeSystem_System_Version")
+                        .HasFilter("[Version] IS NOT NULL");
+
+                    b.ToTable("TermCodeSystem", "dbo");
+                });
+
+            modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermConceptEntity", b =>
+                {
+                    b.Property<long>("TermConceptId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("TermConceptId");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("TermConceptId"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("Code");
+
+                    b.Property<string>("Definition")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)")
+                        .HasColumnName("Definition");
+
+                    b.Property<string>("Display")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("Display");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit")
+                        .HasColumnName("IsActive");
+
+                    b.Property<int>("Level")
+                        .HasColumnType("int")
+                        .HasColumnName("Level");
+
+                    b.Property<long?>("ParentConceptId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("ParentConceptId");
+
+                    b.Property<string>("PropertiesJson")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("PropertiesJson");
+
+                    b.Property<long>("TermCodeSystemId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("TermCodeSystemId");
+
+                    b.HasKey("TermConceptId")
+                        .HasName("PK_TermConcept");
+
+                    b.HasIndex("Display")
+                        .HasDatabaseName("IX_TermConcept_Display")
+                        .HasFilter("[Display] IS NOT NULL");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("Display"), new[] { "TermCodeSystemId", "Code" });
+
+                    b.HasIndex("ParentConceptId", "Level")
+                        .HasDatabaseName("IX_TermConcept_Parent")
+                        .HasFilter("[ParentConceptId] IS NOT NULL");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("ParentConceptId", "Level"), new[] { "Code", "Display" });
+
+                    b.HasIndex("TermCodeSystemId", "Code")
+                        .IsUnique()
+                        .HasDatabaseName("UQ_TermConcept_CodeSystem_Code");
+
+                    b.HasIndex("TermCodeSystemId", "Code", "IsActive")
+                        .HasDatabaseName("IX_TermConcept_CodeSystem_Code_Active");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("TermCodeSystemId", "Code", "IsActive"), new[] { "Display", "Definition" });
+
+                    b.ToTable("TermConcept", "dbo");
+                });
+
+            modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermConceptMapElementEntity", b =>
+                {
+                    b.Property<long>("TermConceptMapElementId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("TermConceptMapElementId");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("TermConceptMapElementId"));
+
+                    b.Property<string>("Comment")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("Comment");
+
+                    b.Property<string>("Equivalence")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)")
+                        .HasColumnName("Equivalence");
+
+                    b.Property<int>("GroupIndex")
+                        .HasColumnType("int")
+                        .HasColumnName("GroupIndex");
+
+                    b.Property<string>("SourceCode")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("SourceCode");
+
+                    b.Property<string>("SourceDisplay")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("SourceDisplay");
+
+                    b.Property<int>("SourceSystemId")
+                        .HasColumnType("int")
+                        .HasColumnName("SourceSystemId");
+
+                    b.Property<string>("TargetCode")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("TargetCode");
+
+                    b.Property<string>("TargetDisplay")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("TargetDisplay");
+
+                    b.Property<int?>("TargetSystemId")
+                        .HasColumnType("int")
+                        .HasColumnName("TargetSystemId");
+
+                    b.Property<long>("TermConceptMapId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("TermConceptMapId");
+
+                    b.HasKey("TermConceptMapElementId")
+                        .HasName("PK_TermConceptMapElement");
+
+                    b.HasIndex("TermConceptMapId");
+
+                    b.HasIndex("SourceSystemId", "SourceCode")
+                        .HasDatabaseName("IX_TermConceptMapElement_Source");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("SourceSystemId", "SourceCode"), new[] { "TermConceptMapId", "TargetSystemId", "TargetCode", "Equivalence" });
+
+                    b.HasIndex("TargetSystemId", "TargetCode")
+                        .HasDatabaseName("IX_TermConceptMapElement_Target")
+                        .HasFilter("[TargetSystemId] IS NOT NULL");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("TargetSystemId", "TargetCode"), new[] { "TermConceptMapId", "SourceSystemId", "SourceCode", "Equivalence" });
+
+                    b.ToTable("TermConceptMapElement", "dbo");
+                });
+
+            modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermConceptMapEntity", b =>
+                {
+                    b.Property<long>("TermConceptMapId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("TermConceptMapId");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("TermConceptMapId"));
+
+                    b.Property<string>("Canonical")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("Canonical");
+
+                    b.Property<DateTimeOffset>("ImportedDate")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetimeoffset")
+                        .HasColumnName("ImportedDate")
+                        .HasDefaultValueSql("GETUTCDATE()");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("Name");
+
+                    b.Property<long>("PackageResourceId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("PackageResourceId");
+
+                    b.Property<string>("SourceCanonical")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("SourceCanonical");
+
+                    b.Property<string>("TargetCanonical")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("TargetCanonical");
+
+                    b.Property<string>("Version")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("Version");
+
+                    b.HasKey("TermConceptMapId")
+                        .HasName("PK_TermConceptMap");
+
+                    b.HasIndex("PackageResourceId");
+
+                    b.HasIndex("Canonical", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("UQ_TermConceptMap_Canonical_Version")
+                        .HasFilter("[Version] IS NOT NULL");
+
+                    b.ToTable("TermConceptMap", "dbo");
+                });
+
+            modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermValueSetEntity", b =>
+                {
+                    b.Property<long>("TermValueSetId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("TermValueSetId");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("TermValueSetId"));
+
+                    b.Property<string>("Canonical")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("Canonical");
+
+                    b.Property<int?>("ExpansionCodeCount")
+                        .HasColumnType("int")
+                        .HasColumnName("ExpansionCodeCount");
+
+                    b.Property<bool>("Immutable")
+                        .HasColumnType("bit")
+                        .HasColumnName("Immutable");
+
+                    b.Property<DateTimeOffset>("ImportedDate")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("datetimeoffset")
+                        .HasColumnName("ImportedDate")
+                        .HasDefaultValueSql("GETUTCDATE()");
+
+                    b.Property<bool>("IsExpanded")
+                        .HasColumnType("bit")
+                        .HasColumnName("IsExpanded");
+
+                    b.Property<bool>("IsPartialExpansion")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false)
+                        .HasColumnName("IsPartialExpansion");
+
+                    b.Property<DateTimeOffset?>("LastExpansionDate")
+                        .HasColumnType("datetimeoffset")
+                        .HasColumnName("LastExpansionDate");
+
+                    b.Property<string>("PartialExpansionReason")
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)")
+                        .HasColumnName("PartialExpansionReason");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("Name");
+
+                    b.Property<long>("PackageResourceId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("PackageResourceId");
+
+                    b.Property<string>("Version")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("Version");
+
+                    b.HasKey("TermValueSetId")
+                        .HasName("PK_TermValueSet");
+
+                    b.HasIndex("Canonical")
+                        .HasDatabaseName("IX_TermValueSet_Canonical");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("Canonical"), new[] { "Version", "IsExpanded" });
+
+                    b.HasIndex("IsExpanded")
+                        .HasDatabaseName("IX_TermValueSet_Expanded")
+                        .HasFilter("[IsExpanded] = 0");
+
+                    b.HasIndex("PackageResourceId");
+
+                    b.HasIndex("Canonical", "Version")
+                        .IsUnique()
+                        .HasDatabaseName("UQ_TermValueSet_Canonical_Version")
+                        .HasFilter("[Version] IS NOT NULL");
+
+                    b.ToTable("TermValueSet", "dbo");
+                });
+
+            modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermValueSetExpansionEntity", b =>
+                {
+                    b.Property<long>("TermValueSetExpansionId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("TermValueSetExpansionId");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("TermValueSetExpansionId"));
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("Code");
+
+                    b.Property<string>("Display")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("Display");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit")
+                        .HasColumnName("IsActive");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("int")
+                        .HasColumnName("Ordinal");
+
+                    b.Property<int>("SystemId")
+                        .HasColumnType("int")
+                        .HasColumnName("SystemId");
+
+                    b.Property<string>("SystemVersion")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("SystemVersion");
+
+                    b.Property<long>("TermValueSetId")
+                        .HasColumnType("bigint")
+                        .HasColumnName("TermValueSetId");
+
+                    b.HasKey("TermValueSetExpansionId")
+                        .HasName("PK_TermValueSetExpansion");
+
+                    b.HasIndex("Display")
+                        .HasDatabaseName("IX_TermValueSetExpansion_Display")
+                        .HasFilter("[Display] IS NOT NULL AND [IsActive] = 1");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("Display"), new[] { "TermValueSetId", "SystemId", "Code" });
+
+                    b.HasIndex("SystemId");
+
+                    b.HasIndex("TermValueSetId", "Ordinal")
+                        .HasDatabaseName("IX_TermValueSetExpansion_ValueSet_Ordinal")
+                        .HasFilter("[IsActive] = 1");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("TermValueSetId", "Ordinal"), new[] { "SystemId", "Code", "Display" });
+
+                    b.HasIndex("TermValueSetId", "SystemId", "Code")
+                        .HasDatabaseName("IX_TermValueSetExpansion_ValueSet_System_Code")
+                        .HasFilter("[IsActive] = 1");
+
+                    b.ToTable("TermValueSetExpansion", "dbo");
                 });
 
             modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.TokenSearchParamEntity", b =>
@@ -813,6 +1269,121 @@ namespace Ignixa.DataLayer.SqlEntityFramework.Migrations
                         .IsRequired();
 
                     b.Navigation("Resource");
+                });
+
+            modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermCodeSystemEntity", b =>
+                {
+                    b.HasOne("Ignixa.DataLayer.SqlEntityFramework.Entities.PackageResourceEntity", "PackageResource")
+                        .WithMany()
+                        .HasForeignKey("PackageResourceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_TermCodeSystem_PackageResource");
+
+                    b.HasOne("Ignixa.DataLayer.SqlEntityFramework.Entities.SystemEntity", "System")
+                        .WithMany()
+                        .HasForeignKey("SystemId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("FK_TermCodeSystem_System");
+
+                    b.Navigation("PackageResource");
+
+                    b.Navigation("System");
+                });
+
+            modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermConceptEntity", b =>
+                {
+                    b.HasOne("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermConceptEntity", "ParentConcept")
+                        .WithMany()
+                        .HasForeignKey("ParentConceptId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .HasConstraintName("FK_TermConcept_Parent");
+
+                    b.HasOne("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermCodeSystemEntity", "CodeSystem")
+                        .WithMany()
+                        .HasForeignKey("TermCodeSystemId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_TermConcept_CodeSystem");
+
+                    b.Navigation("CodeSystem");
+
+                    b.Navigation("ParentConcept");
+                });
+
+            modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermConceptMapElementEntity", b =>
+                {
+                    b.HasOne("Ignixa.DataLayer.SqlEntityFramework.Entities.SystemEntity", "SourceSystem")
+                        .WithMany()
+                        .HasForeignKey("SourceSystemId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("FK_TermConceptMapElement_SourceSystem");
+
+                    b.HasOne("Ignixa.DataLayer.SqlEntityFramework.Entities.SystemEntity", "TargetSystem")
+                        .WithMany()
+                        .HasForeignKey("TargetSystemId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .HasConstraintName("FK_TermConceptMapElement_TargetSystem");
+
+                    b.HasOne("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermConceptMapEntity", "ConceptMap")
+                        .WithMany()
+                        .HasForeignKey("TermConceptMapId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_TermConceptMapElement_ConceptMap");
+
+                    b.Navigation("ConceptMap");
+
+                    b.Navigation("SourceSystem");
+
+                    b.Navigation("TargetSystem");
+                });
+
+            modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermConceptMapEntity", b =>
+                {
+                    b.HasOne("Ignixa.DataLayer.SqlEntityFramework.Entities.PackageResourceEntity", "PackageResource")
+                        .WithMany()
+                        .HasForeignKey("PackageResourceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_TermConceptMap_PackageResource");
+
+                    b.Navigation("PackageResource");
+                });
+
+            modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermValueSetEntity", b =>
+                {
+                    b.HasOne("Ignixa.DataLayer.SqlEntityFramework.Entities.PackageResourceEntity", "PackageResource")
+                        .WithMany()
+                        .HasForeignKey("PackageResourceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_TermValueSet_PackageResource");
+
+                    b.Navigation("PackageResource");
+                });
+
+            modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermValueSetExpansionEntity", b =>
+                {
+                    b.HasOne("Ignixa.DataLayer.SqlEntityFramework.Entities.SystemEntity", "System")
+                        .WithMany()
+                        .HasForeignKey("SystemId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("FK_TermValueSetExpansion_System");
+
+                    b.HasOne("Ignixa.DataLayer.SqlEntityFramework.Entities.Terminology.TermValueSetEntity", "ValueSet")
+                        .WithMany()
+                        .HasForeignKey("TermValueSetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("FK_TermValueSetExpansion_ValueSet");
+
+                    b.Navigation("System");
+
+                    b.Navigation("ValueSet");
                 });
 
             modelBuilder.Entity("Ignixa.DataLayer.SqlEntityFramework.Entities.TokenSearchParamEntity", b =>

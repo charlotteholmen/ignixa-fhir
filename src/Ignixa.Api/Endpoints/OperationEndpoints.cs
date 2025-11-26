@@ -6,9 +6,11 @@
 using Ignixa.Api.Filters;
 using Ignixa.Api.Http;
 using Ignixa.Application.Operations.Features.Validate;
+using Ignixa.Domain.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
+using Ignixa.Validation.Abstractions;
 using Medino;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.IO;
@@ -17,12 +19,12 @@ using System.Text.Json.Nodes;
 namespace Ignixa.Api.Endpoints;
 
 /// <summary>
-/// Registers FHIR operation endpoints ($validate, $expand, etc.)
+/// Registers FHIR validation operation endpoints ($validate).
 /// </summary>
 public static class OperationEndpoints
 {
     /// <summary>
-    /// Registers FHIR operation endpoints.
+    /// Registers FHIR validation operation endpoints.
     ///
     /// Supported Operations:
     /// - POST /$validate - System-level validation (any resource type)
@@ -299,19 +301,58 @@ public static class OperationEndpoints
             }
         }
 
+        // Parse ValidationDepth from Prefer header
+        var preferHeader = context.Request.Headers["Prefer"].ToString();
+        var validationMode = ParseValidationDepthFromPreferHeader(preferHeader);
+
         // Create validation command
         var command = new ValidateResourceCommand(
             tenantId,
             resourceType,
             jsonNode,
-            mode,
-            profile,
-            instanceId);
+            ValidationDepth: validationMode,
+            Mode: mode,
+            Profile: profile,
+            InstanceId: instanceId);
 
         // Execute validation
         var result = await mediator.SendAsync(command, cancellationToken);
 
         // Return OperationOutcome
         return Results.Ok(result.OperationOutcome);
+    }
+
+    /// <summary>
+    /// Parses ValidationDepth from Prefer header.
+    /// Expects: Prefer: handling=strict, mode=minimal|spec|full
+    /// Defaults to Spec if not specified or invalid.
+    /// </summary>
+    private static ValidationDepth ParseValidationDepthFromPreferHeader(string? preferHeader)
+    {
+        if (string.IsNullOrWhiteSpace(preferHeader))
+        {
+            return ValidationDepth.Spec; // Default to Spec per FHIR spec
+        }
+
+        // Parse "mode=minimal|spec|full" from Prefer header
+        // Example: "handling=strict, mode=full" → Full
+        var parts = preferHeader.Split(',', StringSplitOptions.TrimEntries);
+        var modePart = parts.FirstOrDefault(p => p.StartsWith("mode=", StringComparison.OrdinalIgnoreCase));
+
+        if (modePart == null)
+        {
+            return ValidationDepth.Spec;
+        }
+
+        var modeValue = modePart.Substring(5).Trim(); // Remove "mode=" prefix
+
+        return modeValue.ToUpperInvariant() switch
+        {
+            "MINIMAL" => ValidationDepth.Minimal,
+            "SPEC" => ValidationDepth.Spec,
+            "NORMAL" => ValidationDepth.Spec, // Backward compatibility
+            "FULL" => ValidationDepth.Full,
+            _ => ValidationDepth.Spec // Unknown value, default to Spec
+        };
     }
 }

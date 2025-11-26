@@ -8,6 +8,7 @@ using Ignixa.Application.Features.Resource;
 using Ignixa.Application.Infrastructure;
 using Ignixa.Domain.Models;
 using Ignixa.Serialization;
+using Ignixa.Serialization.SourceNodes;
 using Ignixa.Validation;
 using Ignixa.Validation.Abstractions;
 using Medino;
@@ -47,19 +48,19 @@ public class ValidateResourceHandler : IRequestHandler<ValidateResourceCommand, 
         var context = _contextAccessor.RequestContext
             ?? throw new InvalidOperationException("FHIR request context not available");
 
-        // Get tenant configuration from context to determine validation tier
+        // Get tenant configuration from context to determine validation depth
         var currentTenantConfig = context.TenantConfiguration;
 
         // Use FHIR version from context (defaults to R4)
         var fhirVersionEnum = context.FhirVersion;
 
-        // Determine validation tier: Default to Spec tier for $validate operation
-        var validationTier = ParseValidationTier(currentTenantConfig?.ValidationTier ?? "Spec");
+        // Determine validation depth: Default to Spec depth for $validate operation
+        var validationDepth = ParseValidationDepth(currentTenantConfig?.ValidationDepth ?? "Spec");
 
         _logger.LogDebug(
-            "Validating resource with $validate operation (FHIR {Version}, Tier: {Tier})",
+            "Validating resource with $validate operation (FHIR {Version}, Depth: {Depth})",
             fhirVersionEnum,
-            validationTier);
+            validationDepth);
 
         var sourceNode = request.JsonNode.ToSourceNode();
         var issues = new List<object>();
@@ -86,7 +87,7 @@ public class ValidateResourceHandler : IRequestHandler<ValidateResourceCommand, 
                 diagnostics = "Resource must contain a 'resourceType' field"
             });
         }
-        else if (validationTier != ValidationTier.None && sourceNode is not null)
+        else if (sourceNode is not null)
         {
             // Handle mode-specific validation logic (FHIR spec requirement)
             var normalizedMode = request.Mode?.ToUpperInvariant();
@@ -188,14 +189,14 @@ public class ValidateResourceHandler : IRequestHandler<ValidateResourceCommand, 
                 });
             }
             else
-            {
-                var settings = new ValidationSettings
                 {
-                    Tier = validationTier,
-                    TerminologyService = _terminologyService
-                };
-                var state = new ValidationState();
-                var validationResult = schema.Validate(sourceNode, settings, state);
+                    var settings = new ValidationSettings
+                    {
+                        Depth = validationDepth,
+                        TerminologyService = _terminologyService
+                    };
+                    var state = new ValidationState();
+                    var validationResult = schema.Validate(sourceNode, settings, state);
 
                 if (!validationResult.IsValid)
                 {
@@ -413,15 +414,18 @@ public class ValidateResourceHandler : IRequestHandler<ValidateResourceCommand, 
         return Task.FromResult(new ValidateResourceResult(operationOutcomeJson));
     }
 
-    private static ValidationTier ParseValidationTier(string? tier)
+    private static ValidationDepth ParseValidationDepth(string? depth)
     {
-        return tier?.ToUpperInvariant() switch
+        return depth?.ToUpperInvariant() switch
         {
-            "NONE" => ValidationTier.None,
-            "FAST" => ValidationTier.Fast,
-            "SPEC" => ValidationTier.Spec,
-            "PROFILE" => ValidationTier.Profile,
-            _ => ValidationTier.Spec // Default
+            "MINIMAL" => ValidationDepth.Minimal,
+            "SPEC" => ValidationDepth.Spec,
+            "FULL" => ValidationDepth.Full,
+            // Backward compatibility
+            "NONE" => ValidationDepth.Minimal,
+            "FAST" => ValidationDepth.Minimal,
+            "PROFILE" => ValidationDepth.Full,
+            _ => ValidationDepth.Spec // Default
         };
     }
 
@@ -463,5 +467,147 @@ public class ValidateResourceHandler : IRequestHandler<ValidateResourceCommand, 
             // Default to processing for unknown codes
             _ => "processing"
         };
+    }
+
+    /// <summary>
+    /// Validates terminology bindings for common coded elements based on ValidationDepth.
+    /// NOTE: This method is currently unused as terminology validation is integrated into the main schema validation.
+    /// Kept for reference in case separate terminology validation is needed in the future.
+    /// </summary>
+    private async Task<List<object>> ValidateTerminologyBindingsAsync(
+        string resourceType,
+        ResourceJsonNode resource,
+        ValidationDepth validationDepth,
+        CancellationToken cancellationToken)
+    {
+        var issues = new List<object>();
+
+        // Skip terminology validation for Minimal mode
+        if (validationDepth == ValidationDepth.Minimal)
+        {
+            return issues;
+        }
+
+        // Define bindings for common coded elements (hard-coded for MVP)
+        var bindings = GetKnownBindings(resourceType);
+
+        foreach (var (elementPath, valueSetUrl, strength) in bindings)
+        {
+            // Skip extensible bindings in Spec mode (only validate in Full mode)
+            if (validationDepth == ValidationDepth.Spec && strength == Ignixa.Validation.Abstractions.BindingStrength.Extensible)
+            {
+                continue;
+            }
+
+            // Extract coded value from resource
+            var codedValue = ExtractCodedValue(resource, elementPath);
+            if (codedValue == null)
+            {
+                continue; // Element not present in resource
+            }
+
+            // Validate binding
+            var result = await _terminologyService.ValidateBindingAsync(
+                valueSetUrl,
+                strength,
+                codedValue.Value.System,
+                codedValue.Value.Code,
+                codedValue.Value.Display,
+                version: null,
+                cancellationToken);
+
+            // Add issue if validation failed or has warnings
+            if (!result.IsValid || result.Severity != IssueSeverity.Information)
+            {
+                issues.Add(new
+                {
+                    severity = MapSeverity(result.Severity),
+                    code = result.Severity == IssueSeverity.Error ? "code-invalid" : "business-rule",
+                    diagnostics = result.Message,
+                    expression = elementPath
+                });
+            }
+        }
+
+        return issues;
+    }
+
+    /// <summary>
+    /// Returns known bindings for common coded elements by resource type.
+    /// </summary>
+    private static List<(string ElementPath, string ValueSetUrl, Ignixa.Validation.Abstractions.BindingStrength Strength)> GetKnownBindings(string resourceType)
+    {
+        return resourceType switch
+        {
+            "Patient" => new List<(string, string, Ignixa.Validation.Abstractions.BindingStrength)>
+            {
+                ("Patient.gender", "http://hl7.org/fhir/ValueSet/administrative-gender", Ignixa.Validation.Abstractions.BindingStrength.Required),
+                ("Patient.maritalStatus.coding", "http://hl7.org/fhir/ValueSet/marital-status", Ignixa.Validation.Abstractions.BindingStrength.Extensible),
+            },
+            "Observation" => new List<(string, string, Ignixa.Validation.Abstractions.BindingStrength)>
+            {
+                ("Observation.status", "http://hl7.org/fhir/ValueSet/observation-status", Ignixa.Validation.Abstractions.BindingStrength.Required),
+            },
+            "Condition" => new List<(string, string, Ignixa.Validation.Abstractions.BindingStrength)>
+            {
+                ("Condition.clinicalStatus.coding", "http://hl7.org/fhir/ValueSet/condition-clinical", Ignixa.Validation.Abstractions.BindingStrength.Required),
+                ("Condition.verificationStatus.coding", "http://hl7.org/fhir/ValueSet/condition-ver-status", Ignixa.Validation.Abstractions.BindingStrength.Required),
+            },
+            _ => new List<(string, string, Ignixa.Validation.Abstractions.BindingStrength)>()
+        };
+    }
+
+    /// <summary>
+    /// Extracts coded value from resource at given element path.
+    /// </summary>
+    private static (string? System, string? Code, string? Display)? ExtractCodedValue(
+        ResourceJsonNode resource,
+        string elementPath)
+    {
+        try
+        {
+            var parts = elementPath.Split('.');
+            JsonNode? current = resource.MutableNode;
+
+            // Navigate to element (e.g., "Patient.gender" or "Patient.maritalStatus.coding")
+            for (int i = 1; i < parts.Length; i++) // Skip resource type (parts[0])
+            {
+                var part = parts[i];
+                current = current?[part];
+                if (current == null) return null;
+            }
+
+            // Handle different coded element types
+            if (elementPath.EndsWith(".coding", StringComparison.Ordinal))
+            {
+                // CodeableConcept.coding (array)
+                var codingArray = current?.AsArray();
+                if (codingArray == null || codingArray.Count == 0) return null;
+
+                var firstCoding = codingArray[0];
+                return (
+                    System: firstCoding?["system"]?.GetValue<string>(),
+                    Code: firstCoding?["code"]?.GetValue<string>(),
+                    Display: firstCoding?["display"]?.GetValue<string>()
+                );
+            }
+            else
+            {
+                // Simple code element (e.g., Patient.gender)
+                var code = current?.GetValue<string>();
+                if (code == null) return null;
+
+                // For simple code elements, system will be inferred by terminology service
+                return (
+                    System: null,
+                    Code: code,
+                    Display: null
+                );
+            }
+        }
+        catch
+        {
+            return null; // Ignore extraction errors
+        }
     }
 }

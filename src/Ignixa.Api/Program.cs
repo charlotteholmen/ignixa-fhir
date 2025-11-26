@@ -28,10 +28,12 @@ using Ignixa.Search.Parsing;
 using Ignixa.Search.Definition;
 using Ignixa.Specification;
 using Ignixa.Domain;
+using Ignixa.Domain.Constants;
 // using Ignixa.Validation.SourceNodeValidation; // Removed - migrating to new FastValidator in Phase 3
 using Ignixa.Application.Infrastructure;
 using Ignixa.Search.Infrastructure;
 using Ignixa.Application.Infrastructure.Behaviors;
+using Ignixa.DataLayer.SqlEntityFramework.Features.Terminology;
 using Ignixa.Domain.Models;
 using Ignixa.FhirPath.Parser;
 using Ignixa.Serialization;
@@ -39,6 +41,10 @@ using Ignixa.SqlOnFhir;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// STARTUP TIMING DIAGNOSTICS
+// Enable via Diagnostics:StartupTiming:Enabled = true (default: true in Development)
+builder.Services.AddStartupTimingDiagnostics();
 
 // Configure Autofac as the service provider factory
 builder.Host.UseServiceProviderFactory(new AutofacServiceProviderFactory());
@@ -52,6 +58,8 @@ builder.Services.AddMemoryCache();
 
 // Register RecyclableMemoryStreamManager as singleton
 builder.Services.AddSingleton<RecyclableMemoryStreamManager>();
+
+var terminologyAutoImportEnabled = builder.Configuration.GetValue<bool>("Terminology:EnableAutoImport", false);
 
 // Register MultiTenantSearchIndexCache as singleton (multi-tenant cache consolidation)
 // Provides per-tenant cache instances for search index reference data
@@ -110,6 +118,13 @@ builder.Services.AddHostedService<IndexLoaderService>();
 // Loads packages configured in TenantConfiguration.Packages.PreloadPackages
 // Embedded packages are loaded via EmbeddedPackageLoader when referenced in PreloadPackages
 builder.Services.AddHostedService<TenantPackagePreloadService>();
+
+// Bootstrap service to trigger terminology imports for existing packages (runs after preload)
+// DISABLED by default: previously caused startup performance issues. Enable via Terminology:EnableAutoImport=true.
+if (terminologyAutoImportEnabled)
+{
+    builder.Services.AddHostedService<TerminologyImportBootstrapService>();
+}
 
 // Register HTTP client factory for background operations (Import activities need this)
 builder.Services.AddHttpClient();
@@ -338,6 +353,19 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
     // Validation operations ($validate - Phase 24: FHIR Operations)
     containerBuilder.RegisterType<Ignixa.Application.Operations.Features.Validate.ValidateResourceHandler>()
         .As<IRequestHandler<Ignixa.Application.Operations.Features.Validate.ValidateResourceCommand, Ignixa.Application.Operations.Features.Validate.ValidateResourceResult>>()
+        .InstancePerDependency();
+
+    // Terminology operations ($expand, $translate, $subsumes)
+    containerBuilder.RegisterType<Ignixa.Application.Operations.Features.Terminology.Expand.ExpandValueSetHandler>()
+        .As<IRequestHandler<Ignixa.Application.Operations.Features.Terminology.Expand.ExpandValueSetQuery, Ignixa.Application.Operations.Features.Terminology.Expand.ExpandValueSetResult>>()
+        .InstancePerDependency();
+
+    containerBuilder.RegisterType<Ignixa.Application.Operations.Features.Terminology.Translate.TranslateCodeHandler>()
+        .As<IRequestHandler<Ignixa.Application.Operations.Features.Terminology.Translate.TranslateCodeCommand, Ignixa.Application.Operations.Features.Terminology.Translate.TranslateCodeResult>>()
+        .InstancePerDependency();
+
+    containerBuilder.RegisterType<Ignixa.Application.Operations.Features.Terminology.Subsumes.SubsumesHandler>()
+        .As<IRequestHandler<Ignixa.Application.Operations.Features.Terminology.Subsumes.SubsumesQuery, Ignixa.Application.Operations.Features.Terminology.Subsumes.SubsumesQueryResult>>()
         .InstancePerDependency();
 
     // Patch handlers (Phase 17 - ADR-2520: FHIR Patch operations)
@@ -608,10 +636,34 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         })
         .SingleInstance();
 
-    // Register InMemoryTerminologyService (basic terminology validation)
+    // TERMINOLOGY SERVICES - HYBRID ROUTING (Phase 2 Week 3 - ADR-2533)
+    // HybridTerminologyService routes to SQL (fast) when terminology is imported,
+    // falls back to InMemoryTerminologyService (JSON) when not imported
+
+    // Register InMemoryTerminologyService as fallback for non-imported terminology
     containerBuilder.RegisterType<Ignixa.Validation.Services.InMemoryTerminologyService>()
-        .As<Ignixa.Validation.Abstractions.ITerminologyService>()
+        .AsSelf()
         .SingleInstance();
+
+    // Register SqlTerminologyService as concrete type (dependency for HybridTerminologyService)
+    containerBuilder.RegisterType<SqlTerminologyService>()
+        .AsSelf()
+        .InstancePerLifetimeScope();
+
+    // Register HybridTerminologyService as ITerminologyService
+    // Routes to SQL (fast) when terminology is imported, fallback to JSON parsing otherwise
+    containerBuilder.Register<Ignixa.Validation.Abstractions.ITerminologyService>(c =>
+    {
+        var sqlService = c.Resolve<SqlTerminologyService>();
+        var fallbackService = c.Resolve<Ignixa.Validation.Services.InMemoryTerminologyService>();
+        var logger = c.Resolve<ILogger<HybridTerminologyService>>();
+
+        return new HybridTerminologyService(
+            sqlService,
+            fallbackService,
+            logger);
+    })
+    .InstancePerLifetimeScope(); // Share within request scope for caching efficiency
 
     // PACKAGE MANAGEMENT (ADR-2532 Phase 1: Package Integration)
     // Provides NPM package download, extraction, and conformance resource caching
@@ -803,6 +855,31 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .As<INotificationHandler<Ignixa.Application.Events.Package.PackageLoadedEvent>>()
         .InstancePerDependency();
 
+    // Register PackageLoadedTerminologyImportHandler for automatic terminology import after package load
+    // Guarded by Terminology:EnableAutoImport to avoid startup perf issues when large packages are present.
+    if (terminologyAutoImportEnabled)
+    {
+        containerBuilder.RegisterType<Ignixa.DataLayer.SqlEntityFramework.Events.PackageLoadedTerminologyImportHandler>()
+            .As<INotificationHandler<Ignixa.Application.Events.Package.PackageLoadedEvent>>()
+            .InstancePerDependency();
+    }
+
+    // Register TerminologyImportTriggeredHandler to start DurableTask orchestration
+    containerBuilder.RegisterType<Ignixa.Application.BackgroundOperations.Terminology.EventHandlers.TerminologyImportTriggeredHandler>()
+        .As<INotificationHandler<Ignixa.Application.Events.Terminology.TerminologyImportTriggeredEvent>>()
+        .InstancePerDependency();
+
+    // TERMINOLOGY SERVICES (Phase 2 Week 3 - ADR-2533: FHIR Terminology Services)
+    // Provides CodeSystem/ValueSet/ConceptMap import from packages into SQL tables
+
+    // Register SqlSystemRepository for system URL normalization
+    containerBuilder.RegisterType<SqlSystemRepository>()
+        .As<ISystemRepository>()
+        .InstancePerDependency();
+
+    // Terminology importer is constructed inside ImportTerminologyResourceActivity using tenant-scoped DbContext
+    // to avoid leaking DbContext through singleton registrations. No direct ITerminologyImporter registration here.
+
     // Register bundle processing services
     containerBuilder.RegisterType<BundleReferencePreProcessor>()
         .InstancePerDependency();
@@ -911,6 +988,7 @@ app.MapAdminPackageEndpoints(); // Admin package management endpoints (/admin/pa
 app.MapFhirEndpoints();
 app.MapFhirHistoryEndpoints(); // FHIR _history endpoints (instance, type, system-level)
 app.MapOperationEndpoints(); // FHIR operation endpoints ($validate, etc.)
+app.MapTerminologyEndpoints(); // FHIR terminology endpoints ($expand, $translate, $subsumes)
 app.MapPatchEndpoints(); // FHIR PATCH endpoints (direct and conditional)
 app.MapCompartmentEndpoints(); // FHIR compartment search endpoints (GET /Patient/123/Observation)
 app.MapMetadataEndpoints(); // FHIR metadata endpoints (CapabilityStatement)
@@ -1010,21 +1088,35 @@ app.Logger.LogInformation("FHIR data directory: {BaseDirectory}",
     var logger = app.Services.GetRequiredService<ILogger<Program>>();
     var configStore = app.Services.GetRequiredService<ITenantConfigurationStore>();
     var repositoryFactory = app.Services.GetRequiredService<IFhirRepositoryFactory>();
+    var startupTiming = app.Services.GetRequiredService<StartupTimingDiagnostics>();
 
     logger.LogInformation("===== Database Initialization =====");
 
+    // Include system partition (tenant 0) which GetAllTenantsAsync excludes
+    // This ensures system partition DB is initialized upfront rather than lazily during package loading
+    var systemPartition = await configStore.GetTenantConfigurationAsync(SystemConstants.SystemPartitionId);
     var tenants = await configStore.GetAllTenantsAsync();
-    foreach (var tenant in tenants)
+    var allTenantsToInit = new List<TenantConfiguration>();
+    if (systemPartition?.IsActive == true)
+    {
+        allTenantsToInit.Add(systemPartition);
+    }
+    allTenantsToInit.AddRange(tenants);
+
+    foreach (var tenant in allTenantsToInit)
     {
         try
         {
-            logger.LogInformation("Initializing database for tenant {TenantId} ({DisplayName})...", tenant.TenantId, tenant.DisplayName);
+            using (startupTiming.StartPhase($"Database.Init.Tenant{tenant.TenantId}"))
+            {
+                logger.LogInformation("Initializing database for tenant {TenantId} ({DisplayName})...", tenant.TenantId, tenant.DisplayName);
 
-            // This will trigger SqlEntityFrameworkRepositoryFactory to create the repository
-            // which internally calls DatabaseInitializer.InitializeAsync() to apply migrations
-            var repository = await repositoryFactory.GetRepositoryAsync(tenant.TenantId);
+                // This will trigger SqlEntityFrameworkRepositoryFactory to create the repository
+                // which internally calls DatabaseInitializer.InitializeAsync() to apply migrations
+                var repository = await repositoryFactory.GetRepositoryAsync(tenant.TenantId);
 
-            logger.LogInformation("✅ Database initialized for tenant {TenantId}", tenant.TenantId);
+                logger.LogInformation("✅ Database initialized for tenant {TenantId}", tenant.TenantId);
+            }
         }
         catch (Exception ex)
         {
@@ -1035,6 +1127,9 @@ app.Logger.LogInformation("FHIR data directory: {BaseDirectory}",
     }
 
     logger.LogInformation("===== All Databases Initialized =====");
+
+    // Log startup timing summary
+    startupTiming.LogSummary();
 }
 
 await app.RunAsync();
