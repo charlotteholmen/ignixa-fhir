@@ -5,6 +5,8 @@
 
 using Ignixa.Api.Filters;
 using Ignixa.Api.Http;
+using Ignixa.Application.Features.Bundle.Serialization;
+using Ignixa.Application.Operations.Features.PatientEverything;
 using Ignixa.Application.Operations.Features.Validate;
 using Ignixa.Domain.Models;
 using Ignixa.Serialization;
@@ -19,7 +21,7 @@ using System.Text.Json.Nodes;
 namespace Ignixa.Api.Endpoints;
 
 /// <summary>
-/// Registers FHIR validation operation endpoints ($validate).
+/// Registers FHIR operation endpoints ($validate, $everything, etc.)
 /// </summary>
 public static class OperationEndpoints
 {
@@ -30,6 +32,7 @@ public static class OperationEndpoints
     /// - POST /$validate - System-level validation (any resource type)
     /// - POST /{resourceType}/$validate - Type-level validation
     /// - POST /{resourceType}/{id}/$validate - Instance-level validation
+    /// - GET /Patient/{id}/$everything - Patient $everything operation
     /// </summary>
     public static IEndpointRouteBuilder MapOperationEndpoints(this IEndpointRouteBuilder endpoints)
     {
@@ -62,6 +65,13 @@ public static class OperationEndpoints
             .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
             .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
 
+        // GET /Patient/{id}/$everything - Patient $everything operation (tenant-explicit)
+        tenantGroup.MapGet("/Patient/{id}/$everything", HandlePatientEverything)
+            .WithName("PatientEverything")
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status404NotFound, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
         return endpoints;
     }
 
@@ -90,6 +100,13 @@ public static class OperationEndpoints
             .WithName("ValidateResourceInstanceAgnostic")
             .Accepts<object>(KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
             .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
+        // GET /Patient/{id}/$everything - Patient $everything operation (agnostic route)
+        endpoints.MapGet("/Patient/{id}/$everything", HandlePatientEverything)
+            .WithName("PatientEverythingAgnostic")
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status404NotFound, KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
 
         return endpoints;
@@ -354,5 +371,72 @@ public static class OperationEndpoints
             "FULL" => ValidationDepth.Full,
             _ => ValidationDepth.Spec // Unknown value, default to Spec
         };
+    }
+
+    /// <summary>
+    /// Handles Patient $everything operation.
+    /// GET /tenant/{tenantId}/Patient/{id}/$everything (tenant-explicit)
+    /// GET /Patient/{id}/$everything (agnostic, single-tenant only)
+    /// Tenant resolution is handled by TenantResolutionMiddleware and FhirRequestContextMiddleware.
+    /// </summary>
+    private static async Task<IResult> HandlePatientEverything(
+        HttpContext context,
+        string id,
+        [FromServices] IMediator mediator,
+        [FromQuery] DateOnly? start,
+        [FromQuery] DateOnly? end,
+        [FromQuery] DateTimeOffset? _since,
+        [FromQuery] string? _type,
+        [FromQuery] int? _count,
+        CancellationToken cancellationToken)
+    {
+        // Parse _type parameter (comma-delimited list of resource types)
+        ISet<string>? types = null;
+        if (!string.IsNullOrEmpty(_type))
+        {
+            types = new HashSet<string>(_type.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+
+        // Convert DateOnly to DateTimeOffset for filtering
+        DateTimeOffset? startOffset = start.HasValue
+            ? new DateTimeOffset(start.Value.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
+            : null;
+        DateTimeOffset? endOffset = end.HasValue
+            ? new DateTimeOffset(end.Value.ToDateTime(TimeOnly.MaxValue), TimeSpan.Zero)
+            : null;
+
+        // Create Patient $everything query
+        var query = new PatientEverythingQuery(
+            PatientId: id,
+            Start: startOffset,
+            End: endOffset,
+            Since: _since,
+            Types: types,
+            Count: _count);
+
+        // Execute via mediator (returns streaming IAsyncEnumerable<SearchEntryResult>)
+        var result = await mediator.SendAsync(query, cancellationToken);
+
+        // Build base URL for link generation
+        string baseUrl = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.Path}";
+
+        // Set response headers
+        context.Response.ContentType = KnownContentTypes.ApplicationFhirJsonUtf8;
+
+        // Stream Bundle response using StreamingBundleSerializer
+        // This provides optimal memory efficiency by streaming results as they're retrieved
+        await StreamingBundleSerializer.SerializeWithPaginationAsync(
+            outputStream: context.Response.Body,
+            bundleType: "searchset",
+            total: result.Total,
+            entries: result.Resources,
+            searchOptions: result.SearchOptions!,
+            baseUrl: baseUrl,
+            queryString: context.Request.QueryString.Value ?? string.Empty,
+            pretty: false,
+            cancellationToken: cancellationToken);
+
+        // Response already written to the body, return empty result
+        return Results.Empty;
     }
 }
