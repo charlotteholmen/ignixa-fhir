@@ -7,6 +7,7 @@ using System.Diagnostics;
 using Ignixa.Domain.Exceptions;
 using Ignixa.Domain.Constants;
 using Ignixa.Serialization.Models;
+using System.Text.Json.Nodes;
 
 namespace Ignixa.Search.Indexing;
 
@@ -32,7 +33,7 @@ public class InvalidSearchOperationException : FhirException
     {
         Debug.Assert(!string.IsNullOrWhiteSpace(message), $"{nameof(message)} should not be null.");
 
-        Issues.Add(new OperationOutcomeJsonNode.IssueComponent
+        Issues.Add(new OperationOutcomeJsonNode.IssueComponent()
         {
             Severity = OperationOutcomeJsonNode.IssueSeverity.Error,
             Code = OperationOutcomeJsonNode.IssueType.Invalid,
