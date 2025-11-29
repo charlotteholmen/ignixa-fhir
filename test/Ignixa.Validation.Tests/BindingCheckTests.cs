@@ -4,12 +4,13 @@
 // -------------------------------------------------------------------------------------------------
 
 using FluentAssertions;
-using Ignixa.Domain.Models;
+using Ignixa.Abstractions;
 using Ignixa.Serialization;
 using Ignixa.Serialization.SourceNodes;
 using Ignixa.Validation;
 using Ignixa.Validation.Abstractions;
 using Ignixa.Validation.Checks;
+using Ignixa.Validation.Tests.TestHelpers;
 using NSubstitute;
 using System.IO;
 using System.Text;
@@ -51,7 +52,7 @@ public class BindingCheckTests
           "gender":"custom"
         }
         """;
-        var node = (await JsonSourceNodeFactory.Parse(new MemoryStream(Encoding.UTF8.GetBytes(json)))).ToSourceNode();
+        var node = (await JsonSourceNodeFactory.Parse(new MemoryStream(Encoding.UTF8.GetBytes(json)))).ToSourceNavigator();
 
         var settings = new ValidationSettings
         {
@@ -60,7 +61,7 @@ public class BindingCheckTests
         };
 
         // Act
-        var result = bindingCheck.Validate(node, settings, new ValidationState());
+        var result = bindingCheck.Validate(node.ToElement(TestSchemaProvider.GetR4Schema()), settings, new ValidationState());
 
         // Assert
         result.IsValid.Should().BeTrue("extensible bindings are skipped in Spec depth");
@@ -99,7 +100,7 @@ public class BindingCheckTests
           "gender":"custom"
         }
         """;
-        var node = (await JsonSourceNodeFactory.Parse(new MemoryStream(Encoding.UTF8.GetBytes(json)))).ToSourceNode();
+        var node = (await JsonSourceNodeFactory.Parse(new MemoryStream(Encoding.UTF8.GetBytes(json)))).ToSourceNavigator();
 
         var settings = new ValidationSettings
         {
@@ -108,7 +109,7 @@ public class BindingCheckTests
         };
 
         // Act
-        var result = bindingCheck.Validate(node, settings, new ValidationState());
+        var result = bindingCheck.Validate(node.ToElement(TestSchemaProvider.GetR4Schema()), settings, new ValidationState());
 
         // Assert
         result.IsValid.Should().BeTrue("extensible bindings in Full depth should warn, not fail");

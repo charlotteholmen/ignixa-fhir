@@ -3,6 +3,7 @@
 // Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // -------------------------------------------------------------------------------------------------
 
+using Ignixa.Abstractions;
 using Ignixa.Application.Features.Resource;
 using Ignixa.Application.Infrastructure;
 using Ignixa.Domain.Models;
@@ -87,14 +88,14 @@ public class ValidationBehavior : IPipelineBehavior<CreateOrUpdateResourceComman
 
             if (schema != null)
             {
-                var sourceNode = request.JsonNode.ToSourceNode(); // Use cached ISourceNode
+                var sourceNode = request.JsonNode.ToSourceNavigator(); // Use cached ISourceNode
                 var settings = new ValidationSettings
                 {
                     Depth = validationDepth,
                     TerminologyService = _terminologyService
                 };
                 var state = new ValidationState();
-                var validationResult = schema.Validate(sourceNode, settings, state);
+                var validationResult = schema.Validate((IElement)sourceNode, settings, state);
 
                 if (!validationResult.IsValid)
                 {

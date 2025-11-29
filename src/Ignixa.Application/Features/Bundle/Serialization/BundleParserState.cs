@@ -7,6 +7,8 @@ using System.Text;
 using Ignixa.Abstractions;
 using Ignixa.Serialization.SourceNodes;
 
+#pragma warning disable CS0618 // Type or member is obsolete
+
 namespace Ignixa.Application.Features.Bundle.Serialization;
 
 /// <summary>
@@ -154,15 +156,15 @@ internal class BundleParserState
         _isEntryComplete = true;
 
         // Parse resource JSON if present
-        ISourceNode? resourceNode = null;
+        ISourceNavigator? resourceNode = null;
         string? resourceType = null;
         if (_resourceJsonBuilder.Length > 0)
         {
             var resourceJson = _resourceJsonBuilder.ToString();
             // Parse to ResourceJsonNode to enable caching
-            // Using cached ToSourceNode() prevents repeated ReflectedSourceNode allocations
+            // Using cached ToSourceNavigator() prevents repeated ReflectedSourceNode allocations
             var parsedResource = ResourceJsonNode.Parse(resourceJson);
-            resourceNode = parsedResource.ToSourceNode();
+            resourceNode = parsedResource.ToSourceNavigator();
             resourceType = resourceNode.Name;
         }
 

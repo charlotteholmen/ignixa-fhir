@@ -3,19 +3,16 @@
 // Licensed under the MIT License (MIT).See LICENSE in the repo root for license information.
 // -------------------------------------------------------------------------------------------------
 
-using Ignixa.Domain;
-using Ignixa.Specification.ValueSets.Normative;
 using Ignixa.Search.Indexing.SearchValues;
 using Ignixa.Serialization;
 using Ignixa.Abstractions;
-using Ignixa.Serialization.SourceNodes;
 
 namespace Ignixa.Search.Indexing.Converters;
 
 /// <summary>
 /// A converter used to convert from <see cref="Money"/> to a list of <see cref="QuantitySearchValue"/>.
 /// </summary>
-public class MoneyToQuantitySearchValueConverter : FhirTypedElementToSearchValueConverter<QuantitySearchValue>
+public class MoneyToQuantitySearchValueConverter : FhirElementToSearchValueConverter<QuantitySearchValue>
 {
     private readonly FhirSpecification _fhirSpecification;
 
@@ -25,7 +22,7 @@ public class MoneyToQuantitySearchValueConverter : FhirTypedElementToSearchValue
         _fhirSpecification = fhirSpecification;
     }
 
-    protected override IEnumerable<ISearchValue> Convert(ITypedElement value)
+    protected override IEnumerable<ISearchValue> Convert(IElement value)
     {
         decimal? decimalValue = (decimal?)value.Scalar("value");
 

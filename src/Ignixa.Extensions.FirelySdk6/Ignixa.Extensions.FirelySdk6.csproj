@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Ignixa.Extensions.FirelySdk</RootNamespace>
+  </PropertyGroup>
+
+  <!-- NuGet Package Configuration -->
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <Description>Firely SDK interoperability shims for bidirectional conversion</Description>
+    <PackageTags>FHIR;HL7;Healthcare;Firely;Interop;Adapter</PackageTags>
+  </PropertyGroup>
+
+  <!-- Include README in NuGet package -->
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Ignixa abstractions with new interfaces -->
+    <ProjectReference Include="..\Ignixa.Abstractions\Ignixa.Abstractions.csproj" />
+    <!-- Ignixa serialization for SchemaAwareElement (ISourceNavigator → IElement) -->
+    <ProjectReference Include="..\Ignixa.Serialization\Ignixa.Serialization.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Firely SDK base package for ITypedElement, ISourceNode, IElementDefinitionSummary -->
+    <PackageReference Include="Hl7.Fhir.Base" />
+  </ItemGroup>
+</Project>

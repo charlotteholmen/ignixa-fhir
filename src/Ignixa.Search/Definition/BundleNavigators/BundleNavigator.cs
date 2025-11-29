@@ -4,7 +4,6 @@
 // -------------------------------------------------------------------------------------------------
 
 using EnsureThat;
-using Ignixa.Domain.Constants;
 using Ignixa.Abstractions;
 
 namespace Ignixa.Search.Definition.BundleNavigators;
@@ -13,7 +12,7 @@ internal class BundleNavigator
 {
     private readonly Lazy<IReadOnlyList<BundleEntryNavigator>> _entries;
 
-    public BundleNavigator(ITypedElement bundle)
+    public BundleNavigator(IElement bundle)
     {
         EnsureArg.IsNotNull(bundle, nameof(bundle));
         EnsureArg.Is(KnownResourceTypes.Bundle, bundle.InstanceType, StringComparison.Ordinal, nameof(bundle));

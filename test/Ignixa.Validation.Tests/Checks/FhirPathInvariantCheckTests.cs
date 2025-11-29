@@ -4,14 +4,16 @@
 // </copyright>
 
 using System.Text.Json.Nodes;
-using Ignixa.Domain.Models;
+using Ignixa.Abstractions;
 using Ignixa.FhirPath;
 using Ignixa.FhirPath.Parser;
 using Ignixa.Serialization.SourceNodes;
 using Ignixa.Specification;
 using Ignixa.Specification.Generated;
 using Ignixa.Validation;
+using Ignixa.Validation.Abstractions;
 using Ignixa.Validation.Checks;
+using Ignixa.Validation.Tests.TestHelpers;
 using Xunit;
 
 namespace Ignixa.Validation.Tests.Checks;
@@ -22,12 +24,12 @@ namespace Ignixa.Validation.Tests.Checks;
 /// </summary>
 public class FhirPathInvariantCheckTests
 {
-    private readonly R4StructureDefinitionSummaryProvider _provider;
+    private readonly ISchema _schema;
     private readonly FhirPathParser _parser;
 
     public FhirPathInvariantCheckTests()
     {
-        _provider = new R4StructureDefinitionSummaryProvider();
+        _schema = new R4CoreSchemaProvider();
         _parser = new FhirPathParser();
     }
 
@@ -40,7 +42,7 @@ public class FhirPathInvariantCheckTests
     public void GivenElementWithValue_WhenValidatingEle1_ThenReturnsSuccess()
     {
         // Arrange
-        var constraint = new ConstraintDefinition
+        var constraint = new Ignixa.Specification.ConstraintDefinition
         {
             Key = "ele-1",
             Severity = ConstraintSeverity.Error,
@@ -52,12 +54,12 @@ public class FhirPathInvariantCheckTests
 
         var json = JsonNode.Parse("{\"resourceType\":\"Patient\",\"id\":\"123\",\"gender\":\"male\"}");
         var sourceNode = JsonNodeSourceNode.Create(json);
-        var check = new FhirPathInvariantCheck(constraint, _provider, _parser);
+        var check = new FhirPathInvariantCheck(constraint, _schema, _parser);
         var settings = new ValidationSettings { Depth = ValidationDepth.Spec };
         var state = new ValidationState();
 
         // Act
-        var result = check.Validate(sourceNode, settings, state);
+        var result = check.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.True(result.IsValid);
@@ -73,7 +75,7 @@ public class FhirPathInvariantCheckTests
     {
         // Arrange - Simplified constraint using children().count()
         // Real ele-1 uses hasValue() which requires more FHIRPath implementation
-        var constraint = new ConstraintDefinition
+        var constraint = new Ignixa.Specification.ConstraintDefinition
         {
             Key = "ele-1",
             Severity = ConstraintSeverity.Error,
@@ -86,12 +88,12 @@ public class FhirPathInvariantCheckTests
         // Empty object with no children
         var json = JsonNode.Parse("{}");
         var sourceNode = JsonNodeSourceNode.Create(json);
-        var check = new FhirPathInvariantCheck(constraint, _provider, _parser);
+        var check = new FhirPathInvariantCheck(constraint, _schema, _parser);
         var settings = new ValidationSettings { Depth = ValidationDepth.Spec };
         var state = new ValidationState();
 
         // Act
-        var result = check.Validate(sourceNode, settings, state);
+        var result = check.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.False(result.IsValid);
@@ -107,7 +109,7 @@ public class FhirPathInvariantCheckTests
     public void GivenContainedResourceWithReference_WhenValidatingSimplifiedConstraint_ThenReturnsSuccess()
     {
         // Arrange - Simplified test that validates contained resources exist
-        var constraint = new ConstraintDefinition
+        var constraint = new Ignixa.Specification.ConstraintDefinition
         {
             Key = "test-contained",
             Severity = ConstraintSeverity.Error,
@@ -134,12 +136,12 @@ public class FhirPathInvariantCheckTests
             ]
         }");
         var sourceNode = JsonNodeSourceNode.Create(json);
-        var check = new FhirPathInvariantCheck(constraint, _provider, _parser);
+        var check = new FhirPathInvariantCheck(constraint, _schema, _parser);
         var settings = new ValidationSettings { Depth = ValidationDepth.Spec };
         var state = new ValidationState();
 
         // Act
-        var result = check.Validate(sourceNode, settings, state);
+        var result = check.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.True(result.IsValid);
@@ -157,7 +159,7 @@ public class FhirPathInvariantCheckTests
     public void GivenPatientContactWithName_WhenValidatingPat1_ThenReturnsSuccess()
     {
         // Arrange
-        var constraint = new ConstraintDefinition
+        var constraint = new Ignixa.Specification.ConstraintDefinition
         {
             Key = "pat-1",
             Severity = ConstraintSeverity.Error,
@@ -176,12 +178,12 @@ public class FhirPathInvariantCheckTests
             ]
         }");
         var sourceNode = JsonNodeSourceNode.Create(json)!.Children("contact").First();
-        var check = new FhirPathInvariantCheck(constraint, _provider, _parser);
+        var check = new FhirPathInvariantCheck(constraint, _schema, _parser);
         var settings = new ValidationSettings { Depth = ValidationDepth.Spec };
         var state = new ValidationState();
 
         // Act
-        var result = check.Validate(sourceNode, settings, state);
+        var result = check.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.True(result.IsValid);
@@ -196,7 +198,7 @@ public class FhirPathInvariantCheckTests
     public void GivenObservationComponentWithValue_WhenValidatingObs7_ThenReturnsSuccess()
     {
         // Arrange - Simplified to use explicit property name
-        var constraint = new ConstraintDefinition
+        var constraint = new Ignixa.Specification.ConstraintDefinition
         {
             Key = "obs-7",
             Severity = ConstraintSeverity.Error,
@@ -211,12 +213,12 @@ public class FhirPathInvariantCheckTests
             ""valueQuantity"": {""value"": 120, ""unit"": ""mmHg""}
         }");
         var sourceNode = JsonNodeSourceNode.Create(json);
-        var check = new FhirPathInvariantCheck(constraint, _provider, _parser);
+        var check = new FhirPathInvariantCheck(constraint, _schema, _parser);
         var settings = new ValidationSettings { Depth = ValidationDepth.Spec };
         var state = new ValidationState();
 
         // Act
-        var result = check.Validate(sourceNode, settings, state);
+        var result = check.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.True(result.IsValid);
@@ -230,7 +232,7 @@ public class FhirPathInvariantCheckTests
     public void GivenBundleWithUniqueFullUrls_WhenValidatingBdl7_ThenReturnsSuccess()
     {
         // Arrange
-        var constraint = new ConstraintDefinition
+        var constraint = new Ignixa.Specification.ConstraintDefinition
         {
             Key = "bdl-7",
             Severity = ConstraintSeverity.Error,
@@ -255,12 +257,12 @@ public class FhirPathInvariantCheckTests
             ]
         }");
         var sourceNode = JsonNodeSourceNode.Create(json);
-        var check = new FhirPathInvariantCheck(constraint, _provider, _parser);
+        var check = new FhirPathInvariantCheck(constraint, _schema, _parser);
         var settings = new ValidationSettings { Depth = ValidationDepth.Spec };
         var state = new ValidationState();
 
         // Act
-        var result = check.Validate(sourceNode, settings, state);
+        var result = check.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.True(result.IsValid);
@@ -278,7 +280,7 @@ public class FhirPathInvariantCheckTests
     public void GivenWarningConstraintFailure_WhenValidating_ThenReturnsWarningIssue()
     {
         // Arrange
-        var constraint = new ConstraintDefinition
+        var constraint = new Ignixa.Specification.ConstraintDefinition
         {
             Key = "test-warn",
             Severity = ConstraintSeverity.Warning,
@@ -290,12 +292,12 @@ public class FhirPathInvariantCheckTests
 
         var json = JsonNode.Parse(@"{""resourceType"":""Patient"",""gender"":""male""}");
         var sourceNode = JsonNodeSourceNode.Create(json);
-        var check = new FhirPathInvariantCheck(constraint, _provider, _parser);
+        var check = new FhirPathInvariantCheck(constraint, _schema, _parser);
         var settings = new ValidationSettings { Depth = ValidationDepth.Spec };
         var state = new ValidationState();
 
         // Act
-        var result = check.Validate(sourceNode, settings, state);
+        var result = check.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.True(result.IsValid); // Warnings don't fail validation
@@ -315,7 +317,7 @@ public class FhirPathInvariantCheckTests
     public void GivenMinimalDepth_WhenValidating_ThenSkipsInvariantCheck()
     {
         // Arrange
-        var constraint = new ConstraintDefinition
+        var constraint = new Ignixa.Specification.ConstraintDefinition
         {
             Key = "test-constraint",
             Severity = ConstraintSeverity.Error,
@@ -327,12 +329,12 @@ public class FhirPathInvariantCheckTests
 
         var json = JsonNode.Parse(@"{""resourceType"":""Patient""}");
         var sourceNode = JsonNodeSourceNode.Create(json);
-        var check = new FhirPathInvariantCheck(constraint, _provider, _parser);
+        var check = new FhirPathInvariantCheck(constraint, _schema, _parser);
         var settings = new ValidationSettings { Depth = ValidationDepth.Minimal };
         var state = new ValidationState();
 
         // Act
-        var result = check.Validate(sourceNode, settings, state);
+        var result = check.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.True(result.IsValid);
@@ -350,7 +352,7 @@ public class FhirPathInvariantCheckTests
     public void GivenInvalidExpression_WhenValidating_ThenReturnsError()
     {
         // Arrange
-        var constraint = new ConstraintDefinition
+        var constraint = new Ignixa.Specification.ConstraintDefinition
         {
             Key = "bad-expr",
             Severity = ConstraintSeverity.Error,
@@ -362,12 +364,12 @@ public class FhirPathInvariantCheckTests
 
         var json = JsonNode.Parse(@"{""resourceType"":""Patient""}");
         var sourceNode = JsonNodeSourceNode.Create(json);
-        var check = new FhirPathInvariantCheck(constraint, _provider, _parser);
+        var check = new FhirPathInvariantCheck(constraint, _schema, _parser);
         var settings = new ValidationSettings { Depth = ValidationDepth.Spec };
         var state = new ValidationState();
 
         // Act
-        var result = check.Validate(sourceNode, settings, state);
+        var result = check.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         // Invalid expressions should not crash - they return Success (empty result = false)
@@ -382,7 +384,7 @@ public class FhirPathInvariantCheckTests
     public void GivenExpressionReturningEmpty_WhenValidating_ThenReturnsFalse()
     {
         // Arrange
-        var constraint = new ConstraintDefinition
+        var constraint = new Ignixa.Specification.ConstraintDefinition
         {
             Key = "empty-result",
             Severity = ConstraintSeverity.Error,
@@ -394,12 +396,12 @@ public class FhirPathInvariantCheckTests
 
         var json = JsonNode.Parse(@"{""resourceType"":""Patient"",""name"":[{""family"":""Doe""}]}");
         var sourceNode = JsonNodeSourceNode.Create(json);
-        var check = new FhirPathInvariantCheck(constraint, _provider, _parser);
+        var check = new FhirPathInvariantCheck(constraint, _schema, _parser);
         var settings = new ValidationSettings { Depth = ValidationDepth.Spec };
         var state = new ValidationState();
 
         // Act
-        var result = check.Validate(sourceNode, settings, state);
+        var result = check.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.False(result.IsValid);
@@ -414,7 +416,7 @@ public class FhirPathInvariantCheckTests
     public void GivenExpressionReturningInteger_WhenValidating_ThenReturnsTrueIfNonZero()
     {
         // Arrange
-        var constraint = new ConstraintDefinition
+        var constraint = new Ignixa.Specification.ConstraintDefinition
         {
             Key = "count-check",
             Severity = ConstraintSeverity.Error,
@@ -426,12 +428,12 @@ public class FhirPathInvariantCheckTests
 
         var json = JsonNode.Parse(@"{""resourceType"":""Patient"",""name"":[{""family"":""Doe""}]}");
         var sourceNode = JsonNodeSourceNode.Create(json);
-        var check = new FhirPathInvariantCheck(constraint, _provider, _parser);
+        var check = new FhirPathInvariantCheck(constraint, _schema, _parser);
         var settings = new ValidationSettings { Depth = ValidationDepth.Spec };
         var state = new ValidationState();
 
         // Act
-        var result = check.Validate(sourceNode, settings, state);
+        var result = check.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.True(result.IsValid);
@@ -449,7 +451,7 @@ public class FhirPathInvariantCheckTests
     public void GivenMultipleValidations_WhenValidating_ThenCompilesExpressionOnce()
     {
         // Arrange
-        var constraint = new ConstraintDefinition
+        var constraint = new Ignixa.Specification.ConstraintDefinition
         {
             Key = "perf-test",
             Severity = ConstraintSeverity.Error,
@@ -461,14 +463,14 @@ public class FhirPathInvariantCheckTests
 
         var json = JsonNode.Parse(@"{""resourceType"":""Patient"",""gender"":""male""}");
         var sourceNode = JsonNodeSourceNode.Create(json);
-        var check = new FhirPathInvariantCheck(constraint, _provider, _parser);
+        var check = new FhirPathInvariantCheck(constraint, _schema, _parser);
         var settings = new ValidationSettings { Depth = ValidationDepth.Spec };
         var state = new ValidationState();
 
         // Act - Run validation multiple times
         for (int i = 0; i < 10; i++)
         {
-            var result = check.Validate(sourceNode, settings, state);
+            var result = check.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
             Assert.True(result.IsValid);
         }
 

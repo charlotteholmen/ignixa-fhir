@@ -8,13 +8,23 @@
     <NoWarn>$(NoWarn);CA1308;CA1024;CA1510;CA1720</NoWarn>
   </PropertyGroup>
 
+  <!-- NuGet Package Configuration -->
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <Description>FHIR Mapping Language (FML) parser and execution engine</Description>
+  </PropertyGroup>
+
+  <!-- Include README in NuGet package -->
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Superpower" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Ignixa.Abstractions\Ignixa.Abstractions.csproj" />
-    <ProjectReference Include="..\Ignixa.Domain\Ignixa.Domain.csproj" />
     <ProjectReference Include="..\Ignixa.FhirPath\Ignixa.FhirPath.csproj" />
   </ItemGroup>
 

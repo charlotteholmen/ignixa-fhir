@@ -6,15 +6,15 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using EnsureThat;
-using Ignixa.Domain.Exceptions;
-using Ignixa.Domain.Constants;
 using Ignixa.Specification;
 using Ignixa.Specification.ValueSets.Normative;
 using Ignixa.Search.Definition.BundleNavigators;
 using Ignixa.Search.Indexing;
+using Ignixa.Search.Indexing.Converters;
 using Ignixa.Search.Models;
 using Ignixa.Serialization;
 using Ignixa.Abstractions;
+using Ignixa.Search.Exceptions;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 
@@ -23,7 +23,7 @@ namespace Ignixa.Search.Definition;
 internal static class SearchParameterDefinitionBuilder
 {
     internal static void Build(
-        IReadOnlyCollection<ITypedElement> searchParameters,
+        IReadOnlyCollection<IElement> searchParameters,
         ConcurrentDictionary<Uri, SearchParameterInfo> uriDictionary,
         ConcurrentDictionary<string, ConcurrentDictionary<string, SearchParameterInfo>> resourceTypeDictionary,
         IFhirSchemaProvider modelInfoProvider)
@@ -74,7 +74,7 @@ internal static class SearchParameterDefinitionBuilder
     }
 
     private static List<(string ResourceType, SearchParameterInfo SearchParameter)> ValidateAndGetFlattenedList(
-        IReadOnlyCollection<ITypedElement> searchParamCollection,
+        IReadOnlyCollection<IElement> searchParamCollection,
         IDictionary<Uri, SearchParameterInfo> uriDictionary,
         IFhirSchemaProvider modelInfoProvider)
     {
@@ -139,7 +139,7 @@ internal static class SearchParameterDefinitionBuilder
             // If this is a composite search parameter, then make sure components are defined.
             if (string.Equals(searchParameter.Type, SearchParamType.Composite.GetLiteral(), StringComparison.OrdinalIgnoreCase))
             {
-                IReadOnlyList<ITypedElement> composites = searchParameter.Component;
+                IReadOnlyList<IElement> composites = searchParameter.Component;
                 if (composites.Count == 0)
                 {
                     AddIssue(Resources.SearchParameterDefinitionInvalidComponent, searchParameter.Url);
@@ -150,7 +150,7 @@ internal static class SearchParameterDefinitionBuilder
 
                 for (int componentIndex = 0; componentIndex < composites.Count; componentIndex++)
                 {
-                    ITypedElement component = composites[componentIndex];
+                    IElement component = composites[componentIndex];
                     string definitionUrl = GetComponentDefinition(component);
 
                     if (definitionUrl == null ||
@@ -278,7 +278,7 @@ internal static class SearchParameterDefinitionBuilder
         return results;
     }
 
-    private static string GetComponentDefinition(ITypedElement component)
+    private static string GetComponentDefinition(IElement component)
     {
         // In Stu3 the Url is under 'definition.reference'
         return component.Scalar("definition.reference")?.ToString() ??

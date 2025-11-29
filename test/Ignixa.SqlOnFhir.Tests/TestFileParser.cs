@@ -111,10 +111,10 @@ public static class TestFileParser
                 .ToList();
         }
 
-        // Parse the view definition - store as ISourceNode for direct use with ViewDefinitionExpressionParser
+        // Parse the view definition - store as ISourceNavigator for direct use with ViewDefinitionExpressionParser
         if (testElement.TryGetProperty("view", out var viewElement))
         {
-            // Convert JsonElement to JsonNode, then wrap as ISourceNode
+            // Convert JsonElement to JsonNode, then wrap as ISourceNavigator
             var viewJson = viewElement.GetRawText();
             var jsonNode = JsonNode.Parse(viewJson)!;
             testCase.ViewNode = JsonNodeSourceNode.Create(jsonNode, "ViewDefinition");
@@ -202,9 +202,9 @@ public class SqlOnFhirTestCase
 #pragma warning restore CA1002, CA2227
 
     /// <summary>
-    /// The ViewDefinition as ISourceNode for direct parsing
+    /// The ViewDefinition as ISourceNavigator for direct parsing
     /// </summary>
-    public ISourceNode? ViewNode { get; set; }
+    public ISourceNavigator? ViewNode { get; set; }
 
     /// <summary>
     /// Expected result rows

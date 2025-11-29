@@ -5,13 +5,14 @@
 
 using System.Text.Json.Nodes;
 using Ignixa.Abstractions;
-using Ignixa.Domain.Models;
 using Ignixa.Serialization.SourceNodes;
 using Ignixa.Specification;
 using Ignixa.Specification.Generated;
 using Ignixa.Validation;
+using Ignixa.Validation.Abstractions;
 using Ignixa.Validation.Checks;
 using Ignixa.Validation.Schema;
+using Ignixa.Validation.Tests.TestHelpers;
 using Xunit;
 
 namespace Ignixa.Validation.Tests.Checks;
@@ -21,8 +22,8 @@ namespace Ignixa.Validation.Tests.Checks;
 /// </summary>
 public class NestedComplexTypeCheckTests
 {
-    private static readonly IStructureDefinitionSummaryProvider Provider =
-        new R4StructureDefinitionSummaryProvider();
+    private static readonly ISchema Provider =
+        new R4CoreSchemaProvider();
 
     private static readonly StructureDefinitionSchemaBuilder Builder =
         new StructureDefinitionSchemaBuilder();
@@ -53,11 +54,11 @@ public class NestedComplexTypeCheckTests
         var state = new ValidationState();
 
         // Build AuditEvent schema (includes nested type checks for agent, source, entity)
-        var auditEventSummary = Provider.Provide("AuditEvent");
-        var schema = Builder.BuildSchema(auditEventSummary, Provider);
+        var auditEventType = Provider.GetTypeDefinition("AuditEvent");
+        var schema = Builder.BuildSchema(auditEventType!, Provider);
 
         // Act
-        var result = schema.Validate(sourceNode, settings, state);
+        var result = schema.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.True(result.IsValid);
@@ -88,11 +89,11 @@ public class NestedComplexTypeCheckTests
         var state = new ValidationState();
 
         // Build AuditEvent schema (includes nested type checks)
-        var auditEventSummary = Provider.Provide("AuditEvent");
-        var schema = Builder.BuildSchema(auditEventSummary, Provider);
+        var auditEventType = Provider.GetTypeDefinition("AuditEvent");
+        var schema = Builder.BuildSchema(auditEventType!, Provider);
 
         // Act
-        var result = schema.Validate(sourceNode, settings, state);
+        var result = schema.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         // Should have at least one error about missing requestor
@@ -134,11 +135,11 @@ public class NestedComplexTypeCheckTests
         var state = new ValidationState();
 
         // Build AuditEvent schema
-        var auditEventSummary = Provider.Provide("AuditEvent");
-        var schema = Builder.BuildSchema(auditEventSummary, Provider);
+        var auditEventType = Provider.GetTypeDefinition("AuditEvent");
+        var schema = Builder.BuildSchema(auditEventType!, Provider);
 
         // Act
-        var result = schema.Validate(sourceNode, settings, state);
+        var result = schema.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         // Should have error for agent[1].requestor missing
@@ -171,11 +172,11 @@ public class NestedComplexTypeCheckTests
         var state = new ValidationState();
 
         // Build Patient schema (includes nested type checks for address, name, contact, etc.)
-        var patientSummary = Provider.Provide("Patient");
-        var schema = Builder.BuildSchema(patientSummary, Provider);
+        var patientType = Provider.GetTypeDefinition("Patient");
+        var schema = Builder.BuildSchema(patientType!, Provider);
 
         // Act
-        var result = schema.Validate(sourceNode, settings, state);
+        var result = schema.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.True(result.IsValid);
@@ -207,11 +208,11 @@ public class NestedComplexTypeCheckTests
         var state = new ValidationState();
 
         // Build Patient schema
-        var patientSummary = Provider.Provide("Patient");
-        var schema = Builder.BuildSchema(patientSummary, Provider);
+        var patientType = Provider.GetTypeDefinition("Patient");
+        var schema = Builder.BuildSchema(patientType!, Provider);
 
         // Act
-        var result = schema.Validate(sourceNode, settings, state);
+        var result = schema.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.True(result.IsValid);
@@ -254,11 +255,11 @@ public class NestedComplexTypeCheckTests
         var state = new ValidationState();
 
         // Build Observation schema
-        var observationSummary = Provider.Provide("Observation");
-        var schema = Builder.BuildSchema(observationSummary, Provider);
+        var observationType = Provider.GetTypeDefinition("Observation");
+        var schema = Builder.BuildSchema(observationType!, Provider);
 
         // Act
-        var result = schema.Validate(sourceNode, settings, state);
+        var result = schema.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         Assert.True(result.IsValid);
@@ -283,11 +284,11 @@ public class NestedComplexTypeCheckTests
         var state = new ValidationState();
 
         // Build AuditEvent schema
-        var auditEventSummary = Provider.Provide("AuditEvent");
-        var schema = Builder.BuildSchema(auditEventSummary, Provider);
+        var auditEventType = Provider.GetTypeDefinition("AuditEvent");
+        var schema = Builder.BuildSchema(auditEventType!, Provider);
 
         // Act
-        var result = schema.Validate(sourceNode, settings, state);
+        var result = schema.Validate(sourceNode.ToElement(TestSchemaProvider.GetR4Schema()), settings, state);
 
         // Assert
         // NestedComplexTypeCheck itself passes (no elements to validate)

@@ -6,11 +6,13 @@
 using System.Collections.ObjectModel;
 using Ignixa.Abstractions;
 
+#pragma warning disable CS0618 // Type or member is obsolete
+
 namespace Ignixa.Serialization.SourceNodes;
 
-public abstract class BaseSourceNode<T> : ISourceNode, IResourceTypeSupplier, IAnnotated
+public abstract class BaseSourceNode<T> : ISourceNavigator
 {
-    private ReadOnlyDictionary<string, Lazy<IEnumerable<ISourceNode>>>? _cachedNodes;
+    private ReadOnlyDictionary<string, Lazy<IEnumerable<ISourceNavigator>>>? _cachedNodes;
 
     protected BaseSourceNode(T resource)
     {
@@ -27,17 +29,17 @@ public abstract class BaseSourceNode<T> : ISourceNode, IResourceTypeSupplier, IA
 
     public abstract string Location { get; }
 
-    public IEnumerable<object> Annotations(Type type)
+    public TMeta? Meta<TMeta>() where TMeta : class
     {
-        if (type == GetType() || type == typeof(ISourceNode) || type == typeof(IResourceTypeSupplier))
+        if (this is TMeta typed)
         {
-            return [this];
+            return typed;
         }
 
-        return Enumerable.Empty<object>();
+        return null;
     }
 
-    public IEnumerable<ISourceNode> Children(string name = null)
+    public IEnumerable<ISourceNavigator> Children(string name = null)
     {
         if (_cachedNodes == null)
         {
@@ -68,10 +70,10 @@ public abstract class BaseSourceNode<T> : ISourceNode, IResourceTypeSupplier, IA
         //    .Where(x => string.Equals(name, x.Name, StringComparison.Ordinal))
         //    .SelectMany(x => x.Node.Value);
 
-        return _cachedNodes.TryGetValue(name, out Lazy<IEnumerable<ISourceNode>> cachedNodes)
+        return _cachedNodes.TryGetValue(name, out Lazy<IEnumerable<ISourceNavigator>> cachedNodes)
             ? cachedNodes.Value
             : [];
     }
 
-    protected abstract IEnumerable<(string Name, Lazy<IEnumerable<ISourceNode>> Node)> PropertySourceNodes();
+    protected abstract IEnumerable<(string Name, Lazy<IEnumerable<ISourceNavigator>> Node)> PropertySourceNodes();
 }

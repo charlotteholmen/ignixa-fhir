@@ -6,7 +6,6 @@
 #nullable enable
 
 using EnsureThat;
-using Ignixa.Domain.Constants;
 using Ignixa.Search.Definition;
 using Ignixa.Search.Expressions;
 using Ignixa.Search.Expressions.Parsers;
@@ -52,7 +51,7 @@ public class SearchOptionsBuilder : ISearchOptionsBuilder
     public SearchOptions Build(
         string resourceType,
         IReadOnlyList<QueryParameter> parameters,
-        IStructureDefinitionSummaryProvider? schemaProvider = null)
+        ISchema? schemaProvider = null)
     {
         EnsureArg.IsNotNullOrWhiteSpace(resourceType, nameof(resourceType));
         EnsureArg.IsNotNull(parameters, nameof(parameters));
@@ -334,7 +333,7 @@ public class SearchOptionsBuilder : ISearchOptionsBuilder
         ValidateElementsAgainstSchema(
             string resourceType,
             IReadOnlySet<string> requestedElements,
-            IStructureDefinitionSummaryProvider? schemaProvider)
+            ISchema? schemaProvider)
     {
         var validElements = new HashSet<string>(StringComparer.Ordinal);
         var invalidElements = new HashSet<string>(StringComparer.Ordinal);
@@ -346,7 +345,7 @@ public class SearchOptionsBuilder : ISearchOptionsBuilder
         }
 
         // Get schema for this resource type
-        var schema = schemaProvider.Provide(resourceType);
+        var schema = schemaProvider.GetTypeDefinition(resourceType);
         if (schema == null)
         {
             // If schema not available, accept all elements
@@ -355,9 +354,9 @@ public class SearchOptionsBuilder : ISearchOptionsBuilder
 
         // Build set of valid element names from schema
         var schemaElementNames = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var element in schema.GetElements())
+        foreach (var element in schema.Children)
         {
-            schemaElementNames.Add(element.ElementName);
+            schemaElementNames.Add(element.Info.Name);
         }
 
         // Validate each requested element

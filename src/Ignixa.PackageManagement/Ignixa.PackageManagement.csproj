@@ -6,9 +6,19 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <!-- NuGet Package Configuration -->
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <Description>NPM package management for FHIR Implementation Guides</Description>
+  </PropertyGroup>
+
+  <!-- Include README in NuGet package -->
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Ignixa.Abstractions\Ignixa.Abstractions.csproj" />
-    <ProjectReference Include="..\Ignixa.Domain\Ignixa.Domain.csproj" />
   </ItemGroup>
 
   <ItemGroup>
