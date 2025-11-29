@@ -1,26 +1,10 @@
 /*
  * Copyright (c) 2025, Ignixa Contributors
  *
- * Runtime error collection for graceful error recovery in FHIR Mapping Language.
+ * Represents an error that occurred during mapping execution.
  */
 
 namespace Ignixa.FhirMappingLanguage.Evaluation;
-
-/// <summary>
-/// Error mode for mapping execution.
-/// </summary>
-public enum ErrorMode
-{
-    /// <summary>
-    /// Throw exceptions on errors (default behavior).
-    /// </summary>
-    Strict,
-
-    /// <summary>
-    /// Collect errors and continue execution where possible.
-    /// </summary>
-    Graceful
-}
 
 /// <summary>
 /// Represents an error that occurred during mapping execution.
@@ -31,12 +15,22 @@ public class ExecutionError
         string message,
         string? location = null,
         string? code = null,
-        Exception? exception = null)
+        Exception? exception = null,
+        string? ruleName = null,
+        string? elementPath = null,
+        IReadOnlyList<string>? availableElements = null,
+        string? groupName = null,
+        int? ruleIndex = null)
     {
         Message = message;
         Location = location;
         Code = code;
         Exception = exception;
+        RuleName = ruleName;
+        ElementPath = elementPath;
+        AvailableElements = availableElements;
+        GroupName = groupName;
+        RuleIndex = ruleIndex;
     }
 
     /// <summary>
@@ -59,68 +53,57 @@ public class ExecutionError
     /// </summary>
     public Exception? Exception { get; }
 
-    public override string ToString() =>
-        Location != null
-            ? $"{Location}: {Message}" + (Code != null ? $" [{Code}]" : "")
-            : Message + (Code != null ? $" [{Code}]" : "");
-}
+    /// <summary>
+    /// Gets the name of the rule where the error occurred.
+    /// </summary>
+    public string? RuleName { get; }
 
-/// <summary>
-/// Represents the result of a mapping execution with potential errors.
-/// </summary>
-/// <typeparam name="T">The result type</typeparam>
-public class ExecutionResult<T>
-{
-    private readonly List<ExecutionError> _errors = new();
+    /// <summary>
+    /// Gets the element path that caused the error (e.g., "src.birthDate").
+    /// </summary>
+    public string? ElementPath { get; }
 
-    public ExecutionResult(T? result)
+    /// <summary>
+    /// Gets the list of available elements when an element was not found.
+    /// </summary>
+    public IReadOnlyList<string>? AvailableElements { get; }
+
+    /// <summary>
+    /// Gets the name of the group where the error occurred.
+    /// </summary>
+    public string? GroupName { get; }
+
+    /// <summary>
+    /// Gets the zero-based index of the rule within the group where the error occurred.
+    /// </summary>
+    public int? RuleIndex { get; }
+
+    public override string ToString()
     {
-        Result = result;
-    }
+        var parts = new List<string>();
 
-    /// <summary>
-    /// Gets the execution result (may be null if execution failed).
-    /// </summary>
-    public T? Result { get; }
-
-    /// <summary>
-    /// Gets whether the execution was successful (no errors).
-    /// </summary>
-    public bool IsSuccess => _errors.Count == 0;
-
-    /// <summary>
-    /// Gets the collection of execution errors.
-    /// </summary>
-    public IReadOnlyList<ExecutionError> Errors => _errors;
-
-    /// <summary>
-    /// Adds an error to the result.
-    /// </summary>
-    public void AddError(string message, string? location = null, string? code = null, Exception? exception = null)
-    {
-        _errors.Add(new ExecutionError(message, location, code, exception));
-    }
-
-    /// <summary>
-    /// Adds multiple errors to the result.
-    /// </summary>
-    public void AddErrors(IEnumerable<ExecutionError> errors)
-    {
-        _errors.AddRange(errors);
-    }
-
-    /// <summary>
-    /// Returns a summary of the execution result.
-    /// </summary>
-#pragma warning disable CA1024 // Use properties where appropriate - This method generates a formatted string
-    public string GetSummary()
-#pragma warning restore CA1024
-    {
-        if (IsSuccess)
+        if (RuleName is not null)
         {
-            return "Execution completed successfully.";
+            parts.Add($"Rule '{RuleName}'");
         }
 
-        return $"Execution completed with {_errors.Count} error(s).";
+        parts.Add(Message);
+
+        if (ElementPath is not null && AvailableElements?.Count > 0)
+        {
+            parts.Add($"Available elements: [{string.Join(", ", AvailableElements)}]");
+        }
+
+        if (GroupName is not null && RuleIndex.HasValue)
+        {
+            parts.Add($"Location: StructureMap.group[{GroupName}].rule[{RuleIndex}]");
+        }
+
+        if (Code is not null)
+        {
+            parts.Add($"[{Code}]");
+        }
+
+        return string.Join(". ", parts);
     }
 }

@@ -13,7 +13,7 @@ namespace Ignixa.FhirMappingLanguage.TypeSystem;
 /// Basic implementation of type validation for mapping language.
 /// Validates primitive types and basic type compatibility.
 /// </summary>
-public class BasicTypeValidator : ITypeValidator
+internal class BasicTypeValidator : ITypeValidator
 {
     // FHIR primitive types
     private static readonly HashSet<string> PrimitiveTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -49,7 +49,7 @@ public class BasicTypeValidator : ITypeValidator
 
     public IEnumerable<TypeValidationError> ValidateMap(MapExpression map)
     {
-        var errors = new List<TypeValidationError>();
+        List<TypeValidationError> errors = [];
 
         // Build a map of declared types from "uses" declarations
         var declaredTypes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -167,7 +167,7 @@ public class BasicTypeValidator : ITypeValidator
 
     private IEnumerable<TypeValidationError> ValidateGroup(GroupExpression group, Dictionary<string, string> declaredTypes)
     {
-        var errors = new List<TypeValidationError>();
+        List<TypeValidationError> errors = [];
 
         // Validate parameter types
         foreach (var param in group.Parameters)
@@ -211,7 +211,7 @@ public class BasicTypeValidator : ITypeValidator
 
     private IEnumerable<TypeValidationError> ValidateRule(RuleExpression rule, Dictionary<string, string> declaredTypes)
     {
-        var errors = new List<TypeValidationError>();
+        List<TypeValidationError> errors = [];
 
         // Validate source type annotations
         foreach (var source in rule.Sources)
@@ -248,7 +248,7 @@ public class BasicTypeValidator : ITypeValidator
 
     private IEnumerable<TypeValidationError> ValidateDependentExpression(Expression dependent, Dictionary<string, string> declaredTypes)
     {
-        var errors = new List<TypeValidationError>();
+        List<TypeValidationError> errors = [];
 
         switch (dependent)
         {
@@ -277,7 +277,7 @@ public class BasicTypeValidator : ITypeValidator
 
     private IEnumerable<TypeValidationError> ValidateTransform(TransformExpression transform)
     {
-        var errors = new List<TypeValidationError>();
+        List<TypeValidationError> errors = [];
 
         // Validate transform function exists (handled by StandardTransforms)
         // Here we can add additional type-specific validation if needed
