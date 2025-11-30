@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ignixa.Application\Ignixa.Application.csproj" />
+    <ProjectReference Include="..\..\DataLayer\Ignixa.DataLayer.SqlEntityFramework\Ignixa.DataLayer.SqlEntityFramework.csproj" />
+    <ProjectReference Include="..\Ignixa.Domain\Ignixa.Domain.csproj" />
+    <ProjectReference Include="..\..\Core\Ignixa.Search\Ignixa.Search.csproj" />
+    <ProjectReference Include="..\..\Core\Ignixa.Specification\Ignixa.Specification.csproj" />
+    <ProjectReference Include="..\..\Core\Ignixa.Serialization\Ignixa.Serialization.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Azure.DurableTask.Core" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

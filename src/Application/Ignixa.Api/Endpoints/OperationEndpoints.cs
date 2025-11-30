@@ -1,0 +1,658 @@
+// -------------------------------------------------------------------------------------------------
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
+// -------------------------------------------------------------------------------------------------
+
+using System.Text;
+using Ignixa.Api.Extensions;
+using Ignixa.Api.Filters;
+using Ignixa.Api.Http;
+using Ignixa.Application.Features.Bundle.Serialization;
+using Ignixa.Application.Operations.Features.PatientEverything;
+using Ignixa.Application.Operations.Features.Transform;
+using Ignixa.Application.Operations.Features.Validate;
+using Ignixa.Domain.Models;
+using Ignixa.Serialization;
+using Ignixa.Serialization.Models;
+using Ignixa.Serialization.SourceNodes;
+using Ignixa.Validation.Abstractions;
+using Medino;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.IO;
+using System.Text.Json.Nodes;
+using Ignixa.Abstractions;
+
+namespace Ignixa.Api.Endpoints;
+
+/// <summary>
+/// Registers FHIR operation endpoints ($validate, $everything, etc.)
+/// </summary>
+public static class OperationEndpoints
+{
+    /// <summary>
+    /// Registers FHIR operation endpoints.
+    ///
+    /// Supported Operations:
+    /// - POST /$validate - System-level validation (any resource type)
+    /// - POST /{resourceType}/$validate - Type-level validation
+    /// - POST /{resourceType}/{id}/$validate - Instance-level validation
+    /// - GET /Patient/{id}/$everything - Patient $everything operation
+    /// - POST /StructureMap/$transform - Type-level transform (map in Parameters)
+    /// - POST /StructureMap/{id}/$transform - Instance-level transform (use specific map)
+    /// </summary>
+    public static IEndpointRouteBuilder MapOperationEndpoints(this IEndpointRouteBuilder endpoints)
+    {
+        endpoints.MapOperationTenantEndpoints();
+        endpoints.MapOperationAgnosticEndpoints();
+        return endpoints;
+    }
+
+    /// <summary>
+    /// Registers tenant-explicit operation endpoints (/tenant/{tenantId}/...).
+    /// </summary>
+    private static IEndpointRouteBuilder MapOperationTenantEndpoints(this IEndpointRouteBuilder endpoints)
+    {
+        // Create a route group for operations with tenant ID validation
+        var tenantGroup = endpoints
+            .MapGroup("/tenant/{tenantId:int}")
+            .AddEndpointFilter<ResourceTypeValidationFilter>();
+
+        // POST /{resourceType}/$validate - Type-level validation
+        tenantGroup.MapPost("/{resourceType}/$validate", HandleValidateResource)
+            .WithName("ValidateResource")
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
+        // POST /{resourceType}/{id}/$validate - Instance-level validation
+        tenantGroup.MapPost("/{resourceType}/{id}/$validate", HandleValidateResourceInstance)
+            .WithName("ValidateResourceInstance")
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
+        // GET /Patient/{id}/$everything - Patient $everything operation (tenant-explicit)
+        tenantGroup.MapGet("/Patient/{id}/$everything", HandlePatientEverything)
+            .WithName("PatientEverything")
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status404NotFound, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
+        // POST /StructureMap/$transform - Type-level transform
+        tenantGroup.MapPost("/StructureMap/$transform", HandleTransformType)
+            .WithName("TransformResourceType")
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
+        // POST /StructureMap/{id}/$transform - Instance-level transform
+        tenantGroup.MapPost("/StructureMap/{id}/$transform", HandleTransformInstance)
+            .WithName("TransformResourceInstance")
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status404NotFound, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
+        return endpoints;
+    }
+
+    /// <summary>
+    /// Registers tenant-agnostic operation endpoints (/).
+    /// Only enabled in single-tenant mode by TenantResolutionMiddleware.
+    /// </summary>
+    private static IEndpointRouteBuilder MapOperationAgnosticEndpoints(this IEndpointRouteBuilder endpoints)
+    {
+        // POST /$validate - System-level validation
+        endpoints.MapPost("/$validate", HandleValidateResourceSystem)
+            .WithName("ValidateResourceSystem")
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
+        // POST /{resourceType}/$validate - Type-level validation (agnostic route)
+        endpoints.MapPost("/{resourceType}/$validate", HandleValidateResourceAgnostic)
+            .WithName("ValidateResourceAgnostic")
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
+        // POST /{resourceType}/{id}/$validate - Instance-level validation (agnostic route)
+        endpoints.MapPost("/{resourceType}/{id}/$validate", HandleValidateResourceInstanceAgnostic)
+            .WithName("ValidateResourceInstanceAgnostic")
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
+        // GET /Patient/{id}/$everything - Patient $everything operation (agnostic route)
+        endpoints.MapGet("/Patient/{id}/$everything", HandlePatientEverything)
+            .WithName("PatientEverythingAgnostic")
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status404NotFound, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
+        // POST /StructureMap/$transform - Type-level transform (agnostic route)
+        endpoints.MapPost("/StructureMap/$transform", HandleTransformTypeAgnostic)
+            .WithName("TransformResourceTypeAgnostic")
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
+        // POST /StructureMap/{id}/$transform - Instance-level transform (agnostic route)
+        endpoints.MapPost("/StructureMap/{id}/$transform", HandleTransformInstanceAgnostic)
+            .WithName("TransformResourceInstanceAgnostic")
+            .Accepts<object>(KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status404NotFound, KnownContentTypes.ApplicationFhirJson)
+            .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
+
+        return endpoints;
+    }
+
+    /// <summary>
+    /// Creates a FHIR OperationOutcome error response with a single issue.
+    /// </summary>
+    private static object CreateOperationOutcomeError(string severity, string code, string diagnostics) =>
+        new
+        {
+            resourceType = "OperationOutcome",
+            issue = new[]
+            {
+                new
+                {
+                    severity,
+                    code,
+                    diagnostics
+                }
+            }
+        };
+
+    /// <summary>
+    /// Handles tenant-explicit $validate for a specific resource type.
+    /// POST /tenant/{tenantId}/{resourceType}/$validate
+    /// </summary>
+    private static async Task<IResult> HandleValidateResource(
+        HttpContext context,
+        int tenantId,
+        string resourceType,
+        [FromServices] IMediator mediator,
+        [FromServices] RecyclableMemoryStreamManager memoryStreamManager,
+        CancellationToken cancellationToken)
+    {
+        return await HandleValidateResourceInternal(context, tenantId, resourceType, null, mediator, memoryStreamManager, cancellationToken);
+    }
+
+    /// <summary>
+    /// Handles system-level $validate (no resource type specified).
+    /// POST /$validate
+    /// </summary>
+    private static async Task<IResult> HandleValidateResourceSystem(
+        HttpContext context,
+        [FromServices] IMediator mediator,
+        [FromServices] RecyclableMemoryStreamManager memoryStreamManager,
+        CancellationToken cancellationToken)
+    {
+        // For system-level validation, determine tenant from context
+        if (!context.Items.TryGetValue("TenantId", out var tenantIdObj) || tenantIdObj is not int tenantId)
+        {
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "required",
+                "TenantId not found. In multi-tenant mode, use /tenant/{tenantId}/$validate"));
+        }
+
+        return await HandleValidateResourceInternal(context, tenantId, null, null, mediator, memoryStreamManager, cancellationToken);
+    }
+
+    /// <summary>
+    /// Handles agnostic $validate for a specific resource type (single-tenant only).
+    /// POST /{resourceType}/$validate
+    /// </summary>
+    private static async Task<IResult> HandleValidateResourceAgnostic(
+        HttpContext context,
+        string resourceType,
+        [FromServices] IMediator mediator,
+        [FromServices] RecyclableMemoryStreamManager memoryStreamManager,
+        CancellationToken cancellationToken)
+    {
+        // For agnostic route, determine tenant from context
+        if (!context.Items.TryGetValue("TenantId", out var tenantIdObj) || tenantIdObj is not int tenantId)
+        {
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "required",
+                "TenantId not found. In multi-tenant mode, use /tenant/{tenantId}/{resourceType}/$validate"));
+        }
+
+        return await HandleValidateResourceInternal(context, tenantId, resourceType, null, mediator, memoryStreamManager, cancellationToken);
+    }
+
+    /// <summary>
+    /// Handles tenant-explicit instance-level $validate for a specific resource instance.
+    /// POST /tenant/{tenantId}/{resourceType}/{id}/$validate
+    /// </summary>
+    private static async Task<IResult> HandleValidateResourceInstance(
+        HttpContext context,
+        int tenantId,
+        string resourceType,
+        string id,
+        [FromServices] IMediator mediator,
+        [FromServices] RecyclableMemoryStreamManager memoryStreamManager,
+        CancellationToken cancellationToken)
+    {
+        return await HandleValidateResourceInternal(context, tenantId, resourceType, id, mediator, memoryStreamManager, cancellationToken);
+    }
+
+    /// <summary>
+    /// Handles agnostic instance-level $validate for a specific resource instance (single-tenant only).
+    /// POST /{resourceType}/{id}/$validate
+    /// </summary>
+    private static async Task<IResult> HandleValidateResourceInstanceAgnostic(
+        HttpContext context,
+        string resourceType,
+        string id,
+        [FromServices] IMediator mediator,
+        [FromServices] RecyclableMemoryStreamManager memoryStreamManager,
+        CancellationToken cancellationToken)
+    {
+        // For agnostic route, determine tenant from context
+        if (!context.Items.TryGetValue("TenantId", out var tenantIdObj) || tenantIdObj is not int tenantId)
+        {
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "required",
+                "TenantId not found. In multi-tenant mode, use /tenant/{tenantId}/{resourceType}/{id}/$validate"));
+        }
+
+        return await HandleValidateResourceInternal(context, tenantId, resourceType, id, mediator, memoryStreamManager, cancellationToken);
+    }
+
+    /// <summary>
+    /// Core validation handler used by all validation endpoints.
+    /// </summary>
+    private static async Task<IResult> HandleValidateResourceInternal(
+        HttpContext context,
+        int tenantId,
+        string? resourceType,
+        string? instanceId,
+        IMediator mediator,
+        RecyclableMemoryStreamManager memoryStreamManager,
+        CancellationToken cancellationToken)
+    {
+        // Use memory stream to read and preserve the request body
+        using var memoryStream = memoryStreamManager.GetStream();
+        await context.Request.Body.CopyToAsync(memoryStream, cancellationToken);
+        memoryStream.Position = 0;
+
+        if (memoryStream.Length == 0)
+        {
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "required",
+                "Request body must contain a FHIR resource to validate"));
+        }
+
+        // Parse JSON using JsonSourceNodeFactory
+        ResourceJsonNode jsonNode;
+        try
+        {
+            jsonNode = await JsonSourceNodeFactory.ParseAsync(memoryStream, cancellationToken);
+        }
+        catch
+        {
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "invalid",
+                "Request body must be valid JSON"));
+        }
+
+        // Extract parameters (mode and profile) from POST body if using Parameters resource
+        string? mode = null;
+        string? profile = null;
+
+        if (jsonNode.ResourceType == "Parameters")
+        {
+            // Use ParametersJsonNode model for strongly-typed parameter access
+            var parametersNode = jsonNode.As<ParametersJsonNode>();
+
+            foreach (var param in parametersNode.Parameter)
+            {
+                switch (param.Name)
+                {
+                    case "mode":
+                        mode = param.GetValueAs<string>("valueCode");
+                        break;
+                    case "profile":
+                        profile = param.GetValueAs<string>("valueUri");
+                        break;
+                    case "resource":
+                        // Extract the nested resource using the resource property
+                        var resourceNode = param.GetValue("resource");
+                        if (resourceNode is not null)
+                        {
+                            var resourceBytes = System.Text.Encoding.UTF8.GetBytes(resourceNode.ToJsonString() ?? "{}");
+                            jsonNode = JsonSourceNodeFactory.Parse(resourceBytes);
+                        }
+                        break;
+                }
+            }
+        }
+
+        // Validate mode + endpoint combination (FHIR spec requirement)
+        if (!string.IsNullOrEmpty(mode))
+        {
+            var normalizedMode = mode.ToUpperInvariant();
+            if ((normalizedMode == "UPDATE" || normalizedMode == "DELETE") && string.IsNullOrEmpty(instanceId))
+            {
+                return Results.BadRequest(CreateOperationOutcomeError(
+                    "error",
+                    "invalid",
+                    $"Validation mode '{mode}' requires instance-level endpoint: [base]/{{resourceType}}/{{id}}/$validate"));
+            }
+        }
+
+        // Parse ValidationDepth from Prefer header
+        var preferHeader = context.Request.Headers["Prefer"].ToString();
+        var validationMode = ParseValidationDepthFromPreferHeader(preferHeader);
+
+        // Create validation command
+        var command = new ValidateResourceCommand(
+            tenantId,
+            resourceType,
+            jsonNode,
+            ValidationDepth: validationMode,
+            Mode: mode,
+            Profile: profile,
+            InstanceId: instanceId);
+
+        // Execute validation
+        var result = await mediator.SendAsync(command, cancellationToken);
+
+        // Return OperationOutcome
+        return Results.Ok(result.OperationOutcome);
+    }
+
+    /// <summary>
+    /// Parses ValidationDepth from Prefer header.
+    /// Expects: Prefer: handling=strict, mode=minimal|spec|full
+    /// Defaults to Spec if not specified or invalid.
+    /// </summary>
+    private static ValidationDepth ParseValidationDepthFromPreferHeader(string? preferHeader)
+    {
+        if (string.IsNullOrWhiteSpace(preferHeader))
+        {
+            return ValidationDepth.Spec; // Default to Spec per FHIR spec
+        }
+
+        // Parse "mode=minimal|spec|full" from Prefer header
+        // Example: "handling=strict, mode=full" → Full
+        var parts = preferHeader.Split(',', StringSplitOptions.TrimEntries);
+        var modePart = parts.FirstOrDefault(p => p.StartsWith("mode=", StringComparison.OrdinalIgnoreCase));
+
+        if (modePart == null)
+        {
+            return ValidationDepth.Spec;
+        }
+
+        var modeValue = modePart.Substring(5).Trim(); // Remove "mode=" prefix
+
+        return modeValue.ToUpperInvariant() switch
+        {
+            "MINIMAL" => ValidationDepth.Minimal,
+            "SPEC" => ValidationDepth.Spec,
+            "NORMAL" => ValidationDepth.Spec, // Backward compatibility
+            "FULL" => ValidationDepth.Full,
+            _ => ValidationDepth.Spec // Unknown value, default to Spec
+        };
+    }
+
+    /// <summary>
+    /// Handles Patient $everything operation.
+    /// GET /tenant/{tenantId}/Patient/{id}/$everything (tenant-explicit)
+    /// GET /Patient/{id}/$everything (agnostic, single-tenant only)
+    /// Tenant resolution is handled by TenantResolutionMiddleware and FhirRequestContextMiddleware.
+    /// </summary>
+    private static async Task<IResult> HandlePatientEverything(
+        HttpContext context,
+        string id,
+        [FromServices] IMediator mediator,
+        [FromQuery] DateOnly? start,
+        [FromQuery] DateOnly? end,
+        [FromQuery] DateTimeOffset? _since,
+        [FromQuery] string? _type,
+        [FromQuery] int? _count,
+        CancellationToken cancellationToken)
+    {
+        // Parse _type parameter (comma-delimited list of resource types)
+        ISet<string>? types = null;
+        if (!string.IsNullOrEmpty(_type))
+        {
+            types = new HashSet<string>(_type.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        }
+
+        // Convert DateOnly to DateTimeOffset for filtering
+        DateTimeOffset? startOffset = start.HasValue
+            ? new DateTimeOffset(start.Value.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
+            : null;
+        DateTimeOffset? endOffset = end.HasValue
+            ? new DateTimeOffset(end.Value.ToDateTime(TimeOnly.MaxValue), TimeSpan.Zero)
+            : null;
+
+        // Create Patient $everything query
+        var query = new PatientEverythingQuery(
+            PatientId: id,
+            Start: startOffset,
+            End: endOffset,
+            Since: _since,
+            Types: types,
+            Count: _count);
+
+        // Execute via mediator (returns streaming IAsyncEnumerable<SearchEntryResult>)
+        var result = await mediator.SendAsync(query, cancellationToken);
+
+        // Build base URL for link generation
+        string baseUrl = $"{context.Request.Scheme}://{context.Request.Host}{context.Request.Path}";
+
+        // Set response headers
+        context.Response.ContentType = KnownContentTypes.ApplicationFhirJsonUtf8;
+
+        // Stream Bundle response using StreamingBundleSerializer
+        // This provides optimal memory efficiency by streaming results as they're retrieved
+        await StreamingBundleSerializer.SerializeWithPaginationAsync(
+            outputStream: context.Response.Body,
+            bundleType: "searchset",
+            total: result.Total,
+            entries: result.Resources,
+            searchOptions: result.SearchOptions!,
+            baseUrl: baseUrl,
+            queryString: context.Request.QueryString.Value ?? string.Empty,
+            pretty: false,
+            cancellationToken: cancellationToken);
+
+        // Response already written to the body, return empty result
+        return Results.Empty;
+    }
+
+    // ==================== $transform Operation Handlers ====================
+
+    /// <summary>
+    /// Handles POST /tenant/{tenantId}/StructureMap/$transform (type-level, tenant-explicit).
+    /// Map parameters provided in Parameters resource.
+    /// </summary>
+    private static async Task<IResult> HandleTransformType(
+        HttpContext context,
+        int tenantId,
+        [FromServices] IMediator mediator,
+        [FromServices] RecyclableMemoryStreamManager memoryStreamManager,
+        CancellationToken cancellationToken)
+    {
+        // Parse Parameters from request body using JsonSourceNodeFactory
+        ParametersJsonNode? parameters;
+        try
+        {
+            await using var memoryStream = memoryStreamManager.GetStream("transform-request");
+            await context.Request.Body.CopyToAsync(memoryStream, cancellationToken);
+            memoryStream.Position = 0;
+            parameters = await JsonSourceNodeFactory.ParseAsync<ParametersJsonNode>(memoryStream, cancellationToken);
+        }
+        catch
+        {
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "invalid",
+                "Request body must be a valid FHIR Parameters resource"));
+        }
+
+        if (parameters == null)
+        {
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "required",
+                "Request body must contain a FHIR Parameters resource"));
+        }
+
+        // Extract parameters
+        var source = parameters.GetParameterStringValue("source");
+        var sourceMap = parameters.GetParameterResource<StructureMapJsonNode>("sourceMap");
+        var srcMaps = parameters.GetParameterStringValues("srcMap").ToList();
+        var supportingMaps = parameters.GetParameterResources<StructureMapJsonNode>("supportingMap").ToList();
+        var content = parameters.GetParameterResource<ResourceJsonNode>("content");
+
+        // Create command
+        var command = new TransformResourceCommand(
+            Source: source,
+            SourceMap: sourceMap,
+            SrcMaps: srcMaps,
+            SupportingMaps: supportingMaps,
+            Content: content);
+
+        try
+        {
+            var result = await mediator.SendAsync(command, cancellationToken);
+
+            var resourceBytes = result.SerializeToBytes();
+
+            return FhirResults.Ok(resourceBytes);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "processing",
+                $"Transformation failed: {ex.Message}"));
+        }
+    }
+
+    /// <summary>
+    /// Handles POST /tenant/{tenantId}/StructureMap/{id}/$transform (instance-level, tenant-explicit).
+    /// Uses specific StructureMap identified by {id}.
+    /// </summary>
+    private static async Task<IResult> HandleTransformInstance(
+        HttpContext context,
+        int tenantId,
+        string id,
+        [FromServices] IMediator mediator,
+        [FromServices] RecyclableMemoryStreamManager memoryStreamManager,
+        CancellationToken cancellationToken)
+    {
+        // Parse Parameters from request body using JsonSourceNodeFactory
+        ParametersJsonNode? parameters;
+        try
+        {
+            await using var memoryStream = memoryStreamManager.GetStream("transform-request");
+            await context.Request.Body.CopyToAsync(memoryStream, cancellationToken);
+            memoryStream.Position = 0;
+            parameters = await JsonSourceNodeFactory.ParseAsync<ParametersJsonNode>(memoryStream, cancellationToken);
+        }
+        catch
+        {
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "invalid",
+                "Request body must be a valid FHIR Parameters resource"));
+        }
+
+        if (parameters == null)
+        {
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "required",
+                "Request body must contain a FHIR Parameters resource"));
+        }
+
+        // Extract content parameter (required)
+        var content = parameters.GetParameterResource<ResourceJsonNode>("content");
+
+        // Create command using resource ID as source
+        var command = new TransformResourceCommand(
+            Source: $"StructureMap/{id}",
+            Content: content);
+
+        try
+        {
+            var result = await mediator.SendAsync(command, cancellationToken);
+
+            var resourceBytes = result.SerializeToBytes();
+
+            return FhirResults.Ok(resourceBytes);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Check if it's a "not found" error
+            if (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
+            {
+                return Results.NotFound(CreateOperationOutcomeError(
+                    "error",
+                    "not-found",
+                    $"StructureMap/{id} not found"));
+            }
+
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "processing",
+                $"Transformation failed: {ex.Message}"));
+        }
+    }
+
+    /// <summary>
+    /// Handles POST /StructureMap/$transform (type-level, tenant-agnostic).
+    /// </summary>
+    private static async Task<IResult> HandleTransformTypeAgnostic(
+        HttpContext context,
+        [FromServices] IMediator mediator,
+        [FromServices] RecyclableMemoryStreamManager memoryStreamManager,
+        CancellationToken cancellationToken)
+    {
+        // For agnostic route, determine tenant from context
+        if (!context.Items.TryGetValue("TenantId", out var tenantIdObj) || tenantIdObj is not int tenantId)
+        {
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "required",
+                "TenantId not found. In multi-tenant mode, use /tenant/{tenantId}/StructureMap/$transform"));
+        }
+
+        return await HandleTransformType(context, tenantId, mediator, memoryStreamManager, cancellationToken);
+    }
+
+    /// <summary>
+    /// Handles POST /StructureMap/{id}/$transform (instance-level, tenant-agnostic).
+    /// </summary>
+    private static async Task<IResult> HandleTransformInstanceAgnostic(
+        HttpContext context,
+        string id,
+        [FromServices] IMediator mediator,
+        [FromServices] RecyclableMemoryStreamManager memoryStreamManager,
+        CancellationToken cancellationToken)
+    {
+        // For agnostic route, determine tenant from context
+        if (!context.Items.TryGetValue("TenantId", out var tenantIdObj) || tenantIdObj is not int tenantId)
+        {
+            return Results.BadRequest(CreateOperationOutcomeError(
+                "error",
+                "required",
+                "TenantId not found. In multi-tenant mode, use /tenant/{tenantId}/StructureMap/{id}/$transform"));
+        }
+
+        return await HandleTransformInstance(context, tenantId, id, mediator, memoryStreamManager, cancellationToken);
+    }
+}
