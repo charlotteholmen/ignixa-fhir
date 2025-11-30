@@ -289,15 +289,12 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
     containerBuilder.RegisterModule<BackgroundJobsModule>();
 
 
-    // Register Medino service provider
-    containerBuilder.Register<IMediatorServiceProvider>(c =>
+    // Register Medino mediator (v3.0+ uses IServiceProvider directly)
+    containerBuilder.Register<IMediator>(c =>
     {
-        var context = c.Resolve<IComponentContext>();
-        return new AutofacMediatorServiceProvider(context);
+        var serviceProvider = c.Resolve<IServiceProvider>();
+        return new Mediator(serviceProvider);
     }).SingleInstance();
-
-    // Register Medino mediator
-    containerBuilder.RegisterType<Mediator>().As<IMediator>().SingleInstance();
 
     // CRITICAL: Register pipeline behaviors BEFORE handlers
     // Medino resolves behaviors as IEnumerable<IPipelineBehavior<TRequest, TResponse>>
