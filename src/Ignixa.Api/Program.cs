@@ -40,8 +40,11 @@ using Ignixa.Domain.Models;
 using Ignixa.FhirPath.Parser;
 using Ignixa.PackageManagement.Infrastructure;
 using Ignixa.Serialization;
+using Ignixa.Serialization.SourceNodes;
 using Ignixa.SqlOnFhir;
 using Ignixa.SqlOnFhir.packages;
+using Ignixa.FhirMappingLanguage.Parser;
+using Ignixa.FhirMappingLanguage.Registry;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -382,6 +385,50 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .As<IRequestHandler<Ignixa.Application.Operations.Features.PatientEverything.PatientEverythingQuery, SearchResourcesResult>>()
         .InstancePerDependency();
 
+    // Transform operation ($transform - FHIR Mapping Language) - Phase 2
+    containerBuilder.RegisterType<Ignixa.Application.Operations.Features.Transform.TransformResourceHandler>()
+        .As<IRequestHandler<Ignixa.Application.Operations.Features.Transform.TransformResourceCommand, ResourceJsonNode>>()
+        .InstancePerLifetimeScope();
+
+    // ConceptMap translation service for translate() FML function (Phase 2.2)
+    containerBuilder.RegisterType<Ignixa.Application.Operations.Features.Transform.ConceptMapResolverService>()
+        .AsSelf()
+        .InstancePerLifetimeScope();
+
+    // FHIR Mapping Language (FML) dependencies - Phase 2
+    containerBuilder.RegisterType<MappingParser>()
+        .AsSelf()
+        .SingleInstance();
+
+    containerBuilder.RegisterType<StructureMapParser>()
+        .AsSelf()
+        .SingleInstance();
+
+    // MapRegistryCache - enhanced map registry with caching, metadata tracking, and invalidation (Phase 2.3)
+    containerBuilder.RegisterType<Ignixa.Application.Operations.Features.Transform.MapRegistryCache>()
+        .AsSelf()
+        .As<IMapRegistry>()
+        .SingleInstance();
+
+    // Package loaded event handler for map cache invalidation (Phase 2.3)
+    containerBuilder.RegisterType<Ignixa.Application.Operations.Events.PackageLoadedMapCacheInvalidationHandler>()
+        .As<INotificationHandler<Ignixa.Application.Events.Package.PackageLoadedEvent>>()
+        .InstancePerLifetimeScope();
+
+    // FHIRPath expression caching (Phase 2.1)
+    containerBuilder.RegisterType<Ignixa.Application.Operations.Features.Transform.FhirPathExpressionCache>()
+        .AsSelf()
+        .SingleInstance();
+
+    // FHIRPath evaluator with timeout protection (Phase 2.1)
+    containerBuilder.Register(c => new Ignixa.Application.Operations.Features.Transform.FhirPathEvaluatorWithTimeout(
+            c.Resolve<Ignixa.Application.Operations.Features.Transform.FhirPathExpressionCache>(),
+            c.Resolve<Ignixa.FhirPath.Evaluation.FhirPathEvaluator>(),
+            TimeSpan.FromSeconds(5),
+            c.Resolve<ILogger<Ignixa.Application.Operations.Features.Transform.FhirPathEvaluatorWithTimeout>>())) // 5-second timeout
+        .AsSelf()
+        .SingleInstance();
+
     // Patch handlers (Phase 17 - ADR-2520: FHIR Patch operations)
     containerBuilder.RegisterType<Ignixa.Application.Features.Patch.PatchResourceHandler>()
         .As<IRequestHandler<Ignixa.Application.Features.Patch.PatchResourceCommand, ResourceWrapper?>>()
@@ -413,24 +460,38 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .AsSelf()
         .InstancePerDependency();
 
-    // FhirPathPatchHelper with structure provider from FhirVersionContext
-    containerBuilder.Register<Ignixa.Application.Features.Patch.FhirPathPatchHelper>(c =>
+    // IJsonNodeMutator for PATCH and Transform operations (shared mutation logic, Phase 2: request-aware via factory)
+    // All PATCH executors use IJsonNodeMutator for consistent mutation logic
+    containerBuilder.Register<Ignixa.FhirMappingLanguage.Mutator.IJsonNodeMutator>(c =>
     {
         var evaluator = c.Resolve<Ignixa.FhirPath.Evaluation.FhirPathEvaluator>();
-        var compiler = c.Resolve<FhirPathParser>();
-        var versionContext = c.Resolve<IFhirVersionContext>();
+        var parser = c.Resolve<FhirPathParser>();
 
-        // Use R4 as default structure provider (Phase 1)
-        // TODO Phase 2+: Extract version from tenant context
-        var structureProvider = versionContext.GetBaseSchemaProvider(FhirSpecification.R4);
+        // Schema provider factory that resolves per-request context
+        Func<ISchema> schemaProviderFactory = () =>
+        {
+            var versionContext = c.Resolve<IFhirVersionContext>();
+            var requestContextAccessor = c.Resolve<IFhirRequestContextAccessor>();
+            var requestContext = requestContextAccessor.RequestContext;
 
-        return new Ignixa.Application.Features.Patch.FhirPathPatchHelper(
+            if (requestContext is null)
+            {
+                // Fallback for tests or non-HTTP contexts
+                return versionContext.GetBaseSchemaProvider(FhirSpecification.R4);
+            }
+
+            return versionContext.GetSchemaProvider(
+                requestContext.FhirVersion,
+                requestContext.TenantId);
+        };
+
+        return new Ignixa.FhirMappingLanguage.Mutator.JsonNodeMutator(
             evaluator,
-            compiler,
-            structureProvider);
+            parser,
+            schemaProviderFactory);
     })
-    .AsSelf()
-    .InstancePerDependency();
+    .As<Ignixa.FhirMappingLanguage.Mutator.IJsonNodeMutator>()
+    .InstancePerLifetimeScope();
 
     // Patch operation executors (Phase 2 - Strategy Pattern)
     containerBuilder.RegisterType<Ignixa.Application.Features.Patch.Executors.AddOperationExecutor>()
@@ -438,25 +499,30 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .AsSelf()
         .InstancePerLifetimeScope();
 
+
     containerBuilder.RegisterType<Ignixa.Application.Features.Patch.Executors.InsertOperationExecutor>()
         .As<Ignixa.Application.Features.Patch.Executors.IOperationExecutor>()
         .AsSelf()
         .InstancePerLifetimeScope();
+
 
     containerBuilder.RegisterType<Ignixa.Application.Features.Patch.Executors.DeleteOperationExecutor>()
         .As<Ignixa.Application.Features.Patch.Executors.IOperationExecutor>()
         .AsSelf()
         .InstancePerLifetimeScope();
 
+
     containerBuilder.RegisterType<Ignixa.Application.Features.Patch.Executors.ReplaceOperationExecutor>()
         .As<Ignixa.Application.Features.Patch.Executors.IOperationExecutor>()
         .AsSelf()
         .InstancePerLifetimeScope();
 
+
     containerBuilder.RegisterType<Ignixa.Application.Features.Patch.Executors.MoveOperationExecutor>()
         .As<Ignixa.Application.Features.Patch.Executors.IOperationExecutor>()
         .AsSelf()
         .InstancePerLifetimeScope();
+
 
     // NOTE: FileBasedSearchService is no longer registered as singleton
     // It is now created per tenant by FileBasedSearchServiceFactory
@@ -556,6 +622,7 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .As<Ignixa.Application.Features.Metadata.Segments.ICapabilitySegment>()
         .InstancePerLifetimeScope();
 
+
     // NOTE: CustomResourceTypeCapabilitySegment removed - custom resource types now included
     // via FhirVersionContext.GetSchemaProvider(version, tenantId) in ResourceInteractionCapabilitySegment
 
@@ -584,10 +651,12 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .As(typeof(IPipelineBehavior<,>))
         .InstancePerLifetimeScope();
 
+
     // Register ValidationBehavior (specific to CreateOrUpdateResourceCommand)
     containerBuilder.RegisterType<ValidationBehavior>()
         .As<IPipelineBehavior<CreateOrUpdateResourceCommand, ResourceKey>>()
         .InstancePerLifetimeScope();
+
 
     // Register capability cache invalidator (Phase 3)
     containerBuilder.RegisterType<Ignixa.Application.Infrastructure.Caching.CapabilityCacheInvalidator>()
@@ -665,6 +734,7 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .AsSelf()
         .InstancePerLifetimeScope();
 
+
     // Register HybridTerminologyService as ITerminologyService
     // Routes to SQL (fast) when terminology is imported, fallback to JSON parsing otherwise
     containerBuilder.Register<Ignixa.Validation.Abstractions.ITerminologyService>(c =>
@@ -678,7 +748,8 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
             fallbackService,
             logger);
     })
-    .InstancePerLifetimeScope(); // Share within request scope for caching efficiency
+    .InstancePerLifetimeScope();
+ // Share within request scope for caching efficiency
 
     // PACKAGE MANAGEMENT (ADR-2532 Phase 1: Package Integration)
     // Provides NPM package download, extraction, and conformance resource caching
