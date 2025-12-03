@@ -46,6 +46,7 @@ using Ignixa.SqlOnFhir.packages;
 using Ignixa.FhirMappingLanguage.Parser;
 using Ignixa.FhirMappingLanguage.Registry;
 using Microsoft.EntityFrameworkCore;
+using FhirVersion = Ignixa.Abstractions.FhirVersion;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -400,15 +401,23 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .AsSelf()
         .SingleInstance();
 
-    containerBuilder.RegisterType<StructureMapParser>()
+    // StructureMapParser - scoped per-request, receives tenant FHIR version from request context
+    containerBuilder.Register(c =>
+        {
+            var requestContext = c.Resolve<IFhirRequestContextAccessor>().RequestContext;
+            var fhirVersion = requestContext?.FhirVersion;
+            return new StructureMapParser(fhirVersion);
+        })
         .AsSelf()
-        .SingleInstance();
+        .InstancePerLifetimeScope();
 
-    // MapRegistryCache - enhanced map registry with caching, metadata tracking, and invalidation (Phase 2.3)
+    // MapRegistryCache - scoped per-request to match StructureMapParser lifecycle (Phase 2.3)
+    // Note: Cache is now per-request. If cross-request caching becomes necessary for performance,
+    // consider implementing a factory pattern for StructureMapParser instead.
     containerBuilder.RegisterType<Ignixa.Application.Operations.Features.Transform.MapRegistryCache>()
         .AsSelf()
         .As<IMapRegistry>()
-        .SingleInstance();
+        .InstancePerLifetimeScope();
 
     // Package loaded event handler for map cache invalidation (Phase 2.3)
     containerBuilder.RegisterType<Ignixa.Application.Operations.Events.PackageLoadedMapCacheInvalidationHandler>()
@@ -477,7 +486,7 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
             if (requestContext is null)
             {
                 // Fallback for tests or non-HTTP contexts
-                return versionContext.GetBaseSchemaProvider(FhirSpecification.R4);
+                return versionContext.GetBaseSchemaProvider(FhirVersion.R4);
             }
 
             return versionContext.GetSchemaProvider(
@@ -569,7 +578,7 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         var versionContext = c.Resolve<IFhirVersionContext>();
         // Single-tenant mode: default to R4 for backward compatibility
         // Multi-tenant mode: will be resolved from tenant-specific FHIR version in request context
-        return versionContext.GetSearchParameterDefinitionManager(FhirSpecification.R4);
+        return versionContext.GetSearchParameterDefinitionManager(FhirVersion.R4);
     }).SingleInstance();
 
     containerBuilder.Register<ISearchParameterDefinitionManager.SearchableSearchParameterDefinitionManagerResolver>(c =>
@@ -583,7 +592,7 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
     containerBuilder.Register<ICompartmentDefinitionManager>(c =>
     {
         var versionContext = c.Resolve<IFhirVersionContext>();
-        return versionContext.GetCompartmentDefinitionManager(FhirSpecification.R4);
+        return versionContext.GetCompartmentDefinitionManager(FhirVersion.R4);
     }).SingleInstance();
 
     // NOTE: ReferenceSearchValueParser, SearchParameterExpressionParser, ExpressionParser, and SearchOptionsBuilder
@@ -692,10 +701,10 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .SingleInstance();
 
     // Register ValidationSchemaResolver FACTORY (creates version+tenant-specific cached resolvers)
-    // New signature: Func<FhirSpecification, int, IValidationSchemaResolver>
-    // Usage: var resolver = factory(FhirSpecification.R4, tenantId)
+    // New signature: Func<FhirVersion, int, IValidationSchemaResolver>
+    // Usage: var resolver = factory(FhirVersion.R4, tenantId)
     // Uses FhirVersionContext.GetSchemaProvider(version, tenantId) for composite provider
-    containerBuilder.Register<Func<FhirSpecification, int, Ignixa.Validation.Abstractions.IValidationSchemaResolver>>(c =>
+    containerBuilder.Register<Func<FhirVersion, int, Ignixa.Validation.Abstractions.IValidationSchemaResolver>>(c =>
         {
             var versionContext = c.Resolve<IFhirVersionContext>();
             var builder = c.Resolve<Ignixa.Validation.Schema.StructureDefinitionSchemaBuilder>();
@@ -713,9 +722,9 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .SingleInstance();
 
     // Register backward-compatible single-tenant factory (defaults to tenant 1)
-    containerBuilder.Register<Func<FhirSpecification, Ignixa.Validation.Abstractions.IValidationSchemaResolver>>(c =>
+    containerBuilder.Register<Func<FhirVersion, Ignixa.Validation.Abstractions.IValidationSchemaResolver>>(c =>
         {
-            var multiTenantFactory = c.Resolve<Func<FhirSpecification, int, Ignixa.Validation.Abstractions.IValidationSchemaResolver>>();
+            var multiTenantFactory = c.Resolve<Func<FhirVersion, int, Ignixa.Validation.Abstractions.IValidationSchemaResolver>>();
             return (version) => multiTenantFactory(version, 1); // Default to tenant 1
         })
         .SingleInstance();
