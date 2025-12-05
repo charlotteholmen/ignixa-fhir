@@ -7,6 +7,7 @@
 
 using EnsureThat;
 using Ignixa.Search.Definition;
+using Ignixa.Search.Exceptions;
 using Ignixa.Search.Expressions;
 using Ignixa.Search.Expressions.Parsers;
 using Ignixa.Search.Indexing;
@@ -44,16 +45,15 @@ public class SearchOptionsBuilder : ISearchOptionsBuilder
     /// <summary>
     /// Builds SearchOptions from parsed query parameters.
     /// </summary>
-    /// <param name="resourceType">The resource type being searched (e.g., "Patient").</param>
+    /// <param name="resourceType">The resource type being searched (e.g., "Patient"), or null for system-wide search.</param>
     /// <param name="parameters">The parsed query parameters.</param>
     /// <param name="schemaProvider">Optional schema provider for validating _elements parameter.</param>
     /// <returns>A SearchOptions instance configured according to the parameters.</returns>
     public SearchOptions Build(
-        string resourceType,
+        string? resourceType,
         IReadOnlyList<QueryParameter> parameters,
         ISchema? schemaProvider = null)
     {
-        EnsureArg.IsNotNullOrWhiteSpace(resourceType, nameof(resourceType));
         EnsureArg.IsNotNull(parameters, nameof(parameters));
 
         var options = new SearchOptions
@@ -70,7 +70,10 @@ public class SearchOptionsBuilder : ISearchOptionsBuilder
         var elementsParameters = new List<string>();
         var unsupportedParameters = new List<string>();
 
-        string[] resourceTypes = new[] { resourceType };
+        // For system-wide search (resourceType is null), use "Resource" as base type
+        // This allows searching with common parameters like _tag, _profile, _security, _id, _lastUpdated
+        // which are defined on the base Resource type and inherited by all resource types.
+        string[] resourceTypes = resourceType != null ? new[] { resourceType } : new[] { "Resource" };
 
         foreach (var param in parameters)
         {
@@ -83,10 +86,19 @@ public class SearchOptionsBuilder : ISearchOptionsBuilder
                         break;
 
                     case ParameterCategory.Count:
-                        if (int.TryParse(param.Value, out int count))
+                        if (!int.TryParse(param.Value, out int count))
                         {
-                            options.MaxItemCount = Math.Min(Math.Max(1, count), MaxAllowedItemCount);
+                            throw new BadSearchRequestException(
+                                $"The '_count' parameter value '{param.Value}' is not a valid integer.");
                         }
+
+                        if (count < 0)
+                        {
+                            throw new BadSearchRequestException(
+                                $"The '_count' parameter value must be a non-negative integer.");
+                        }
+
+                        options.MaxItemCount = Math.Min(Math.Max(1, count), MaxAllowedItemCount);
                         break;
 
                     case ParameterCategory.Total:
@@ -144,11 +156,13 @@ public class SearchOptionsBuilder : ISearchOptionsBuilder
         // STEP 2: Combine search expressions with AND
         if (searchExpressions.Count == 1)
         {
-            options.Expression = searchExpressions[0];
+            options.Expression = searchExpressions[0]
+                .AcceptVisitor(DateTimeEqualityRewriter.Instance, null);
         }
         else if (searchExpressions.Count > 1)
         {
-            options.Expression = Expression.And(searchExpressions.ToArray());
+            options.Expression = Expression.And(searchExpressions.ToArray())
+                .AcceptVisitor(DateTimeEqualityRewriter.Instance, null);
         }
 
         // STEP 3: Parse sorting
@@ -173,21 +187,54 @@ public class SearchOptionsBuilder : ISearchOptionsBuilder
         var bundleIssues = new List<IssueComponent>();
         if (elementsParameters.Count > 0)
         {
-            var parsedElements = ParseElementsParameters(elementsParameters);
-            var (validElements, invalidElements) = ValidateElementsAgainstSchema(
-                resourceType,
-                parsedElements,
-                schemaProvider);
-
-            options.Elements = validElements;
-
-            // Add bundle issues for invalid elements
-            foreach (var invalidElement in invalidElements)
+            // Validate that _elements is not empty (FHIR spec: empty _elements is invalid)
+            bool hasEmptyElements = elementsParameters.Any(p => string.IsNullOrWhiteSpace(p));
+            if (hasEmptyElements)
             {
-                bundleIssues.Add(new IssueComponent(
-                    Severity: "warning",
-                    Code: "not-found",
-                    Diagnostics: $"Element '{invalidElement}' is not a valid property for resource type '{resourceType}'"));
+                throw new BadSearchRequestException(
+                    "The '_elements' parameter value cannot be empty.");
+            }
+
+            var parsedElements = ParseElementsParameters(elementsParameters);
+
+            // Validate that _elements resulted in at least one valid element name
+            if (parsedElements.Count == 0)
+            {
+                throw new BadSearchRequestException(
+                    "The '_elements' parameter value cannot be empty.");
+            }
+
+            // Validate _elements + _summary conflict
+            // FHIR spec: _elements can only be used with _summary=false or without _summary
+            if (options.Summary != SummaryType.None && options.Summary != SummaryType.False)
+            {
+                throw new BadSearchRequestException(Resources.ElementsAndSummaryParametersAreIncompatible);
+            }
+
+            // Only validate elements if we have a specific resource type
+            // For system-wide search (null resourceType), we can't validate elements against a schema
+            if (resourceType != null)
+            {
+                var (validElements, invalidElements) = ValidateElementsAgainstSchema(
+                    resourceType,
+                    parsedElements,
+                    schemaProvider);
+
+                options.Elements = validElements;
+
+                // Add bundle issues for invalid elements
+                foreach (var invalidElement in invalidElements)
+                {
+                    bundleIssues.Add(new IssueComponent(
+                        Severity: "warning",
+                        Code: "not-found",
+                        Diagnostics: $"Element '{invalidElement}' is not a valid property for resource type '{resourceType}'"));
+                }
+            }
+            else
+            {
+                // For system-wide search, accept all elements without validation
+                options.Elements = parsedElements;
             }
         }
 
@@ -213,8 +260,10 @@ public class SearchOptionsBuilder : ISearchOptionsBuilder
         {
             "NONE" => TotalType.None,
             "ACCURATE" => TotalType.Accurate,
-            "ESTIMATE" => TotalType.Estimate,
-            _ => TotalType.None,
+            "ESTIMATE" => throw new ForbiddenSearchException(
+                string.Format(Resources.UnsupportedTotalParameter, value, "'accurate', 'none'")),
+            _ => throw new BadSearchRequestException(
+                string.Format(Resources.InvalidTotalParameter, value, "'accurate', 'none'")),
         };
     }
 

@@ -21,6 +21,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.IO;
 using System.Text.Json.Nodes;
 using Ignixa.Abstractions;
+using Ignixa.Search.Models;
 
 namespace Ignixa.Api.Endpoints;
 
@@ -149,22 +150,24 @@ public static class OperationEndpoints
     }
 
     /// <summary>
-    /// Creates a FHIR OperationOutcome error response with a single issue.
+    /// Creates a FHIR OperationOutcome response with a single issue.
     /// </summary>
-    private static object CreateOperationOutcomeError(string severity, string code, string diagnostics) =>
-        new
+    private static OperationOutcomeJsonNode CreateOperationOutcome(
+        OperationOutcomeJsonNode.IssueSeverity severity,
+        OperationOutcomeJsonNode.IssueType code,
+        string diagnostics)
+    {
+        var outcome = new OperationOutcomeJsonNode();
+
+        outcome.Issue.Add(new OperationOutcomeJsonNode.IssueComponent
         {
-            resourceType = "OperationOutcome",
-            issue = new[]
-            {
-                new
-                {
-                    severity,
-                    code,
-                    diagnostics
-                }
-            }
-        };
+            Severity = severity,
+            Code = code,
+            Diagnostics = diagnostics
+        });
+
+        return outcome;
+    }
 
     /// <summary>
     /// Handles tenant-explicit $validate for a specific resource type.
@@ -194,9 +197,9 @@ public static class OperationEndpoints
         // For system-level validation, determine tenant from context
         if (!context.Items.TryGetValue("TenantId", out var tenantIdObj) || tenantIdObj is not int tenantId)
         {
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "required",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Required,
                 "TenantId not found. In multi-tenant mode, use /tenant/{tenantId}/$validate"));
         }
 
@@ -217,9 +220,9 @@ public static class OperationEndpoints
         // For agnostic route, determine tenant from context
         if (!context.Items.TryGetValue("TenantId", out var tenantIdObj) || tenantIdObj is not int tenantId)
         {
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "required",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Required,
                 "TenantId not found. In multi-tenant mode, use /tenant/{tenantId}/{resourceType}/$validate"));
         }
 
@@ -257,9 +260,9 @@ public static class OperationEndpoints
         // For agnostic route, determine tenant from context
         if (!context.Items.TryGetValue("TenantId", out var tenantIdObj) || tenantIdObj is not int tenantId)
         {
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "required",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Required,
                 "TenantId not found. In multi-tenant mode, use /tenant/{tenantId}/{resourceType}/{id}/$validate"));
         }
 
@@ -285,9 +288,9 @@ public static class OperationEndpoints
 
         if (memoryStream.Length == 0)
         {
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "required",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Required,
                 "Request body must contain a FHIR resource to validate"));
         }
 
@@ -299,9 +302,9 @@ public static class OperationEndpoints
         }
         catch
         {
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "invalid",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Invalid,
                 "Request body must be valid JSON"));
         }
 
@@ -343,9 +346,9 @@ public static class OperationEndpoints
             var normalizedMode = mode.ToUpperInvariant();
             if ((normalizedMode == "UPDATE" || normalizedMode == "DELETE") && string.IsNullOrEmpty(instanceId))
             {
-                return Results.BadRequest(CreateOperationOutcomeError(
-                    "error",
-                    "invalid",
+                return Results.BadRequest(CreateOperationOutcome(
+                    OperationOutcomeJsonNode.IssueSeverity.Error,
+                    OperationOutcomeJsonNode.IssueType.Invalid,
                     $"Validation mode '{mode}' requires instance-level endpoint: [base]/{{resourceType}}/{{id}}/$validate"));
             }
         }
@@ -415,8 +418,8 @@ public static class OperationEndpoints
         HttpContext context,
         string id,
         [FromServices] IMediator mediator,
-        [FromQuery] DateOnly? start,
-        [FromQuery] DateOnly? end,
+        [FromQuery] string? start,
+        [FromQuery] string? end,
         [FromQuery] DateTimeOffset? _since,
         [FromQuery] string? _type,
         [FromQuery] int? _count,
@@ -429,13 +432,36 @@ public static class OperationEndpoints
             types = new HashSet<string>(_type.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
         }
 
-        // Convert DateOnly to DateTimeOffset for filtering
-        DateTimeOffset? startOffset = start.HasValue
-            ? new DateTimeOffset(start.Value.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
-            : null;
-        DateTimeOffset? endOffset = end.HasValue
-            ? new DateTimeOffset(end.Value.ToDateTime(TimeOnly.MaxValue), TimeSpan.Zero)
-            : null;
+        // Parse partial date strings using PartialDateTime for FHIR compliance
+        DateTimeOffset? startOffset = null;
+        if (!string.IsNullOrEmpty(start))
+        {
+            var partialStart = PartialDateTime.Parse(start);
+            // For start date: use first moment (month=1, day=1, hour=0, minute=0, second=0)
+            startOffset = partialStart.ToDateTimeOffset(
+                defaultMonth: 1,
+                defaultDaySelector: (year, month) => 1,
+                defaultHour: 0,
+                defaultMinute: 0,
+                defaultSecond: 0,
+                defaultFraction: 0,
+                defaultUtcOffset: TimeSpan.Zero);
+        }
+
+        DateTimeOffset? endOffset = null;
+        if (!string.IsNullOrEmpty(end))
+        {
+            var partialEnd = PartialDateTime.Parse(end);
+            // For end date: use last moment (month=12, day=last day of month, hour=23, minute=59, second=59)
+            endOffset = partialEnd.ToDateTimeOffset(
+                defaultMonth: 12,
+                defaultDaySelector: (year, month) => DateTime.DaysInMonth(year, month),
+                defaultHour: 23,
+                defaultMinute: 59,
+                defaultSecond: 59,
+                defaultFraction: 0.9999999m,
+                defaultUtcOffset: TimeSpan.Zero);
+        }
 
         // Create Patient $everything query
         var query = new PatientEverythingQuery(
@@ -496,17 +522,17 @@ public static class OperationEndpoints
         }
         catch
         {
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "invalid",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Invalid,
                 "Request body must be a valid FHIR Parameters resource"));
         }
 
         if (parameters == null)
         {
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "required",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Required,
                 "Request body must contain a FHIR Parameters resource"));
         }
 
@@ -535,9 +561,9 @@ public static class OperationEndpoints
         }
         catch (InvalidOperationException ex)
         {
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "processing",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Processing,
                 $"Transformation failed: {ex.Message}"));
         }
     }
@@ -565,17 +591,17 @@ public static class OperationEndpoints
         }
         catch
         {
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "invalid",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Invalid,
                 "Request body must be a valid FHIR Parameters resource"));
         }
 
         if (parameters == null)
         {
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "required",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Required,
                 "Request body must contain a FHIR Parameters resource"));
         }
 
@@ -600,15 +626,15 @@ public static class OperationEndpoints
             // Check if it's a "not found" error
             if (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
             {
-                return Results.NotFound(CreateOperationOutcomeError(
-                    "error",
-                    "not-found",
+                return Results.NotFound(CreateOperationOutcome(
+                    OperationOutcomeJsonNode.IssueSeverity.Error,
+                    OperationOutcomeJsonNode.IssueType.NotFound,
                     $"StructureMap/{id} not found"));
             }
 
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "processing",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Processing,
                 $"Transformation failed: {ex.Message}"));
         }
     }
@@ -625,9 +651,9 @@ public static class OperationEndpoints
         // For agnostic route, determine tenant from context
         if (!context.Items.TryGetValue("TenantId", out var tenantIdObj) || tenantIdObj is not int tenantId)
         {
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "required",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Required,
                 "TenantId not found. In multi-tenant mode, use /tenant/{tenantId}/StructureMap/$transform"));
         }
 
@@ -647,9 +673,9 @@ public static class OperationEndpoints
         // For agnostic route, determine tenant from context
         if (!context.Items.TryGetValue("TenantId", out var tenantIdObj) || tenantIdObj is not int tenantId)
         {
-            return Results.BadRequest(CreateOperationOutcomeError(
-                "error",
-                "required",
+            return Results.BadRequest(CreateOperationOutcome(
+                OperationOutcomeJsonNode.IssueSeverity.Error,
+                OperationOutcomeJsonNode.IssueType.Required,
                 "TenantId not found. In multi-tenant mode, use /tenant/{tenantId}/StructureMap/{id}/$transform"));
         }
 

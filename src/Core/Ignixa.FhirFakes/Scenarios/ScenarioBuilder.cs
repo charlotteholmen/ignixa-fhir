@@ -3,6 +3,8 @@
 // Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // -------------------------------------------------------------------------------------------------
 
+using Ignixa.FhirFakes.Builders;
+using Ignixa.FhirFakes.Population;
 using Ignixa.FhirFakes.Scenarios.Codes;
 using Ignixa.FhirFakes.Scenarios.States;
 using Ignixa.Specification;
@@ -20,6 +22,8 @@ public sealed class ScenarioBuilder
     private readonly SchemaBasedFhirResourceFaker _faker;
     private string _scenarioName = "Unnamed Scenario";
     private string _description = string.Empty;
+    private string? _tag;
+    private bool _hasPatient;
 
     /// <summary>
     /// Creates a new scenario builder with the specified schema provider.
@@ -51,6 +55,18 @@ public sealed class ScenarioBuilder
     }
 
     /// <summary>
+    /// Sets a tag to be applied to all resources generated in this scenario.
+    /// Useful for test isolation via the _tag search parameter.
+    /// </summary>
+    /// <param name="tag">The tag code to apply to all resources.</param>
+    /// <returns>This builder for fluent chaining.</returns>
+    public ScenarioBuilder WithTag(string? tag)
+    {
+        _tag = tag;
+        return this;
+    }
+
+    /// <summary>
     /// Adds a patient with the specified demographics.
     /// This should typically be the first state in any scenario.
     /// </summary>
@@ -66,6 +82,14 @@ public sealed class ScenarioBuilder
         string? familyName = null,
         DateTime? startDate = null)
     {
+        if (_hasPatient)
+        {
+            throw new InvalidOperationException(
+                "Cannot add multiple patients to a single scenario. Each scenario supports only one patient. " +
+                "To test multiple patients, create them separately and add them directly without using the scenario builder.");
+        }
+        _hasPatient = true;
+
         _states.Add(new InitialState
         {
             Name = "Initial",
@@ -77,6 +101,150 @@ public sealed class ScenarioBuilder
         });
         return this;
     }
+
+    #region PatientBuilder Integration Methods
+
+    /// <summary>
+    /// Adds a patient using PatientBuilder with full configuration control.
+    /// Uses PatientBuilderFactory.Create() as the base builder.
+    /// This should typically be the first state in any scenario.
+    /// </summary>
+    /// <param name="configure">Configuration action for the PatientBuilder.</param>
+    /// <param name="startDate">Scenario start date (optional, defaults to 1 year ago).</param>
+    /// <returns>This builder for fluent chaining.</returns>
+    /// <example>
+    /// <code>
+    /// // Simple patient with basic demographics (suitable for simple tests)
+    /// var scenario = new ScenarioBuilder(schemaProvider)
+    ///     .WithPatient(p => p
+    ///         .WithAge(45)
+    ///         .WithGender(g => g.Male)
+    ///         .WithGivenName("John")
+    ///         .WithFamilyName("Smith"))
+    ///     .Build();
+    ///
+    /// // Realistic patient from specific city (ethnically appropriate names, real demographics)
+    /// var scenario = new ScenarioBuilder(schemaProvider)
+    ///     .WithPatient(p => p
+    ///         .FromCity(KnownCities.Boston)
+    ///         .WithAge(45)
+    ///         .WithRealisticBMI())
+    ///     .Build();
+    /// </code>
+    /// </example>
+    public ScenarioBuilder WithPatient(Action<PatientBuilder> configure, DateTime? startDate = null)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+
+        if (_hasPatient)
+        {
+            throw new InvalidOperationException(
+                "Cannot add multiple patients to a single scenario. Each scenario supports only one patient. " +
+                "To test multiple patients, create them separately and add them directly without using the scenario builder.");
+        }
+        _hasPatient = true;
+
+        _states.Add(new PatientBuilderState(
+            builder =>
+            {
+                configure(builder);
+                return builder;
+            },
+            PatientBuilderFactory.Create)
+        {
+            StartDate = startDate
+        });
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a patient from Seattle, Washington with realistic Pacific Northwest demographics.
+    /// Uses PatientBuilderFactory.Create() with FromSeattle() configuration.
+    /// </summary>
+    /// <param name="configure">Optional additional configuration for the PatientBuilder.</param>
+    /// <param name="startDate">Scenario start date (optional, defaults to 1 year ago).</param>
+    /// <returns>This builder for fluent chaining.</returns>
+    /// <example>
+    /// <code>
+    /// var scenario = new ScenarioBuilder(schemaProvider)
+    ///     .WithSeattlePatient(p => p.WithAge(35).WithRealisticBMI())
+    ///     .Build();
+    /// </code>
+    /// </example>
+    public ScenarioBuilder WithSeattlePatient(Action<PatientBuilder>? configure = null, DateTime? startDate = null)
+    {
+        if (_hasPatient)
+        {
+            throw new InvalidOperationException(
+                "Cannot add multiple patients to a single scenario. Each scenario supports only one patient. " +
+                "To test multiple patients, create them separately and add them directly without using the scenario builder.");
+        }
+        _hasPatient = true;
+
+        _states.Add(new PatientBuilderState(
+            builder =>
+            {
+                builder.FromSeattle();
+                configure?.Invoke(builder);
+                return builder;
+            },
+            PatientBuilderFactory.Create)
+        {
+            StartDate = startDate
+        });
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a patient from a specific city with realistic demographics.
+    /// Uses PatientBuilderFactory.Create() with FromCity() configuration.
+    /// </summary>
+    /// <param name="city">The city demographics (use KnownCities class for predefined cities).</param>
+    /// <param name="configure">Optional additional configuration for the PatientBuilder.</param>
+    /// <param name="startDate">Scenario start date (optional, defaults to 1 year ago).</param>
+    /// <returns>This builder for fluent chaining.</returns>
+    /// <example>
+    /// <code>
+    /// var scenario = new ScenarioBuilder(schemaProvider)
+    ///     .WithPatientFromCity(KnownCities.NewYork, p => p.WithAge(28))
+    ///     .Build();
+    ///
+    /// // International cities
+    /// var scenario = new ScenarioBuilder(schemaProvider)
+    ///     .WithPatientFromCity(KnownCities.Melbourne)
+    ///     .Build();
+    /// </code>
+    /// </example>
+    public ScenarioBuilder WithPatientFromCity(
+        CityDemographics city,
+        Action<PatientBuilder>? configure = null,
+        DateTime? startDate = null)
+    {
+        ArgumentNullException.ThrowIfNull(city);
+
+        if (_hasPatient)
+        {
+            throw new InvalidOperationException(
+                "Cannot add multiple patients to a single scenario. Each scenario supports only one patient. " +
+                "To test multiple patients, create them separately and add them directly without using the scenario builder.");
+        }
+        _hasPatient = true;
+
+        _states.Add(new PatientBuilderState(
+            builder =>
+            {
+                builder.FromCity(city);
+                configure?.Invoke(builder);
+                return builder;
+            },
+            PatientBuilderFactory.Create)
+        {
+            StartDate = startDate
+        });
+        return this;
+    }
+
+    #endregion
 
     /// <summary>
     /// Adds a custom state to the scenario.
@@ -1461,6 +1629,9 @@ public sealed class ScenarioBuilder
             ScenarioName = _scenarioName,
             Description = _description
         };
+
+        // Configure faker with tag before executing states
+        _faker.WithTag(_tag);
 
         foreach (var state in _states)
         {

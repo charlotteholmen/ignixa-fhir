@@ -89,7 +89,8 @@ public class SqlEntityFrameworkSearchService : ISearchService
             // Build query without resource type ID constraint (expression must handle filtering)
             var multiTypeQuery = await BuildQueryAsync(options, resourceTypeId: null, ct);
 
-            _logger.LogInformation("Executing streaming query for multi-type search\n{SQL}", multiTypeQuery.ToQueryString());
+            _logger.LogInformation("Executing streaming query for multi-type search\n{SQL}",
+                multiTypeQuery.ToQueryString());
 
             // Stream results from all matching resources - buffer for include processing
             var multiTypeMainResults = new List<SearchEntryResult>();
@@ -135,7 +136,9 @@ public class SqlEntityFrameworkSearchService : ISearchService
         // Build query
         var query = await BuildQueryAsync(options, resourceTypeId.Value, ct);
 
-        _logger.LogInformation("Executing streaming query for {ResourceType}\n{SQL}", options.ResourceType, query.ToQueryString());
+        _logger.LogInformation("Executing streaming query for {ResourceType}\n{SQL}",
+            options.ResourceType,
+            query.ToQueryString());
 
         // Phase 1: Stream main results (NO buffering - zero memory for large result sets)
         await foreach (var entity in query
@@ -179,7 +182,9 @@ public class SqlEntityFrameworkSearchService : ISearchService
             {
                 var revIncludeQuery = BuildRevIncludeQuery(options, revIncludeExpr, resourceTypeId.Value);
 
-                _logger.LogDebug("Executing revinclude query for parameter {ParamCode} with {Sql}", revIncludeExpr.ReferenceSearchParameter?.Code, revIncludeQuery.ToQueryString());
+                _logger.LogDebug("Executing revinclude query for parameter {ParamCode} with {Sql}",
+                    revIncludeExpr.ReferenceSearchParameter?.Code,
+                    revIncludeQuery.ToQueryString());
 
                 // Stream each reverse-included resource directly to client
                 await foreach (var entity in revIncludeQuery
@@ -213,9 +218,33 @@ public class SqlEntityFrameworkSearchService : ISearchService
             throw new ArgumentException($"Search options must be of type {nameof(SearchOptions)}", nameof(searchOptions));
         }
 
-        _logger.LogDebug("Counting resources for {ResourceType}", options.ResourceType);
+        _logger.LogDebug("Counting resources for {ResourceType}", options.ResourceType ?? "all resource types");
 
-        // Get ResourceTypeId
+        // For system-wide search (ResourceType is null), skip type lookup and query all resources
+        if (string.IsNullOrEmpty(options.ResourceType))
+        {
+            _logger.LogDebug("System-wide count query - no resource type filter");
+
+            // Base query without resource type filter
+            var multiTypeBaseQuery = _context.Resources
+                .Where(r => !r.IsHistory && !r.IsDeleted);
+
+            // Apply search expression filters
+            if (options.Expression != null)
+            {
+                // Pass null for resourceTypeId to indicate system-wide search across all types
+                var filteredQuery = await _queryBuilder.ApplySearchExpressionAsync(
+                    multiTypeBaseQuery,
+                    null, // null means system-wide search - query all resource types
+                    options.Expression,
+                    ct);
+                return await filteredQuery.CountAsync(ct);
+            }
+
+            return await multiTypeBaseQuery.CountAsync(ct);
+        }
+
+        // Get ResourceTypeId for single-type searches
         var resourceTypeId = await GetResourceTypeIdAsync(options.ResourceType, ct);
         if (!resourceTypeId.HasValue)
         {
@@ -408,84 +437,102 @@ public class SqlEntityFrameworkSearchService : ISearchService
     private async Task<IQueryable<ResourceEntity>> BuildQueryAsync(
         SearchOptions options,
         short? resourceTypeId,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool includePagination = true)
     {
-        // Start with base query for current (non-history, non-deleted) resources
-        IQueryable<ResourceEntity> baseQuery;
+        _logger.LogDebug(
+            "BuildQueryAsync: ResourceType={ResourceType}, ResourceTypeId={ResourceTypeId}, " +
+            "HasExpression={HasExpression}, ExpressionType={ExpressionType}",
+            options.ResourceType,
+            resourceTypeId,
+            options.Expression != null,
+            options.Expression?.GetType().Name);
 
-        if (resourceTypeId.HasValue)
-        {
-            // Single-type search: filter by specific resource type
-            baseQuery = _context.Resources
-                .Where(r => r.ResourceTypeId == resourceTypeId.Value
-                    && !r.IsHistory
-                    && !r.IsDeleted);
-        }
-        else
-        {
-            // Multi-type search: no resource type filter
-            // Resource type filtering will be handled by the expression tree
-            baseQuery = _context.Resources
-                .Where(r => !r.IsHistory
-                    && !r.IsDeleted);
-        }
+            // Start with base query for current (non-history, non-deleted) resources
+            IQueryable<ResourceEntity> baseQuery;
 
-        // Apply search expression filters
-        IQueryable<ResourceEntity> filteredQuery;
-        if (options.Expression != null)
-        {
-            // For multi-type searches, we pass a dummy resourceTypeId (not used by expressions like CompartmentSearchExpression)
-            var typeIdForExpression = resourceTypeId ?? 1; // Use 1 as dummy value for multi-type
-
-            filteredQuery = await _queryBuilder.ApplySearchExpressionAsync(
-                baseQuery,
-                typeIdForExpression,
-                options.Expression,
-                ct);
-        }
-        else
-        {
-            filteredQuery = baseQuery;
-        }
-
-        // Apply surrogate ID range filtering for export partitioning
-        if (options.StartSurrogateId.HasValue && options.EndSurrogateId.HasValue)
-        {
-            filteredQuery = filteredQuery.Where(r =>
-                r.ResourceSurrogateId >= options.StartSurrogateId.Value &&
-                r.ResourceSurrogateId <= options.EndSurrogateId.Value);
-
-            _logger.LogDebug(
-                "Applied surrogate ID range filter: [{StartId}..{EndId}]",
-                options.StartSurrogateId.Value,
-                options.EndSurrogateId.Value);
-        }
-
-        // Apply sorting
-        var sortedQuery = ApplySorting(filteredQuery, options.Sort);
-
-        // Apply pagination: parse continuation token or use _count parameter
-        int offset = 0;
-        int pageSize = options.MaxItemCount;
-
-        if (!string.IsNullOrWhiteSpace(options.ContinuationToken))
-        {
-            // Decode continuation token to get offset
-            if (Ignixa.Search.Models.ContinuationToken.TryDecode(
-                options.ContinuationToken, out int tokenOffset, out int tokenCount))
+            if (resourceTypeId.HasValue)
             {
-                offset = tokenOffset;
-                pageSize = tokenCount; // Use count from token for consistency
-                _logger.LogDebug("Using continuation token: offset={Offset}, count={Count}", offset, pageSize);
+                // Single-type search: filter by specific resource type
+                baseQuery = _context.Resources
+                    .Where(r => r.ResourceTypeId == resourceTypeId.Value
+                        && !r.IsHistory
+                        && !r.IsDeleted);
             }
             else
             {
-                _logger.LogWarning("Invalid continuation token, using offset=0");
+                // Multi-type search: no resource type filter
+                // Resource type filtering will be handled by the expression tree
+                baseQuery = _context.Resources
+                    .Where(r => !r.IsHistory
+                        && !r.IsDeleted);
             }
-        }
 
-        // Apply Skip/Take for pagination (limit results to pageSize + 1 to detect if more results exist)
-        return sortedQuery.Skip(offset).Take(pageSize + 1);
+            // Apply search expression filters
+            IQueryable<ResourceEntity> filteredQuery;
+            if (options.Expression != null)
+            {
+                _logger.LogDebug("Applying search expression filters");
+
+                // For multi-type searches, we pass a dummy resourceTypeId (not used by expressions like CompartmentSearchExpression)
+                var typeIdForExpression = resourceTypeId ?? 1; // Use 1 as dummy value for multi-type
+
+                filteredQuery = await _queryBuilder.ApplySearchExpressionAsync(
+                    baseQuery,
+                    typeIdForExpression,
+                    options.Expression,
+                    ct);
+            }
+            else
+            {
+                filteredQuery = baseQuery;
+            }
+
+            // Apply surrogate ID range filtering for export partitioning
+            if (options.StartSurrogateId.HasValue && options.EndSurrogateId.HasValue)
+            {
+                filteredQuery = filteredQuery.Where(r =>
+                    r.ResourceSurrogateId >= options.StartSurrogateId.Value &&
+                    r.ResourceSurrogateId <= options.EndSurrogateId.Value);
+
+                _logger.LogDebug(
+                    "Applied surrogate ID range filter: [{StartId}..{EndId}]",
+                    options.StartSurrogateId.Value,
+                    options.EndSurrogateId.Value);
+            }
+
+            // Apply sorting
+            _logger.LogDebug("Applying sorting");
+            IOrderedQueryable<ResourceEntity> sortedQuery = ApplySorting(filteredQuery, options.Sort);
+
+            // For include/revinclude subqueries, skip pagination - they need all matching results
+            if (!includePagination)
+            {
+                return sortedQuery;
+            }
+
+            // Apply pagination: parse continuation token or use _count parameter
+            int offset = 0;
+            int pageSize = options.MaxItemCount;
+
+            if (!string.IsNullOrWhiteSpace(options.ContinuationToken))
+            {
+                // Decode continuation token to get offset
+                if (Ignixa.Search.Models.ContinuationToken.TryDecode(
+                    options.ContinuationToken, out int tokenOffset, out int tokenCount))
+                {
+                    offset = tokenOffset;
+                    pageSize = tokenCount; // Use count from token for consistency
+                    _logger.LogDebug("Using continuation token: offset={Offset}, count={Count}", offset, pageSize);
+                }
+                else
+                {
+                    _logger.LogWarning("Invalid continuation token, using offset=0");
+                }
+            }
+
+            // Apply Skip/Take for pagination (limit results to pageSize + 1 to detect if more results exist)
+            return sortedQuery.Skip(offset).Take(pageSize + 1);
     }
 
     private IOrderedQueryable<ResourceEntity> ApplySorting(
@@ -902,14 +949,20 @@ public class SqlEntityFrameworkSearchService : ISearchService
             return _context.Resources.Where(r => false);  // Return empty
         }
 
-        // Step 1: Build main query as CTE (replicate filters, sort, and pagination)
-        // Get the base query with same filters as main search
-        IQueryable<ResourceEntity> baseQuery = BuildQueryAsync(options, resourceTypeId, CancellationToken.None).GetAwaiter().GetResult();
+        // Step 1: Build main query as CTE (replicate filters and sort, but NOT pagination)
+        // Include/revinclude needs all matching results, not just the current page
+        IQueryable<ResourceEntity> baseQuery = BuildQueryAsync(options, resourceTypeId, CancellationToken.None, includePagination: false).GetAwaiter().GetResult();
+
+        // Extract surrogate IDs from the base query BEFORE using in .Contains()
+        // This prevents EF Core from generating complex subqueries with sorting in the WHERE clause
+        var mainResultSurrogateIds = baseQuery
+            .Select(r => r.ResourceSurrogateId)
+            .Distinct();
 
         // Find resources referenced by these main results using a subquery
         // This keeps everything in the database query (no client-side materialization)
         var referencedTypeAndIds = _context.ReferenceSearchParams
-            .Where(rsp => baseQuery.Select(r => r.ResourceSurrogateId).Contains(rsp.ResourceSurrogateId) && rsp.SearchParamId == searchParamId)
+            .Where(rsp => mainResultSurrogateIds.Contains(rsp.ResourceSurrogateId) && rsp.SearchParamId == searchParamId)
             .Select(rsp => new { rsp.ReferenceResourceTypeId, rsp.ReferenceResourceId })
             .Distinct();
 
@@ -949,9 +1002,17 @@ public class SqlEntityFrameworkSearchService : ISearchService
             return _context.Resources.Where(r => false);  // Return empty
         }
 
-        // Build main query using BuildQueryAsync (already includes filters, sorting, pagination)
-        IQueryable<ResourceEntity> baseQuery = BuildQueryAsync(options, resourceTypeId, CancellationToken.None)
+        // Build main query using BuildQueryAsync (filters and sorting, but NOT pagination)
+        // Revinclude needs all matching results, not just the current page
+        IQueryable<ResourceEntity> baseQuery = BuildQueryAsync(options, resourceTypeId, CancellationToken.None, includePagination: false)
             .GetAwaiter().GetResult();
+
+        // Extract resource type and ID pairs from the base query BEFORE using in .Any()
+        // This prevents EF Core from generating complex subqueries with sorting in EXISTS clauses
+        // which can cause translation errors or performance issues
+        var mainResultIdentifiers = baseQuery
+            .Select(r => new { r.ResourceTypeId, r.ResourceId })
+            .Distinct();
 
         // Find resources that reference these main results using a subquery
         // Filter by source resource type (e.g., Encounter), search parameter, and reference target
@@ -959,7 +1020,7 @@ public class SqlEntityFrameworkSearchService : ISearchService
         var referencingRsps = _context.ReferenceSearchParams
             .Where(rsp => rsp.ResourceTypeId == sourceResourceTypeId.Value &&
                           rsp.SearchParamId == searchParamId &&
-                          baseQuery.Any(mr => mr.ResourceTypeId == rsp.ReferenceResourceTypeId && mr.ResourceId == rsp.ReferenceResourceId))
+                          mainResultIdentifiers.Any(mr => mr.ResourceTypeId == rsp.ReferenceResourceTypeId && mr.ResourceId == rsp.ReferenceResourceId))
             .Select(rsp => rsp.ResourceSurrogateId)
             .Distinct();
 

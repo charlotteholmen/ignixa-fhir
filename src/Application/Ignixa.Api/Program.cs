@@ -471,16 +471,20 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
 
     // IJsonNodeMutator for PATCH and Transform operations (shared mutation logic, Phase 2: request-aware via factory)
     // All PATCH executors use IJsonNodeMutator for consistent mutation logic
+    // CRITICAL: Changed to InstancePerDependency to avoid capturing IComponentContext in closure
+    // The schema provider factory needs access to IFhirRequestContextAccessor which is scoped per request
     containerBuilder.Register<Ignixa.FhirMappingLanguage.Mutator.IJsonNodeMutator>(c =>
     {
         var evaluator = c.Resolve<Ignixa.FhirPath.Evaluation.FhirPathEvaluator>();
         var parser = c.Resolve<FhirPathParser>();
+        var versionContext = c.Resolve<IFhirVersionContext>();
+        var requestContextAccessor = c.Resolve<IFhirRequestContextAccessor>();
 
-        // Schema provider factory that resolves per-request context
+        // Schema provider factory that uses ALREADY-RESOLVED dependencies
+        // Since we're using InstancePerDependency, this mutator is created fresh for each injection
+        // so requestContextAccessor points to the current request's context
         Func<ISchema> schemaProviderFactory = () =>
         {
-            var versionContext = c.Resolve<IFhirVersionContext>();
-            var requestContextAccessor = c.Resolve<IFhirRequestContextAccessor>();
             var requestContext = requestContextAccessor.RequestContext;
 
             if (requestContext is null)
@@ -500,7 +504,7 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
             schemaProviderFactory);
     })
     .As<Ignixa.FhirMappingLanguage.Mutator.IJsonNodeMutator>()
-    .InstancePerLifetimeScope();
+    .InstancePerDependency();
 
     // Patch operation executors (Phase 2 - Strategy Pattern)
     containerBuilder.RegisterType<Ignixa.Application.Features.Patch.Executors.AddOperationExecutor>()
@@ -600,6 +604,12 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
     // No longer registered in DI container - factory creates them per (tenant, version) pair
 
     // PHASE 1.2: Segmented CapabilityStatement with Smart Caching
+
+    // Register IApplicationVersionInfo (provides assembly version for CapabilityStatement)
+    // Retrieves version from GitVersion assembly attributes, falls back to "0.0.0-dev" if unavailable
+    containerBuilder.RegisterType<Ignixa.Application.Infrastructure.ApplicationVersionInfo>()
+        .As<IApplicationVersionInfo>()
+        .SingleInstance();
 
     // Register capability cache (Phase 1.2: in-memory, Phase 7: Redis)
     containerBuilder.RegisterType<Ignixa.Application.Infrastructure.Caching.MemoryCapabilityCache>()
@@ -1228,3 +1238,6 @@ app.Logger.LogInformation("FHIR data directory: {BaseDirectory}",
 }
 
 await app.RunAsync();
+
+// Explicit partial class to make Program public for integration testing
+public partial class Program { }

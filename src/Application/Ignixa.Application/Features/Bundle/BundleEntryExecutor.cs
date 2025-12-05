@@ -184,6 +184,33 @@ public class BundleEntryExecutor
             // Extract response from HttpContext
             return await ExtractResponseAsync(httpContext, cancellationToken);
         }
+        catch (ResourceVersionConflictException conflictEx)
+        {
+            // Resource version conflict: concurrent bundle modified the same resource
+            _logger.LogWarning(
+                "Resource conflict in bundle entry {Index} {Verb} {Url}: {ResourceType}/{ResourceId} " +
+                "(Attempted SurrogateId: {AttemptedId}, Existing SurrogateId: {ExistingId})",
+                entry.Index,
+                entry.HttpVerb,
+                entry.RequestUrl,
+                conflictEx.ResourceType,
+                conflictEx.ResourceId,
+                conflictEx.AttemptedSurrogateId,
+                conflictEx.ExistingSurrogateId);
+
+            var operationOutcome = conflictEx.OperationOutcome;
+            var resourceJson = operationOutcome.SerializeToString();
+
+            return new BundleEntryResponse
+            {
+                StatusCode = 409,
+                Status = "409 Conflict",
+                Location = null,
+                ETag = null,
+                ResourceJson = resourceJson,
+                LastModified = null
+            };
+        }
         catch (FhirException fhirEx)
         {
             // FHIR exceptions have proper HTTP status codes and OperationOutcomes
@@ -336,16 +363,46 @@ public class BundleEntryExecutor
 
         // Read response body
         string? resourceJson = null;
-        if (response.Body != null && response.Body.CanSeek && response.Body.Length > 0)
+        if (response.Body != null)
         {
-            response.Body.Position = 0;
-            using var reader = new StreamReader(response.Body, Encoding.UTF8, leaveOpen: true);
-            resourceJson = await reader.ReadToEndAsync(cancellationToken);
+            try
+            {
+                // Try to seek if the stream supports it
+                if (response.Body.CanSeek)
+                {
+                    // Only read if there's content
+                    if (response.Body.Length > 0)
+                    {
+                        response.Body.Position = 0;
+                        using var reader = new StreamReader(response.Body, Encoding.UTF8, leaveOpen: true);
+                        resourceJson = await reader.ReadToEndAsync(cancellationToken);
+                    }
+                    else
+                    {
+                        _logger.LogDebug("Response body is empty (Length = 0) for bundle entry");
+                    }
+                }
+                else
+                {
+                    // Non-seekable stream - try to read anyway
+                    _logger.LogDebug("Response body is not seekable for bundle entry, attempting to read");
+                    using var reader = new StreamReader(response.Body, Encoding.UTF8, leaveOpen: true);
+                    resourceJson = await reader.ReadToEndAsync(cancellationToken);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(
+                    ex,
+                    "Failed to read response body for bundle entry with status {StatusCode}",
+                    response.StatusCode);
+            }
         }
-        else if (response.Body == null)
+        else
         {
             _logger.LogWarning(
-                "Response body is null for bundle entry, this may indicate the pipeline replaced the response stream");
+                "Response body is null for bundle entry with status {StatusCode}, this may indicate the pipeline replaced the response stream",
+                response.StatusCode);
         }
 
         // Extract headers using string-based access

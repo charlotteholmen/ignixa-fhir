@@ -54,17 +54,22 @@ public class SearchExpressionQueryBuilder
     /// Applies a search expression to a base query, returning filtered results.
     /// </summary>
     /// <param name="baseQuery">The base query for resources.</param>
-    /// <param name="resourceTypeId">The resource type identifier.</param>
+    /// <param name="resourceTypeId">The resource type identifier, or null for system-wide search across all types.</param>
     /// <param name="expression">The search expression to apply.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <returns>A filtered query.</returns>
     public async Task<IQueryable<ResourceEntity>> ApplySearchExpressionAsync(
         IQueryable<ResourceEntity> baseQuery,
-        short resourceTypeId,
+        short? resourceTypeId,
         Expression expression,
         CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(expression);
+
+        _logger.LogDebug(
+            "ApplySearchExpressionAsync: ExpressionType={ExpressionType}, ResourceTypeId={ResourceTypeId}",
+            expression.GetType().Name,
+            resourceTypeId);
 
         return expression switch
         {
@@ -82,7 +87,7 @@ public class SearchExpressionQueryBuilder
 
     private async Task<IQueryable<ResourceEntity>> ApplyMultiaryExpressionAsync(
         IQueryable<ResourceEntity> baseQuery,
-        short resourceTypeId,
+        short? resourceTypeId,
         MultiaryExpression expression,
         CancellationToken ct)
     {
@@ -113,15 +118,23 @@ public class SearchExpressionQueryBuilder
 
     private async Task<IQueryable<ResourceEntity>> ApplySearchParameterExpressionAsync(
         IQueryable<ResourceEntity> baseQuery,
-        short resourceTypeId,
+        short? resourceTypeId,
         SearchParameterExpression expression,
         CancellationToken ct)
     {
+        _logger.LogDebug(
+            "ApplySearchParameterExpressionAsync: ParameterCode={ParameterCode}, ParameterName={ParameterName}, ResourceTypeId={ResourceTypeId}",
+            expression.Parameter?.Code,
+            expression.Parameter?.Name,
+            resourceTypeId);
+
         // Generate query for this search parameter
         var matchingResourceIds = await _parameterQueryGenerator.GenerateQueryAsync(
             resourceTypeId,
             expression,
             ct);
+
+        _logger.LogDebug("Generated matching resource IDs query, applying to base query");
 
         // Filter base query by matching resource IDs
         return baseQuery.Where(r => matchingResourceIds.Contains(r.ResourceSurrogateId));
@@ -129,7 +142,7 @@ public class SearchExpressionQueryBuilder
 
     private async Task<IQueryable<ResourceEntity>> ApplyChainedExpressionAsync(
         IQueryable<ResourceEntity> baseQuery,
-        short resourceTypeId,
+        short? resourceTypeId,
         ChainedExpression expression,
         CancellationToken ct)
     {
@@ -145,7 +158,7 @@ public class SearchExpressionQueryBuilder
 
     private async Task<IQueryable<ResourceEntity>> ApplyCompartmentSearchExpressionAsync(
         IQueryable<ResourceEntity> baseQuery,
-        short resourceTypeId,
+        short? resourceTypeId,
         CompartmentSearchExpression expression,
         CancellationToken ct)
     {
@@ -174,7 +187,7 @@ public class SearchExpressionQueryBuilder
 
     private async Task<IQueryable<ResourceEntity>> ApplyPatientEverythingExpressionAsync(
         IQueryable<ResourceEntity> baseQuery,
-        short resourceTypeId,
+        short? resourceTypeId,
         PatientEverythingExpression expression,
         CancellationToken ct)
     {
@@ -193,7 +206,7 @@ public class SearchExpressionQueryBuilder
 
     private async Task<IQueryable<ResourceEntity>> ApplyUnionExpressionAsync(
         IQueryable<ResourceEntity> baseQuery,
-        short resourceTypeId,
+        short? resourceTypeId,
         UnionExpression expression,
         CancellationToken ct)
     {
@@ -220,7 +233,7 @@ public class SearchExpressionQueryBuilder
 
     private async Task<IQueryable<ResourceEntity>> ApplyNotExpressionAsync(
         IQueryable<ResourceEntity> baseQuery,
-        short resourceTypeId,
+        short? resourceTypeId,
         NotExpression expression,
         CancellationToken ct)
     {
@@ -236,7 +249,7 @@ public class SearchExpressionQueryBuilder
 
     private Task<IQueryable<ResourceEntity>> ApplyMissingSearchParameterExpressionAsync(
         IQueryable<ResourceEntity> baseQuery,
-        short resourceTypeId,
+        short? resourceTypeId,
         MissingSearchParameterExpression expression,
         CancellationToken ct)
     {
@@ -352,15 +365,12 @@ public class SearchExpressionQueryBuilder
             throw new ArgumentException("Cannot combine zero queries", nameof(queries));
         }
 
-        // Start with first query
-        var result = queries[0];
-
-        // Union with remaining queries (OR logic)
-        for (int i = 1; i < queries.Count; i++)
-        {
-            result = result.Union(queries[i]);
-        }
-
-        return result;
+        // Use Concat+Distinct instead of chained Union to avoid deeply nested expression trees
+        // Chained Union creates: q0.Union(q1).Union(q2)...Union(qN) which nests deeply and can cause
+        // stack overflow in EF Core's ExpressionTreeFuncletizer with 100+ queries (e.g., ChargeItem).
+        // Concat creates a flatter tree: Concat(Concat(q0, q1), q2)... then Distinct deduplicates.
+        // This provides the same OR semantics (deduplicated union) with better performance.
+        var result = queries.Aggregate((current, next) => current.Concat(next));
+        return result.Distinct();
     }
 }
