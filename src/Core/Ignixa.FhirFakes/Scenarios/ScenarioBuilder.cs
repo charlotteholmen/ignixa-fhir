@@ -8,22 +8,58 @@ using Ignixa.FhirFakes.Population;
 using Ignixa.FhirFakes.Scenarios.Codes;
 using Ignixa.FhirFakes.Scenarios.States;
 using Ignixa.Specification;
+using Ignixa.Specification.Extensions;
 
 namespace Ignixa.FhirFakes.Scenarios;
 
 /// <summary>
-/// Fluent builder for composing clinical scenarios.
-/// Uses a state machine pattern to build patient journeys with temporal sequencing.
+/// Fluent builder for creating patient-centric test scenarios.
+///
+/// <para>
+/// <b>Design Principle: One Scenario = One Patient</b><br/>
+/// ScenarioBuilder is optimized for creating a single patient with their related resources
+/// (encounters, observations, conditions, etc.). For tests requiring multiple patients,
+/// organizations, or complex resource graphs, use resource builders directly.
+/// </para>
+///
+/// <para>
+/// <b>When to use ScenarioBuilder:</b><br/>
+/// - Creating a patient with clinical history (encounters, observations, medications)<br/>
+/// - Building test data for patient-specific workflows<br/>
+/// - Generating bundles for transaction/batch operations
+/// </para>
+///
+/// <para>
+/// <b>When NOT to use ScenarioBuilder:</b><br/>
+/// - Multiple unrelated patients<br/>
+/// - Organization hierarchies without a patient context<br/>
+/// - Complex cross-patient references (use builders directly)
+/// </para>
+///
+/// <example>
+/// // GOOD: Patient-centric scenario
+/// var scenario = new ScenarioBuilder(schemaProvider)
+///     .WithPatient(p => p.WithAge(35).WithGender(g => g.Female))
+///     .AddEncounter(...)
+///     .AddObservation(...)
+///     .Build();
+///
+/// // AVOID: Multiple unrelated patients - use PatientBuilder directly
+/// var patient1 = new PatientBuilder(schemaProvider).WithAge(35).Build();
+/// var patient2 = new PatientBuilder(schemaProvider).WithAge(42).Build();
+/// </example>
 /// </summary>
 public sealed class ScenarioBuilder
 {
     private readonly List<ScenarioState> _states = [];
     private readonly IFhirSchemaProvider _schemaProvider;
     private readonly SchemaBasedFhirResourceFaker _faker;
+    private readonly ResourceRegistry _registry = new();
     private string _scenarioName = "Unnamed Scenario";
     private string _description = string.Empty;
     private string? _tag;
     private bool _hasPatient;
+    private ReferenceFormat _referenceFormat = ReferenceFormat.UrnUuid;
 
     /// <summary>
     /// Creates a new scenario builder with the specified schema provider.
@@ -65,6 +101,32 @@ public sealed class ScenarioBuilder
         _tag = tag;
         return this;
     }
+
+    /// <summary>
+    /// Sets the reference format for generated resources.
+    /// Default is UrnUuid (suitable for transaction bundles).
+    /// </summary>
+    /// <param name="format">The reference format to use.</param>
+    /// <returns>This builder for fluent chaining.</returns>
+    public ScenarioBuilder WithReferenceFormat(ReferenceFormat format)
+    {
+        _referenceFormat = format;
+        return this;
+    }
+
+    /// <summary>
+    /// Configures the builder to use urn:uuid references (default).
+    /// Suitable for transaction bundles with client-assigned IDs.
+    /// </summary>
+    /// <returns>This builder for fluent chaining.</returns>
+    public ScenarioBuilder WithUrnUuidReferences() => WithReferenceFormat(ReferenceFormat.UrnUuid);
+
+    /// <summary>
+    /// Configures the builder to use resolved references (ResourceType/id).
+    /// Suitable for batch bundles or when resources already exist.
+    /// </summary>
+    /// <returns>This builder for fluent chaining.</returns>
+    public ScenarioBuilder WithResolvedReferences() => WithReferenceFormat(ReferenceFormat.Resolved);
 
     /// <summary>
     /// Adds a patient with the specified demographics.
@@ -1485,6 +1547,45 @@ public sealed class ScenarioBuilder
 
     #endregion
 
+    #region CareTeam Methods
+
+    /// <summary>
+    /// Adds a care team to the scenario.
+    /// CareTeams coordinate care across multiple practitioners for a patient.
+    /// </summary>
+    /// <param name="teamName">The care team name.</param>
+    /// <param name="status">The care team status (default: "active").</param>
+    /// <param name="category">Optional category code.</param>
+    /// <param name="participantStateIds">Optional StateIds of practitioners to include.</param>
+    public ScenarioBuilder AddCareTeam(
+        string teamName,
+        string status = "active",
+        FhirCode? category = null,
+        IReadOnlyList<string>? participantStateIds = null)
+    {
+        _states.Add(new CareTeamState
+        {
+            Name = $"CareTeam_{teamName}",
+            TeamName = teamName,
+            Status = status,
+            Category = category,
+            ParticipantStateIds = participantStateIds
+        });
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a care team state to the scenario.
+    /// </summary>
+    public ScenarioBuilder AddCareTeam(CareTeamState careTeam)
+    {
+        ArgumentNullException.ThrowIfNull(careTeam);
+        _states.Add(careTeam);
+        return this;
+    }
+
+    #endregion
+
     #region Condition End Methods
 
     /// <summary>
@@ -1621,6 +1722,7 @@ public sealed class ScenarioBuilder
     /// <summary>
     /// Builds and returns the completed scenario context.
     /// Executes all states in order to generate the patient journey.
+    /// Optionally rewrites references based on configured format.
     /// </summary>
     public ScenarioContext Build()
     {
@@ -1630,12 +1732,25 @@ public sealed class ScenarioBuilder
             Description = _description
         };
 
+        // Pass registry to context for automatic registration
+        context.SetRegistry(_registry);
+
         // Configure faker with tag before executing states
         _faker.WithTag(_tag);
 
         foreach (var state in _states)
         {
             state.Execute(context, _faker);
+        }
+
+        // Rewrite references if not using default urnuuid format
+        if (_referenceFormat != ReferenceFormat.UrnUuid)
+        {
+            var rewriter = new ReferenceRewriterService(_schemaProvider.ReferenceMetadataProvider);
+            rewriter.RewriteReferences(
+                context.AllResources,
+                _registry.All,
+                _referenceFormat);
         }
 
         return context;

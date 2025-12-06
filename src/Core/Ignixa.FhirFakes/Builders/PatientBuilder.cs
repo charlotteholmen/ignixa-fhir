@@ -71,6 +71,10 @@ public sealed class PatientBuilder
     private string? _id;
     private string? _tag;
 
+    // Reference configuration
+    private string? _managingOrganizationId;
+    private readonly List<string> _generalPractitionerIds = [];
+
     // Profile-specific configuration (Attributes Pattern)
     private IPatientProfile _profile = DefaultPatientProfile.Instance;
     private readonly Dictionary<string, object> _profileAttributes = new();
@@ -359,6 +363,46 @@ public sealed class PatientBuilder
         return this;
     }
 
+    // === Reference Configuration ===
+
+    /// <summary>
+    /// Sets the patient's managing organization reference.
+    /// </summary>
+    /// <param name="organizationId">The organization resource ID (not the full reference path).</param>
+    /// <returns>This builder for method chaining</returns>
+    /// <example>
+    /// <code>
+    /// var patient = CreatePatient()
+    ///     .WithManagingOrganization(organization.Id!)
+    ///     .Build();
+    /// </code>
+    /// </example>
+    public PatientBuilder WithManagingOrganization(string organizationId)
+    {
+        ArgumentNullException.ThrowIfNull(organizationId);
+        _managingOrganizationId = organizationId;
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a general practitioner reference.
+    /// </summary>
+    /// <param name="practitionerId">The ID of the practitioner.</param>
+    /// <returns>This builder for method chaining</returns>
+    /// <example>
+    /// <code>
+    /// var patient = CreatePatient()
+    ///     .WithGeneralPractitioner(practitioner.Id!)
+    ///     .Build();
+    /// </code>
+    /// </example>
+    public PatientBuilder WithGeneralPractitioner(string practitionerId)
+    {
+        ArgumentNullException.ThrowIfNull(practitionerId);
+        _generalPractitionerIds.Add(practitionerId);
+        return this;
+    }
+
     // === Smart Defaults ===
 
     /// <summary>
@@ -514,6 +558,27 @@ public sealed class PatientBuilder
         if (HasExtensions())
         {
             patientJson["extension"] = BuildExtensions();
+        }
+
+        if (!string.IsNullOrEmpty(_managingOrganizationId))
+        {
+            patientJson["managingOrganization"] = new JsonObject
+            {
+                ["reference"] = $"Organization/{_managingOrganizationId}"
+            };
+        }
+
+        if (_generalPractitionerIds.Count > 0)
+        {
+            var gpArray = new JsonArray();
+            foreach (var practitionerId in _generalPractitionerIds)
+            {
+                gpArray.Add(new JsonObject
+                {
+                    ["reference"] = $"Practitioner/{practitionerId}"
+                });
+            }
+            patientJson["generalPractitioner"] = gpArray;
         }
 
         var json = patientJson.ToJsonString();
