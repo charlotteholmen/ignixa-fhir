@@ -121,34 +121,62 @@
       "minimumReleaseAge": "5 days"
     },
     {
-      "description": "Pre-release versions: enable for SDK and preview packages",
-      "matchPackagePatterns": ["^Hl7\\.Fhir", "^ModelContextProtocol"],
-      "allowUnstable": true,
-      "schedule": ["before 3am on Monday"]
-    },
-    {
       "description": "Do not automerge pre-release versions",
       "matchDatasources": ["nuget"],
-      "matchCurrentVersion": "^.*-(alpha|beta|rc|preview).*$",
-      "automerge": false
+      "automerge": false,
+      "rangeStrategy": "auto"
     },
     {
-      "description": "High priority: Security updates",
-      "matchDatasources": ["nuget"],
-      "matchVulnerabilityIDs": ["*"],
-      "schedule": ["at any time"],
+      "description": "Handle GitHub Actions updates",
+      "matchDatasources": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "GitHub Actions",
+      "schedule": ["before 3am on Monday"],
+      "automerge": true,
+      "automergeType": "pr",
+      "minimumReleaseAge": "5 days"
+    },
+    {
+      "description": "Major GitHub Actions updates require review",
+      "matchDatasources": ["github-actions"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "GitHub Actions (major)",
+      "schedule": ["before 3am on Monday"],
       "automerge": false,
-      "prPriority": 10
+      "labels": ["semver-major"]
+    },
+    {
+      "description": "Handle Docker base image updates",
+      "matchDatasources": ["docker"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "Docker base images",
+      "schedule": ["before 3am on Monday"],
+      "automerge": true,
+      "automergeType": "pr",
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      "description": "Major Docker updates require review",
+      "matchDatasources": ["docker"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "Docker base images (major)",
+      "schedule": ["before 3am on Monday"],
+      "automerge": false,
+      "labels": ["semver-major"]
+    },
+    {
+      "description": "Handle Azure ARM template schema updates",
+      "matchDatasources": ["azure-pipelines-template-schema"],
+      "groupName": "Azure ARM templates",
+      "schedule": ["before 3am on Monday"],
+      "automerge": false,
+      "labels": ["infrastructure"]
     }
   ],
   "ignoreDeps": [],
+  "ignoreUnstable": true,
   "nuget": {
     "rangeStrategy": "bump"
   },
-  "labels": ["renovate", "dependencies"],
-  "statusCheckNames": [
-    "build-and-unit-tests",
-    "e2e-tests-sql",
-    "validate-docker"
-  ]
+  "labels": ["renovate", "dependencies"]
 }
