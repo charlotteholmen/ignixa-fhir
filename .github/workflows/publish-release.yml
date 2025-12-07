@@ -2,6 +2,19 @@ name: 🚀 Publish Release
 
 on:
   workflow_dispatch:
+    inputs:
+      skip_docker:
+        description: 'Skip Docker publish'
+        type: boolean
+        default: false
+      skip_nuget:
+        description: 'Skip NuGet publish'
+        type: boolean
+        default: false
+      skip_tag:
+        description: 'Skip Git tag creation'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -9,17 +22,22 @@ permissions:
   packages: write
 
 jobs:
-  promote-release:
-    name: Publish Release
+  # =============================================================================
+  # Stage 1: Prepare Release (download artifacts, extract version)
+  # =============================================================================
+  prepare-release:
+    name: 📦 Prepare Release
     runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.version.outputs.release_version }}
+      commit_sha: ${{ steps.version.outputs.commit_sha }}
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Need full history for release notes
+          fetch-depth: 0
 
-      # --- 1. Get Latest Build Artifacts from CI ---
       - name: Download Latest NuGet Artifacts
         uses: dawidd6/action-download-artifact@v3
         with:
@@ -29,14 +47,12 @@ jobs:
           workflow_conclusion: success
           branch: main
 
-      # --- 1b. Extract version and commit SHA from artifact ---
       - name: Read Release Version and Commit SHA
         id: version
         run: |
           RELEASE_VERSION=$(cat ./nuget-packages/version.txt)
           COMMIT_SHA=$(cat ./nuget-packages/commit-sha.txt)
 
-          # Validate files were read successfully
           if [ -z "$RELEASE_VERSION" ]; then
             echo "❌ Error: Failed to read release version from artifact"
             exit 1
@@ -51,7 +67,23 @@ jobs:
           echo "Release Version: $RELEASE_VERSION"
           echo "Commit SHA: $COMMIT_SHA"
 
-      # --- 2. Authenticate with GitHub Container Registry ---
+      - name: Upload NuGet packages for later jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-packages
+          path: ./nuget-packages/*.nupkg
+          retention-days: 1
+
+  # =============================================================================
+  # Stage 2a: Publish Docker Image
+  # =============================================================================
+  publish-docker:
+    name: 🐳 Publish Docker
+    runs-on: ubuntu-latest
+    needs: prepare-release
+    if: ${{ !inputs.skip_docker }}
+
+    steps:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -59,19 +91,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- 3. Promote Docker Image ---
       - name: Promote Docker Image to Release
         env:
           IMAGE_REGISTRY: ghcr.io
           IMAGE_NAMESPACE: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.release_version }}
+          COMMIT_SHA: ${{ needs.prepare-release.outputs.commit_sha }}
         run: |
-          # Extract short SHA for tag lookup (format: main-{short-sha})
-          SHORT_SHA=$(echo "${{ steps.version.outputs.commit_sha }}" | cut -c1-7)
+          SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
           SOURCE_TAG="main-${SHORT_SHA}"
           RELEASE_TAG="release"
-          VERSION_TAG="${{ steps.version.outputs.release_version }}"
+          VERSION_TAG="$RELEASE_VERSION"
 
-          IMAGE_URL="${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAMESPACE }}"
+          IMAGE_URL="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}"
 
           echo "Promoting Docker image..."
           echo "Source: ${IMAGE_URL}:${SOURCE_TAG}"
@@ -91,7 +123,22 @@ jobs:
 
           echo "✅ Docker image promoted successfully"
 
-      # --- 4. Publish to NuGet ---
+  # =============================================================================
+  # Stage 2b: Publish NuGet Packages (runs in parallel with Docker)
+  # =============================================================================
+  publish-nuget:
+    name: 📦 Publish NuGet
+    runs-on: ubuntu-latest
+    needs: prepare-release
+    if: ${{ !inputs.skip_nuget }}
+
+    steps:
+      - name: Download NuGet packages
+        uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: ./nuget-packages
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
@@ -106,63 +153,168 @@ jobs:
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
 
-      # --- 5. Create Git Tag ---
+  # =============================================================================
+  # Stage 3: Create Git Tag (after Docker + NuGet succeed or are skipped)
+  # =============================================================================
+  create-git-tag:
+    name: 🏷️ Create Git Tag
+    runs-on: ubuntu-latest
+    needs: [prepare-release, publish-docker, publish-nuget]
+    # Run if: not skipped AND (both succeeded OR were skipped)
+    if: |
+      !inputs.skip_tag &&
+      (needs.publish-docker.result == 'success' || needs.publish-docker.result == 'skipped') &&
+      (needs.publish-nuget.result == 'success' || needs.publish-nuget.result == 'skipped')
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Create Git Tag
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.release_version }}
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          # Git tags use release/ prefix (e.g., release/1.0.0)
-          git tag release/${{ steps.version.outputs.release_version }}
-          git push origin release/${{ steps.version.outputs.release_version }}
 
-      # --- 6. Generate AI Release Notes ---
-      - name: Generate Smart Release Notes
+          TAG_NAME="release/${RELEASE_VERSION}"
+
+          # Check if tag already exists
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "⚠️ Tag $TAG_NAME already exists, skipping"
+          else
+            git tag "$TAG_NAME"
+            git push origin "$TAG_NAME"
+            echo "✅ Created and pushed tag: $TAG_NAME"
+          fi
+
+  # =============================================================================
+  # Stage 4: Create GitHub Release with AI Release Notes
+  # =============================================================================
+  create-github-release:
+    name: 📝 Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [prepare-release, create-git-tag]
+    # Run if tag succeeded OR was skipped (for testing release notes generation)
+    # always() is required to run when dependencies are skipped
+    if: |
+      always() &&
+      needs.prepare-release.result == 'success' &&
+      (needs.create-git-tag.result == 'success' || needs.create-git-tag.result == 'skipped')
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download NuGet packages
+        uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: ./nuget-packages
+
+      - name: Generate AI Release Notes
         id: ai_notes
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.release_version }}
+          TAG_SKIPPED: ${{ needs.create-git-tag.result == 'skipped' }}
         run: |
-          # Use the tag we just created (release/X.X.X format)
-          CURRENT_TAG=release/${{ steps.version.outputs.release_version }}
-          PREV_TAG=$(git describe --tags --abbrev=0 "$CURRENT_TAG"^ 2>/dev/null || echo "")
+          CURRENT_TAG="release/${RELEASE_VERSION}"
 
-          echo "Generating release notes for $CURRENT_TAG (comparing to $PREV_TAG)..."
+          # If tag was skipped (testing mode), use HEAD instead
+          if [ "$TAG_SKIPPED" == "true" ]; then
+            echo "⚠️ Tag skipped - using HEAD for release notes generation (TEST MODE)"
+            CURRENT_REF="HEAD"
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || echo "")
+          else
+            CURRENT_REF="$CURRENT_TAG"
+            PREV_TAG=$(git describe --tags --abbrev=0 "$CURRENT_TAG"^ 2>/dev/null || echo "")
+          fi
+
+          echo "Generating release notes for $CURRENT_REF (comparing to $PREV_TAG)..."
 
           # Get Commits
           if [ -z "$PREV_TAG" ]; then
-            COMMITS=$(git log "$CURRENT_TAG" --pretty=format:"HASH:%h | AUTHOR:%an | SUBJECT:%s | BODY:%b")
+            COMMITS=$(git log "$CURRENT_REF" --pretty=format:"HASH:%h | AUTHOR:%an | SUBJECT:%s | BODY:%b")
           else
-            COMMITS=$(git log "$PREV_TAG..$CURRENT_TAG" --pretty=format:"HASH:%h | AUTHOR:%an | SUBJECT:%s | BODY:%b")
+            COMMITS=$(git log "$PREV_TAG..$CURRENT_REF" --pretty=format:"HASH:%h | AUTHOR:%an | SUBJECT:%s | BODY:%b")
           fi
 
-          # Define the System Prompt
-          read -r -d '' SYSTEM_PROMPT << EOM
+          # Extract PR numbers from commit messages and fetch PR details
+          echo "Fetching PR details..."
+          PR_NUMBERS=$(echo "$COMMITS" | grep -oE '#[0-9]+' | tr -d '#' | sort -u)
+
+          PR_DETAILS=""
+          for pr in $PR_NUMBERS; do
+            echo "  Fetching PR #$pr..."
+            # Get PR info in a simple format
+            PR_LINE=$(gh pr view "$pr" --json number,title,labels,author --jq '
+              "PR #\(.number): [\(.labels | map(.name) | join(", "))] \(.title) by @\(.author.login)"
+            ' 2>/dev/null || echo "")
+            PR_BODY=$(gh pr view "$pr" --json body --jq '.body // "" | .[0:500]' 2>/dev/null || echo "")
+
+            if [ -n "$PR_LINE" ]; then
+              PR_DETAILS="${PR_DETAILS}
+          ${PR_LINE}
+          Description: ${PR_BODY}"
+            fi
+          done
+
+          # Fetch recently closed issues that might be related
+          echo "Fetching related issues..."
+          if [ -n "$PREV_TAG" ]; then
+            PREV_DATE=$(git log -1 --format=%ci "$PREV_TAG" 2>/dev/null || echo "2024-01-01")
+            CLOSED_ISSUES=$(gh issue list --state closed --search "closed:>=$PREV_DATE" --limit 20 --json number,title,labels --jq '.[] | "Issue #\(.number): [\(.labels | map(.name) | join(", "))] \(.title)"' 2>/dev/null || echo "")
+          else
+            CLOSED_ISSUES=""
+          fi
+
+          # Define the System Prompt with richer context
+          read -r -d '' SYSTEM_PROMPT << EOM || true
           You are a chaotic good Release Manager for an Open Source Project.
 
           TASK:
-          Create release notes from the provided commit log for version ${{ steps.version.outputs.release_version }}.
+          Create release notes from the provided information for version ${RELEASE_VERSION}.
+
+          AVAILABLE DATA:
+          1. Git commits (with hash, author, subject, body)
+          2. Pull Request details (title, description, labels, author)
+          3. Recently closed issues
 
           FORMATTING RULES:
-          1. **Categorize**: Group changes into standard headers like '🚀 Features', '🐛 Bug Fixes', '🔧 Chore/Maintenance'.
-          2. **Links**: Whenever you see a reference to a PR or Issue (like #123), convert it to a Markdown link using this base URL: $REPO_URL/issues/NUMBER (e.g., [#123]($REPO_URL/issues/123)).
-          3. **Style**: Be concise but descriptive. Ignore merge commits unless they provide unique context.
+          1. **Categorize**: Group changes into standard headers like '🚀 Features', '🐛 Bug Fixes', '🔧 Chore/Maintenance', '📦 Dependencies'.
+          2. **Links**: Convert PR/Issue references to Markdown links: [#123]($REPO_URL/issues/123).
+          3. **Style**: Be concise but descriptive. Use PR titles and descriptions for context.
+          4. **Labels**: Use PR labels to help categorize (e.g., 'bug' → Bug Fixes, 'enhancement' → Features).
 
           CONTRIBUTORS SECTION:
           Create a main heading "## Contributors". Underneath it, create exactly two sub-sections:
 
           1. **### 🏆 The Humans**
-             - List all unique human authors.
+             - List all unique human authors (from commits and PRs).
+             - Use GitHub @mentions format (e.g., @username) so they get credited and linked.
 
           2. **### [Insert Creative Title Here]** (For Bots)
-             - Identify bot authors (e.g., dependabot, renovate, actions-user, vercel).
+             - Identify bot authors (e.g., dependabot, renovate, actions-user, vercel, claude).
              - **THEME**: Pick a random theme for this specific release (e.g., Sci-Fi, Noir, Fantasy, Corporate Satire, Western, Cyberpunk).
              - **TITLE**: Invent a funny sub-heading title based on that theme.
              - **DESCRIPTIONS**: Write a 1-sentence description for each bot fitting that theme.
              - *If no bots are found in the log, omit this sub-section entirely.*
 
-          COMMITS TO PROCESS:
+          === COMMITS ===
           $COMMITS
+
+          === PULL REQUESTS ===
+          $PR_DETAILS
+
+          === RECENTLY CLOSED ISSUES ===
+          $CLOSED_ISSUES
           EOM
 
           # Call Gemini API
@@ -172,51 +324,90 @@ jobs:
             -H "Content-Type: application/json" \
             -H "x-goog-api-key: $GEMINI_API_KEY" \
             -d @payload.json \
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent" > response.json
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" > response.json
 
           # Extract and validate response
           GENERATED_NOTES=$(jq -r '.candidates[0].content.parts[0].text' response.json)
 
           if [ "$GENERATED_NOTES" == "null" ] || [ -z "$GENERATED_NOTES" ]; then
-            echo "❌ Error: Gemini API returned null or failed."
+            echo "⚠️ Warning: Gemini API returned null or failed. Using fallback release notes."
             cat response.json
-            exit 1
+            echo "## Release ${RELEASE_VERSION}" > release_notes.md
+            echo "" >> release_notes.md
+            echo "See commits for details." >> release_notes.md
+          else
+            echo "$GENERATED_NOTES" > release_notes.md
+            echo "✅ Release notes generated successfully"
           fi
 
-          # Output to file for the next step
-          echo "$GENERATED_NOTES" > release_notes.md
-          echo "✅ Release notes generated successfully"
+      - name: Display Release Notes (test mode)
+        if: needs.create-git-tag.result == 'skipped'
+        run: |
+          echo "📝 Generated release notes (TEST MODE - not creating actual release):"
+          echo "=============================================="
+          cat release_notes.md
+          echo "=============================================="
 
-      # --- 7. Create GitHub Release ---
       - name: Create GitHub Release
+        if: needs.create-git-tag.result == 'success'
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: release/${{ steps.version.outputs.release_version }}
-          name: Release ${{ steps.version.outputs.release_version }}
+          tag_name: release/${{ needs.prepare-release.outputs.release_version }}
+          name: Release ${{ needs.prepare-release.outputs.release_version }}
           body_path: release_notes.md
           files: ./nuget-packages/*.nupkg
           draft: false
           prerelease: false
 
-      - name: Release Summary
+  # =============================================================================
+  # Stage 5: Summary (always runs)
+  # =============================================================================
+  release-summary:
+    name: 📋 Release Summary
+    runs-on: ubuntu-latest
+    needs: [prepare-release, publish-docker, publish-nuget, create-git-tag, create-github-release]
+    if: always()
+
+    steps:
+      - name: Generate Summary
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.release_version }}
+          DOCKER_RESULT: ${{ needs.publish-docker.result }}
+          NUGET_RESULT: ${{ needs.publish-nuget.result }}
+          TAG_RESULT: ${{ needs.create-git-tag.result }}
+          RELEASE_RESULT: ${{ needs.create-github-release.result }}
         run: |
-          echo "## ✅ Release Published Successfully" >> $GITHUB_STEP_SUMMARY
+          echo "## 📋 Release Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Version**: ${{ steps.version.outputs.release_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version**: ${RELEASE_VERSION}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Published Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "### Stage Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          for pkg in ./nuget-packages/*.nupkg; do
-            echo "- \`$(basename "$pkg")\`" >> $GITHUB_STEP_SUMMARY
-          done
+
+          # Function to convert result to emoji
+          result_emoji() {
+            case "$1" in
+              success) echo "✅" ;;
+              failure) echo "❌" ;;
+              skipped) echo "⏭️" ;;
+              *) echo "❓" ;;
+            esac
+          }
+
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker Publish | $(result_emoji $DOCKER_RESULT) $DOCKER_RESULT |" >> $GITHUB_STEP_SUMMARY
+          echo "| NuGet Publish | $(result_emoji $NUGET_RESULT) $NUGET_RESULT |" >> $GITHUB_STEP_SUMMARY
+          echo "| Git Tag | $(result_emoji $TAG_RESULT) $TAG_RESULT |" >> $GITHUB_STEP_SUMMARY
+          echo "| GitHub Release | $(result_emoji $RELEASE_RESULT) $RELEASE_RESULT |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Docker Image" >> $GITHUB_STEP_SUMMARY
-          echo "- \`ghcr.io/${{ github.repository }}:release\`" >> $GITHUB_STEP_SUMMARY
-          echo "- \`ghcr.io/${{ github.repository }}:${{ steps.version.outputs.release_version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Actions" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Promoted Docker image to release" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Published to NuGet.org" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Created Git tag" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Generated AI release notes" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Created GitHub release" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$DOCKER_RESULT" == "success" ] && [ "$NUGET_RESULT" == "success" ] && [ "$TAG_RESULT" == "success" ] && [ "$RELEASE_RESULT" == "success" ]; then
+            echo "### 🎉 All stages completed successfully!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Docker**: \`ghcr.io/${{ github.repository }}:release\` and \`ghcr.io/${{ github.repository }}:${RELEASE_VERSION}\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Git Tag**: \`release/${RELEASE_VERSION}\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ⚠️ Some stages failed - you can re-run individual jobs" >> $GITHUB_STEP_SUMMARY
+          fi
