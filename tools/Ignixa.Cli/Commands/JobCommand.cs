@@ -266,7 +266,10 @@ internal static class JobCommand
     {
         var listCommand = new Command("list", "List all import/export jobs");
 
-        var tenantOption = new Option<int?>("--tenant", "Tenant ID (required - use 'ignixa tenants' to see available tenants)");
+        var tenantOption = new Option<int>("--tenant", "Tenant ID (use 'ignixa tenants' to see available tenants)")
+        {
+            IsRequired = true
+        };
         tenantOption.AddAlias("-t");
 
         var urlOption = new Option<string>("--url", "URL of the Ignixa server (default: http://localhost:5000)");
@@ -289,18 +292,10 @@ internal static class JobCommand
         return listCommand;
     }
 
-    private static async Task HandleListJobsAsync(int? tenantId, string url, string? jobType, string? status)
+    private static async Task HandleListJobsAsync(int tenantId, string url, string? jobType, string? status)
     {
         try
         {
-            // Tenant ID is required for jobs listing
-            if (!tenantId.HasValue)
-            {
-                Console.WriteLine("Error: --tenant parameter is required for listing jobs.");
-                Console.WriteLine("Use 'ignixa tenants' to see available tenants.");
-                return;
-            }
-
             // Build the endpoint URL
             var endpoint = $"{url.TrimEnd('/')}/tenant/{tenantId}/$jobs-list";
 
