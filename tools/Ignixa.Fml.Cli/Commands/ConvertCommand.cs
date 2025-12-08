@@ -140,7 +140,11 @@ public static class ConvertCommand
         evaluator.Execute(map, context);
 
         // Write output
-        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        var outputDir = Path.GetDirectoryName(outputPath);
+        if (!string.IsNullOrEmpty(outputDir))
+        {
+            Directory.CreateDirectory(outputDir);
+        }
         var outputJson = JsonSerializer.Serialize(targetNode.MutableNode, new JsonSerializerOptions { WriteIndented = true });
         await File.WriteAllTextAsync(outputPath, outputJson);
 
@@ -245,8 +249,9 @@ public static class ConvertCommand
                 }
                 else
                 {
+                    var outputFileDir = Path.GetDirectoryName(outputPath);
                     var singleOutputPath = Path.Combine(
-                        Path.GetDirectoryName(outputPath)!,
+                        string.IsNullOrEmpty(outputFileDir) ? "." : outputFileDir,
                         $"{Path.GetFileNameWithoutExtension(outputPath)}-{i:D4}.json");
                     await File.WriteAllTextAsync(singleOutputPath, outputJson);
                 }
