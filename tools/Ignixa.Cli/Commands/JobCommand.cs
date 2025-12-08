@@ -58,7 +58,7 @@ internal static class JobCommand
             var parameters = new
             {
                 resourceType = "Parameters",
-                parameter = new[]
+                parameter = new object[]
                 {
                     new
                     {
@@ -68,7 +68,7 @@ internal static class JobCommand
                     new
                     {
                         name = "input",
-                        part = new[]
+                        part = new object[]
                         {
                             new
                             {
@@ -98,7 +98,7 @@ internal static class JobCommand
             Console.WriteLine($"Starting import job for tenant {tenantId}...");
             Console.WriteLine($"Input: {input}");
 
-            var response = await httpClient.PostAsync(endpoint, httpContent);
+            var response = await httpClient.PostAsync(new Uri(endpoint), httpContent);
 
             if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.Accepted)
             {
@@ -217,7 +217,7 @@ internal static class JobCommand
                 Console.WriteLine($"View definition: {viewDefinition}");
             }
 
-            var response = await httpClient.PostAsync(endpoint, null);
+            var response = await httpClient.PostAsync(new Uri(endpoint), null);
 
             if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.Accepted)
             {

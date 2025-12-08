@@ -85,7 +85,7 @@ internal static class PushCommand
 
             Console.WriteLine($"Pushing {resourceType} to {endpoint}...");
 
-            var response = await httpClient.PostAsync(endpoint, httpContent);
+            var response = await httpClient.PostAsync(new Uri(endpoint), httpContent);
 
             if (response.IsSuccessStatusCode)
             {

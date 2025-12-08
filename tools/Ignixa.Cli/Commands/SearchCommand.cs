@@ -82,7 +82,7 @@ internal static class SearchCommand
             using var httpClient = new HttpClient();
             httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
 
-            var response = await httpClient.GetAsync(searchUrl);
+            var response = await httpClient.GetAsync(new Uri(searchUrl));
 
             if (response.IsSuccessStatusCode)
             {
