@@ -2,6 +2,13 @@
 
 A command-line tool for working with FHIR Mapping Language (FML). Transform, preview, and validate FHIR resource mappings.
 
+## Current Status
+
+**✅ Validate Command**: Fully functional - parses and validates FML mapping files
+**🚧 Convert & Preview Commands**: Framework in place, requires schema/type integration for full execution
+
+The validate command works perfectly for checking FML syntax and structure. The convert and preview commands have the basic infrastructure but require integration with FHIR schema providers (ISchema/IElement) for complete mapping execution. This will be added in future iterations.
+
 ## Installation
 
 Install as a .NET global tool:
