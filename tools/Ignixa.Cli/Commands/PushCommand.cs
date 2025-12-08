@@ -10,6 +10,8 @@ namespace Ignixa.Cli.Commands;
 /// </summary>
 internal static class PushCommand
 {
+    private static readonly HttpClient s_httpClient = new HttpClient();
+
     public static Command Create()
     {
         var pushCommand = new Command("push", "Push a FHIR resource or bundle to the server");
@@ -78,14 +80,14 @@ internal static class PushCommand
             }
 
             // Send HTTP POST request
-            using var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
+            s_httpClient.DefaultRequestHeaders.Accept.Clear();
+            s_httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
 
             var httpContent = new StringContent(content, Encoding.UTF8, "application/fhir+json");
 
             Console.WriteLine($"Pushing {resourceType} to {endpoint}...");
 
-            var response = await httpClient.PostAsync(new Uri(endpoint), httpContent);
+            var response = await s_httpClient.PostAsync(new Uri(endpoint), httpContent);
 
             if (response.IsSuccessStatusCode)
             {

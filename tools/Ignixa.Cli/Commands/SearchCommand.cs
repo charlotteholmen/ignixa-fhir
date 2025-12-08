@@ -9,6 +9,8 @@ namespace Ignixa.Cli.Commands;
 /// </summary>
 internal static class SearchCommand
 {
+    private static readonly HttpClient s_httpClient = new HttpClient();
+
     public static Command Create()
     {
         var searchCommand = new Command("search", "Search for FHIR resources on the server");
@@ -79,10 +81,10 @@ internal static class SearchCommand
             Console.WriteLine($"Searching {resourceType} at {searchUrl}...");
 
             // Send HTTP GET request
-            using var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
+            s_httpClient.DefaultRequestHeaders.Accept.Clear();
+            s_httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
 
-            var response = await httpClient.GetAsync(new Uri(searchUrl));
+            var response = await s_httpClient.GetAsync(new Uri(searchUrl));
 
             if (response.IsSuccessStatusCode)
             {

@@ -10,6 +10,8 @@ namespace Ignixa.Cli.Commands;
 /// </summary>
 internal static class JobCommand
 {
+    private static readonly HttpClient s_httpClient = new HttpClient();
+
     public static Command Create()
     {
         var jobCommand = new Command("job", "Manage import/export jobs");
@@ -90,15 +92,15 @@ internal static class JobCommand
                 WriteIndented = false
             });
 
-            using var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
+            s_httpClient.DefaultRequestHeaders.Accept.Clear();
+            s_httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
 
             var httpContent = new StringContent(json, Encoding.UTF8, "application/fhir+json");
 
             Console.WriteLine($"Starting import job for tenant {tenantId}...");
             Console.WriteLine($"Input: {input}");
 
-            var response = await httpClient.PostAsync(new Uri(endpoint), httpContent);
+            var response = await s_httpClient.PostAsync(new Uri(endpoint), httpContent);
 
             if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.Accepted)
             {
@@ -200,8 +202,8 @@ internal static class JobCommand
                 endpoint += "?" + string.Join("&", queryParams);
             }
 
-            using var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
+            s_httpClient.DefaultRequestHeaders.Accept.Clear();
+            s_httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
 
             Console.WriteLine($"Starting export job for tenant {tenantId}...");
             if (!string.IsNullOrEmpty(type))
@@ -217,7 +219,7 @@ internal static class JobCommand
                 Console.WriteLine($"View definition: {viewDefinition}");
             }
 
-            var response = await httpClient.PostAsync(new Uri(endpoint), null);
+            var response = await s_httpClient.PostAsync(new Uri(endpoint), null);
 
             if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.Accepted)
             {
