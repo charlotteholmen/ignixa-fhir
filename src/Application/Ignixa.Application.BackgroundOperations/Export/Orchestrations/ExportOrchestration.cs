@@ -1,6 +1,7 @@
 using DurableTask.Core;
 using Ignixa.Application.BackgroundOperations.Export.Activities;
 using Ignixa.Application.BackgroundOperations.Export.Models;
+using Ignixa.Domain.Constants;
 
 namespace Ignixa.Application.BackgroundOperations.Export.Orchestrations;
 
@@ -56,6 +57,11 @@ public class ExportOrchestration : TaskOrchestration<ExportCoordinatorOutput, Ex
                 ? input.ResourceTypes.ToList()
                 : GetDefaultResourceTypes();
 
+            // Determine file extension based on output format (used for all worker outputs)
+            var fileExtension = input.OutputFormat == ExportConstants.MediaTypeParquet
+                ? ".parquet"
+                : ".ndjson";
+
             // Phase 1: For EACH resource type, get its surrogate ID ranges
             var allWorkerTasks = new List<Task<ExportWorkerOutput>>();
 
@@ -76,7 +82,7 @@ public class ExportOrchestration : TaskOrchestration<ExportCoordinatorOutput, Ex
                     // Step 2: For EACH range, queue a worker activity (all in parallel)
                     foreach (var (startId, endId) in rangesOutput.Ranges)
                     {
-                        var outputPath = $"tenant/{input.TenantId}/export/{input.JobId}/{resourceType}-{startId}-{endId}.ndjson";
+                        var outputPath = $"partition/{input.TenantId}/export/{input.JobId}/{resourceType}-{startId}-{endId}{fileExtension}";
 
                         var workerInput = new ExportWorkerInput(
                             JobId: input.JobId,
@@ -86,7 +92,9 @@ public class ExportOrchestration : TaskOrchestration<ExportCoordinatorOutput, Ex
                             EndSurrogateId: endId,
                             OutputPath: outputPath,
                             Since: input.Since,
-                            TypeFilters: input.TypeFilters);
+                            TypeFilters: input.TypeFilters,
+                            ViewDefinitionId: input.ViewDefinitionId,
+                            GroupId: input.GroupId);
 
                         // Schedule worker task (doesn't wait - queues for parallel execution)
                         var workerTask = context.ScheduleTask<ExportWorkerOutput>(
@@ -100,6 +108,25 @@ public class ExportOrchestration : TaskOrchestration<ExportCoordinatorOutput, Ex
             catch (Exception ex)
             {
                 // Failure during initialization (GetExportRangesActivity or scheduling)
+                try
+                {
+                    var initFailureCompleteInput = new CompleteJobInput(
+                        JobId: input.JobId,
+                        TenantId: input.TenantId,
+                        Success: false,
+                        ExportedFiles: new Dictionary<string, string>(),
+                        TotalResourcesExported: 0,
+                        ErrorMessage: $"Export initialization failed: {ex.Message}");
+
+                    await context.ScheduleTask<bool>(
+                        typeof(CompleteJobActivity),
+                        initFailureCompleteInput);
+                }
+                catch
+                {
+                    // If even completing the job fails, just continue
+                }
+
                 return new ExportCoordinatorOutput(
                     Success: false,
                     TotalResourcesExported: 0,
@@ -119,6 +146,25 @@ public class ExportOrchestration : TaskOrchestration<ExportCoordinatorOutput, Ex
             catch (Exception ex)
             {
                 // Failure during worker execution (one or more workers failed)
+                try
+                {
+                    var workerFailureCompleteInput = new CompleteJobInput(
+                        JobId: input.JobId,
+                        TenantId: input.TenantId,
+                        Success: false,
+                        ExportedFiles: new Dictionary<string, string>(),
+                        TotalResourcesExported: (int)totalResourcesExported,
+                        ErrorMessage: $"Worker execution failed: {ex.Message}");
+
+                    await context.ScheduleTask<bool>(
+                        typeof(CompleteJobActivity),
+                        workerFailureCompleteInput);
+                }
+                catch
+                {
+                    // If even completing the job fails, just continue
+                }
+
                 return new ExportCoordinatorOutput(
                     Success: false,
                     TotalResourcesExported: totalResourcesExported,
@@ -136,6 +182,28 @@ public class ExportOrchestration : TaskOrchestration<ExportCoordinatorOutput, Ex
                 totalBytesWritten += workerOutput.BytesWritten;
             }
 
+            // Phase 4: Build exported files dictionary from worker results
+            var exportedFiles = new Dictionary<string, string>();
+            foreach (var workerOutput in workerResults)
+            {
+                var fileKey = $"{workerOutput.ResourceType}-{workerOutput.StartSurrogateId}-{workerOutput.EndSurrogateId}";
+                var filePath = $"tenant/{input.TenantId}/export/{input.JobId}/{workerOutput.ResourceType}-{workerOutput.StartSurrogateId}-{workerOutput.EndSurrogateId}{fileExtension}";
+                exportedFiles[fileKey] = filePath;
+            }
+
+            // Phase 5: Complete the job (update database with final results)
+            var completeInput = new CompleteJobInput(
+                JobId: input.JobId,
+                TenantId: input.TenantId,
+                Success: true,
+                ExportedFiles: exportedFiles,
+                TotalResourcesExported: (int)totalResourcesExported,
+                ErrorMessage: null);
+
+            await context.ScheduleTask<bool>(
+                typeof(CompleteJobActivity),
+                completeInput);
+
             // Return success result with detailed worker outputs
             return new ExportCoordinatorOutput(
                 Success: true,
@@ -149,6 +217,27 @@ public class ExportOrchestration : TaskOrchestration<ExportCoordinatorOutput, Ex
         {
             // Unexpected failure during aggregation or final processing
             // This should be rare - most failures are caught in the specific phases above
+            // Still update the job status to Failed
+            try
+            {
+                var failureCompleteInput = new CompleteJobInput(
+                    JobId: input.JobId,
+                    TenantId: input.TenantId,
+                    Success: false,
+                    ExportedFiles: new Dictionary<string, string>(),
+                    TotalResourcesExported: (int)totalResourcesExported,
+                    ErrorMessage: $"Unexpected failure during export: {ex.Message}");
+
+                await context.ScheduleTask<bool>(
+                    typeof(CompleteJobActivity),
+                    failureCompleteInput);
+            }
+            catch
+            {
+                // If even completing the job fails, just log it and return error
+                // The orchestration already failed anyway
+            }
+
             return new ExportCoordinatorOutput(
                 Success: false,
                 TotalResourcesExported: totalResourcesExported,

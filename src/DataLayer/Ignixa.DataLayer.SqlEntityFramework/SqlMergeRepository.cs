@@ -316,9 +316,9 @@ public class SqlMergeRepository
             }
         };
 
-        // Execute merge stored procedure
         try
         {
+            // Execute merge stored procedure
             await _context.Database.ExecuteSqlRawAsync(
                 "EXEC dbo.MergeResources @AffectedRows OUTPUT, @RaiseExceptionOnConflict, @IsResourceChangeCaptureEnabled, " +
                 "@TransactionId, @SingleTransaction, @Resources, @ResourceWriteClaims, " +
@@ -333,15 +333,7 @@ public class SqlMergeRepository
         catch (SqlException ex) when (ex.Number == 50409)
         {
             // SQL error 50409: Resource has been recently updated or added (version conflict)
-            // Convert to PreconditionFailedException (HTTP 412) instead of 500 Internal Server Error
-            _logger.LogWarning(
-                ex,
-                "Resource version conflict detected in transaction {TransactionId}: {Message}",
-                transactionId,
-                ex.Message);
-            throw new PreconditionFailedException(
-                "Resource has been recently updated or added. Please compare the resource content and retry.",
-                ex);
+            throw new PreconditionFailedException("Resource was recently updated. Please refresh and retry.");
         }
 
         var affectedRows = Convert.ToInt32(affectedRowsParam.Value);
@@ -421,18 +413,6 @@ public class SqlMergeRepository
         return list.Count > 0 ? list : null;
     }
 
-    #region Lookup Tables - Now handled by SearchIndexReferenceDataCache properties
-
-    // NOTE: All lookup tables are now accessed directly via SearchIndexReferenceDataCache properties:
-    // - _referenceDataCache.ResourceTypeMappings
-    // - _referenceDataCache.SearchParameterMappings
-    // - _referenceDataCache.SystemMappings
-    // - _referenceDataCache.QuantityCodeMappings
-    //
-    // This eliminates the need for Get*Async methods and improves LRU/on-demand caching strategies.
-    // The cache owns and manages the dictionaries internally as a single source of truth.
-
-    #endregion
 
     #region TVP Builders (Phase 1: Structure only, full implementation in Phase 2-3)
 

@@ -175,12 +175,21 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .SingleInstance();
 
     // BACKGROUND OPERATIONS CONFIGURATION
-    // Auto-register all DurableTask activities from the BackgroundOperations assembly
-    // This scans for all classes inheriting from TaskActivity and registers them with DI
-    // New activities are automatically discovered without requiring manual registration updates
-    var backgroundOpsAssembly = typeof(Ignixa.Application.BackgroundOperations.Export.Activities.SearchAndWriteChunkActivity).Assembly;
+    // Auto-register all DurableTask activities and orchestrations from the BackgroundOperations assembly
+    // This scans for all classes inheriting from TaskActivity or TaskOrchestration and registers them with DI
+    // New activities/orchestrations are automatically discovered without requiring manual registration updates
+    var backgroundOpsAssembly = typeof(Ignixa.Application.BackgroundOperations.Export.Activities.ExportWorkerActivity).Assembly;
+
+    // Register all TaskActivity types (Export/Import workers, job completion, etc.)
     containerBuilder.RegisterAssemblyTypes(backgroundOpsAssembly)
         .Where(t => typeof(DurableTask.Core.TaskActivity).IsAssignableFrom(t) && !t.IsAbstract)
+        .AsSelf()
+        .InstancePerDependency();
+
+    // Register all TaskOrchestration types (ExportOrchestration, ImportOrchestration)
+    // CRITICAL: Orchestrations MUST be registered or DurableTask cannot find them when executing jobs
+    containerBuilder.RegisterAssemblyTypes(backgroundOpsAssembly)
+        .Where(t => typeof(DurableTask.Core.TaskOrchestration).IsAssignableFrom(t) && !t.IsAbstract)
         .AsSelf()
         .InstancePerDependency();
 
@@ -298,6 +307,22 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
     })
     .As<IBlobStorageClient>()
     .SingleInstance();
+
+    // Register IExportStreamWriterFactory for streaming export to blob storage
+    // CompositeExportStreamWriterFactory determines format based on file extension:
+    // - .ndjson → BlobStorageExportStreamWriter (NDJSON format with memory pooling)
+    // - .parquet → ParquetExportStreamWriter (Parquet format with row buffering)
+    // Used by ExportWorkerActivity to create writers that handle buffering and write directly to blob storage
+    containerBuilder.RegisterType<Ignixa.DataLayer.BlobStorage.CompositeExportStreamWriterFactory>()
+        .As<IExportStreamWriterFactory>()
+        .SingleInstance();
+
+    // Register ViewDefinitionLoader for SQL-on-FHIR ViewDefinition export
+    // Used by ExportWorkerActivity to load ViewDefinition resources from the datastore
+    // when _viewDefinition parameter is specified in export requests
+    containerBuilder.RegisterType<Ignixa.DataLayer.BlobStorage.ViewDefinitionLoader>()
+        .AsSelf()
+        .SingleInstance();
 
     // Register open generic background job repository (in-memory for dev, SQL Server for production)
     // Supports both import and export with unified generic interface: IBackgroundJobRepository<T>
@@ -586,6 +611,25 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
         .As<ISearchOptionsBuilderFactory>()
         .SingleInstance();
 
+    // Register ISearchOptionsBuilder as default (R4) for background operations
+    // Background activities like ExportWorkerActivity need a direct ISearchOptionsBuilder
+    // For Phase 1 (single-tenant), this is R4. Phase 2+ will need tenant-specific resolution
+    containerBuilder.Register<ISearchOptionsBuilder>(c =>
+    {
+        var factory = c.Resolve<ISearchOptionsBuilderFactory>();
+        return factory.Create(FhirVersion.R4);
+    }).SingleInstance();
+
+    // Register FhirSchemaProviderResolver - enables version-aware components to resolve
+    // the correct provider at runtime based on request FHIR version
+    // Note: GetSchemaProvider now requires tenantId parameter, so consumers should call it directly
+    // This registration is kept for backward compatibility but defaults to tenant 1
+    containerBuilder.Register<Func<FhirVersion, IFhirSchemaProvider>>(c =>
+    {
+        var versionContext = c.Resolve<IFhirVersionContext>();
+        return (FhirVersion version) => versionContext.GetSchemaProvider(version, tenantId: null);
+    }).SingleInstance();
+
     // DEPRECATED: VersionAwareSearchParameterDefinitionManager replaced by FhirVersionContext.GetSearchParameterDefinitionManager()
     // Multi-version support now provided via FhirVersionContext pattern (same as SearchIndexer and SchemaProvider)
     // For single-tenant mode (Phase 1), default to R4 for backward compatibility
@@ -656,6 +700,15 @@ builder.Host.ConfigureContainer<ContainerBuilder>(containerBuilder =>
 
     // NOTE: CustomResourceTypeCapabilitySegment removed - custom resource types now included
     // via FhirVersionContext.GetSchemaProvider(version, tenantId) in ResourceInteractionCapabilitySegment
+
+    // Background operations handlers (bulk export, bulk import)
+    containerBuilder.RegisterType<Ignixa.Application.BackgroundOperations.Export.CreateExportJobHandler>()
+        .As<IRequestHandler<Ignixa.Application.BackgroundOperations.Export.CreateExportJobCommand, Ignixa.Application.BackgroundOperations.Export.CreateExportJobResult>>()
+        .InstancePerDependency();
+
+    containerBuilder.RegisterType<Ignixa.Application.BackgroundOperations.Jobs.GetJobStatusHandler>()
+        .As<IRequestHandler<Ignixa.Application.BackgroundOperations.Jobs.GetJobStatusQuery, Ignixa.Application.BackgroundOperations.Jobs.GetJobStatusResult>>()
+        .InstancePerDependency();
 
     // PACKAGE FEATURES REGISTRATION
     // Register package features that declare implementation of loaded FHIR packages
