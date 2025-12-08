@@ -1160,6 +1160,7 @@ app.MapHealthCheckEndpoints();
 // This ensures /$import and /$export routes match before the generic /{resourceType} catch-all
 app.MapExportEndpoints(); // Bulk export endpoints (DurableTask)
 app.MapImportEndpoints(); // Bulk import endpoints (DurableTask)
+app.MapAdminEndpoints(); // Admin endpoints ($tenants, $jobs-list)
 app.MapAdminPackageEndpoints(); // Admin package management endpoints (/admin/packages)
 
 app.MapFhirEndpoints();

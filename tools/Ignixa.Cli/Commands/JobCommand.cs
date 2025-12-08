@@ -263,7 +263,7 @@ internal static class JobCommand
     {
         var listCommand = new Command("list", "List all import/export jobs");
 
-        var tenantOption = new Option<int?>("--tenant", "Tenant ID (optional in single-tenant scenarios)");
+        var tenantOption = new Option<int?>("--tenant", "Tenant ID (required - use 'ignixa tenants' to see available tenants)");
         tenantOption.AddAlias("-t");
 
         var urlOption = new Option<string>("--url", "URL of the Ignixa server (default: http://localhost:5000)");
@@ -290,29 +290,115 @@ internal static class JobCommand
     {
         try
         {
-            // For now, use a simple approach to list jobs
-            // In a real implementation, this would call a dedicated jobs listing endpoint
-            Console.WriteLine("Listing jobs...");
-
-            if (tenantId.HasValue)
+            // Tenant ID is required for jobs listing
+            if (!tenantId.HasValue)
             {
-                Console.WriteLine($"Tenant: {tenantId}");
+                Console.WriteLine("Error: --tenant parameter is required for listing jobs.");
+                Console.WriteLine("Use 'ignixa tenants' to see available tenants.");
+                return;
             }
+
+            // Build the endpoint URL
+            var endpoint = $"{url.TrimEnd('/')}/tenant/{tenantId}/$jobs-list";
+
+            // Add query parameters if specified
+            var queryParams = new List<string>();
             if (!string.IsNullOrEmpty(jobType))
             {
-                Console.WriteLine($"Job Type: {jobType}");
+                queryParams.Add($"jobType={Uri.EscapeDataString(jobType)}");
             }
             if (!string.IsNullOrEmpty(status))
             {
-                Console.WriteLine($"Status: {status}");
+                queryParams.Add($"status={Uri.EscapeDataString(status)}");
             }
 
-            // Note: The actual implementation would require an API endpoint that lists jobs
-            // For now, provide a message about this limitation
-            Console.WriteLine();
-            Console.WriteLine("Note: Job listing requires a dedicated API endpoint.");
-            Console.WriteLine("To check the status of a specific job, use the Content-Location URL");
-            Console.WriteLine("returned when starting an import or export job.");
+            if (queryParams.Count > 0)
+            {
+                endpoint += "?" + string.Join("&", queryParams);
+            }
+
+            Console.WriteLine($"Fetching jobs from {endpoint}...");
+
+            // Send HTTP GET request
+            s_httpClient.DefaultRequestHeaders.Accept.Clear();
+            s_httpClient.DefaultRequestHeaders.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+
+            var response = await s_httpClient.GetAsync(new Uri(endpoint));
+
+            if (response.IsSuccessStatusCode)
+            {
+                var responseContent = await response.Content.ReadAsStringAsync();
+                Console.WriteLine("Success!");
+                Console.WriteLine();
+
+                if (!string.IsNullOrWhiteSpace(responseContent))
+                {
+                    // Parse and display job information
+                    using var responseDoc = System.Text.Json.JsonDocument.Parse(responseContent);
+                    var jobs = responseDoc.RootElement;
+
+                    if (jobs.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        var jobCount = jobs.GetArrayLength();
+                        Console.WriteLine($"Total Jobs: {jobCount}");
+                        Console.WriteLine();
+
+                        if (jobCount > 0)
+                        {
+                            Console.WriteLine("Jobs:");
+                            Console.WriteLine("-----");
+
+                            foreach (var job in jobs.EnumerateArray())
+                            {
+                                if (job.TryGetProperty("jobId", out var jobIdElement))
+                                {
+                                    Console.WriteLine($"  Job ID: {jobIdElement.GetString()}");
+                                }
+
+                                if (job.TryGetProperty("jobType", out var jobTypeElement))
+                                {
+                                    Console.Write($"  Type: {jobTypeElement.GetString()}");
+                                }
+
+                                if (job.TryGetProperty("status", out var statusElement))
+                                {
+                                    Console.WriteLine($" | Status: {statusElement.GetString()}");
+                                }
+
+                                if (job.TryGetProperty("progressDescription", out var progressElement))
+                                {
+                                    Console.WriteLine($"  Progress: {progressElement.GetString()}");
+                                }
+
+                                if (job.TryGetProperty("createDate", out var createDateElement))
+                                {
+                                    Console.WriteLine($"  Created: {createDateElement.GetString()}");
+                                }
+
+                                if (job.TryGetProperty("errorMessage", out var errorElement) && !string.IsNullOrEmpty(errorElement.GetString()))
+                                {
+                                    Console.WriteLine($"  Error: {errorElement.GetString()}");
+                                }
+
+                                Console.WriteLine();
+                            }
+                        }
+                        else
+                        {
+                            Console.WriteLine("No jobs found.");
+                        }
+                    }
+                }
+            }
+            else
+            {
+                Console.WriteLine($"Error: {response.StatusCode}");
+                var errorContent = await response.Content.ReadAsStringAsync();
+                if (!string.IsNullOrWhiteSpace(errorContent))
+                {
+                    Console.WriteLine(errorContent);
+                }
+            }
         }
         catch (Exception ex)
         {

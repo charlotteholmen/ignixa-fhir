@@ -25,6 +25,7 @@ Use the built-in help command to discover available options:
 ignixa help
 
 # Command-specific help
+ignixa tenants --help
 ignixa push --help
 ignixa search --help
 ignixa job --help
@@ -34,6 +35,26 @@ ignixa job list --help
 ```
 
 ## Usage
+
+### List Tenants
+
+List all active tenants on the server:
+
+```bash
+# List all tenants
+ignixa tenants
+
+# Specify server URL
+ignixa tenants --url http://myserver:5000
+```
+
+**Options:**
+- `--url` or `-u` - URL of the Ignixa server (default: http://localhost:5000)
+
+This command calls the `$tenants` operation on the server and displays:
+- Server mode (single-tenant or multi-tenant)
+- Total number of tenants
+- Details for each tenant (ID, name, FHIR version, validation tier)
 
 ### Push Resources or Bundles
 
@@ -118,31 +139,33 @@ ignixa job export --viewdefinition "MySqlOnFhirView" --tenant 1
 
 ### List Jobs
 
-List all import/export jobs:
+List all import/export jobs for a tenant:
 
 ```bash
-# List all jobs
-ignixa job list
-
-# List jobs for specific tenant
+# List all jobs for a tenant (tenant required)
 ignixa job list --tenant 1
 
 # Filter by job type
-ignixa job list --type Import
+ignixa job list --tenant 1 --type Import
 
 # Filter by status
-ignixa job list --status Running
+ignixa job list --tenant 1 --status Running
 ```
 
 **Options:**
-- `--tenant` or `-t` - Tenant ID (optional in single-tenant scenarios)
+- `--tenant` or `-t` - **Required** - Tenant ID (use `ignixa tenants` to see available tenants)
 - `--url` or `-u` - URL of the Ignixa server (default: http://localhost:5000)
 - `--type` - Filter by job type (Import or Export)
 - `--status` - Filter by status (Queued, Running, Completed, Failed, Cancelled)
 
+This command calls the `$jobs-list` operation on the server for the specified tenant.
+
 ## Examples
 
 ```bash
+# List all tenants on the server
+ignixa tenants
+
 # Push a patient bundle to the server
 ignixa push -u http://localhost:5000 -f ./data/patient-bundle.json -t 1
 
@@ -161,8 +184,8 @@ ignixa job export --type "Patient" -t 1
 # Export with a view definition
 ignixa job export --type "Patient" --viewdefinition "PatientSummaryView" -t 1
 
-# List all jobs
-ignixa job list
+# List all jobs for a tenant
+ignixa job list --tenant 1
 ```
 
 ## Output

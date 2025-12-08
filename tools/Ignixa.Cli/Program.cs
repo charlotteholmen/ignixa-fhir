@@ -16,6 +16,9 @@ class Program
         // Add help command for discoverability
         rootCommand.AddCommand(HelpCommand.Create());
 
+        // Add tenants command (root-level)
+        rootCommand.AddCommand(TenantsCommand.Create());
+
         // Add push command
         rootCommand.AddCommand(PushCommand.Create());
 
