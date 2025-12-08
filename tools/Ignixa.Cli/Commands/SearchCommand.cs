@@ -80,11 +80,11 @@ internal static class SearchCommand
 
             Console.WriteLine($"Searching {resourceType} at {searchUrl}...");
 
-            // Send HTTP GET request
-            s_httpClient.DefaultRequestHeaders.Accept.Clear();
-            s_httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
+            // Send HTTP GET request using HttpRequestMessage for thread safety
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(searchUrl));
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
 
-            var response = await s_httpClient.GetAsync(new Uri(searchUrl));
+            var response = await s_httpClient.SendAsync(request);
 
             if (response.IsSuccessStatusCode)
             {

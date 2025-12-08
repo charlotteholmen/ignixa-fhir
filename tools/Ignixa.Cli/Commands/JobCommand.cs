@@ -92,15 +92,18 @@ internal static class JobCommand
                 WriteIndented = false
             });
 
-            s_httpClient.DefaultRequestHeaders.Accept.Clear();
-            s_httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
-
             var httpContent = new StringContent(json, Encoding.UTF8, "application/fhir+json");
 
             Console.WriteLine($"Starting import job for tenant {tenantId}...");
             Console.WriteLine($"Input: {input}");
 
-            var response = await s_httpClient.PostAsync(new Uri(endpoint), httpContent);
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(endpoint))
+            {
+                Content = httpContent
+            };
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
+
+            var response = await s_httpClient.SendAsync(request);
 
             if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.Accepted)
             {
@@ -202,9 +205,6 @@ internal static class JobCommand
                 endpoint += "?" + string.Join("&", queryParams);
             }
 
-            s_httpClient.DefaultRequestHeaders.Accept.Clear();
-            s_httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
-
             Console.WriteLine($"Starting export job for tenant {tenantId}...");
             if (!string.IsNullOrEmpty(type))
             {
@@ -219,7 +219,10 @@ internal static class JobCommand
                 Console.WriteLine($"View definition: {viewDefinition}");
             }
 
-            var response = await s_httpClient.PostAsync(new Uri(endpoint), null);
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(endpoint));
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
+
+            var response = await s_httpClient.SendAsync(request);
 
             if (response.IsSuccessStatusCode || response.StatusCode == System.Net.HttpStatusCode.Accepted)
             {
@@ -319,11 +322,11 @@ internal static class JobCommand
 
             Console.WriteLine($"Fetching jobs from {endpoint}...");
 
-            // Send HTTP GET request
-            s_httpClient.DefaultRequestHeaders.Accept.Clear();
-            s_httpClient.DefaultRequestHeaders.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+            // Send HTTP GET request using HttpRequestMessage for thread safety
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(endpoint));
+            request.Headers.Accept.Add(new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
 
-            var response = await s_httpClient.GetAsync(new Uri(endpoint));
+            var response = await s_httpClient.SendAsync(request);
 
             if (response.IsSuccessStatusCode)
             {

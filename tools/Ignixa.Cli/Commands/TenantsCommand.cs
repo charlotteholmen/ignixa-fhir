@@ -37,11 +37,11 @@ internal static class TenantsCommand
 
             Console.WriteLine($"Fetching tenants from {endpoint}...");
 
-            // Send HTTP GET request
-            s_httpClient.DefaultRequestHeaders.Accept.Clear();
-            s_httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            // Send HTTP GET request using HttpRequestMessage for thread safety
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(endpoint));
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            var response = await s_httpClient.GetAsync(new Uri(endpoint));
+            var response = await s_httpClient.SendAsync(request);
 
             if (response.IsSuccessStatusCode)
             {

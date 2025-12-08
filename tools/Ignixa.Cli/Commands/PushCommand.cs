@@ -79,15 +79,18 @@ internal static class PushCommand
                     : $"{url.TrimEnd('/')}/{resourceType}";
             }
 
-            // Send HTTP POST request
-            s_httpClient.DefaultRequestHeaders.Accept.Clear();
-            s_httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
-
+            // Send HTTP POST request using HttpRequestMessage for thread safety
             var httpContent = new StringContent(content, Encoding.UTF8, "application/fhir+json");
 
             Console.WriteLine($"Pushing {resourceType} to {endpoint}...");
 
-            var response = await s_httpClient.PostAsync(new Uri(endpoint), httpContent);
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(endpoint))
+            {
+                Content = httpContent
+            };
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/fhir+json"));
+
+            var response = await s_httpClient.SendAsync(request);
 
             if (response.IsSuccessStatusCode)
             {
