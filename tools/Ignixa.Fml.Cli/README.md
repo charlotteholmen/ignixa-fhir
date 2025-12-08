@@ -4,10 +4,11 @@ A command-line tool for working with FHIR Mapping Language (FML). Transform, pre
 
 ## Current Status
 
-**✅ Validate Command**: Fully functional - parses and validates FML mapping files
+**✅ Validate Command**: Fully functional - parses and validates FML mapping files with custom StructureDefinition support
+**✅ Context Directory Support**: Load custom StructureDefinitions, ValueSets, and ConceptMaps from a directory
 **🚧 Convert & Preview Commands**: Framework in place, requires schema/type integration for full execution
 
-The validate command works perfectly for checking FML syntax and structure. The convert and preview commands have the basic infrastructure but require integration with FHIR schema providers (ISchema/IElement) for complete mapping execution. This will be added in future iterations.
+The validate command works perfectly for checking FML syntax and structure. Context directory support allows loading custom FHIR definitions for enhanced type validation. The convert and preview commands have the basic infrastructure but require integration with FHIR schema providers (ISchema/IElement) for complete mapping execution.
 
 ## Installation
 
@@ -159,11 +160,12 @@ group PatientContent(source src : Patient, target tgt : Patient) {
 
 ## Working with Context Directories
 
-The `--context` option allows you to specify a directory containing custom StructureDefinitions and ValueSets. This enables:
+The `--context` option allows you to specify a directory containing custom StructureDefinitions, ValueSets, and ConceptMaps. The CLI tool will automatically load these resources and use them for enhanced type validation.
 
-- Type validation against custom profiles
-- Support for extensions
-- ConceptMap-based terminology translation
+**What gets loaded:**
+- **StructureDefinitions**: Custom resource types, profiles, and extensions
+- **ValueSets**: Code validation sets
+- **ConceptMaps**: Code system mappings for terminology translation
 
 **Directory structure:**
 ```
@@ -173,6 +175,23 @@ definitions/
 ├── ValueSet-custom-codes.json
 └── ConceptMap-code-mapping.json
 ```
+
+**Example usage:**
+```bash
+# Validate with custom definitions
+ignixa-fml validate \
+  --map patient-transform.map \
+  --context ./my-profiles
+
+# Output shows what was loaded:
+📂 Loading context from ./my-profiles...
+✓ Loaded 2 StructureDefinitions, 1 ValueSets, 1 ConceptMaps
+```
+
+The loaded definitions are used by the MappingParser to:
+- Validate that referenced types exist
+- Check type compatibility in mappings
+- Support custom resource types and profiles
 
 ## Examples
 

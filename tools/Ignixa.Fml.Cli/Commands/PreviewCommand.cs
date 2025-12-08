@@ -56,27 +56,20 @@ public static class PreviewCommand
 
             // Load and parse the mapping
             Console.WriteLine($"📖 Loading mapping from {mapPath}...");
+            
+            // Load context definitions if provided
+            var typeValidator = ContextLoader.LoadContext(contextPath);
+            if (!string.IsNullOrEmpty(contextPath) && Directory.Exists(contextPath))
+            {
+                Console.WriteLine($"📂 Loading context from {contextPath}...");
+                // Context has been loaded by ContextLoader
+            }
+            
             var mappingText = await File.ReadAllTextAsync(mapPath);
-            var parser = new MappingParser();
+            var parser = new MappingParser(preserveTrivia: false, typeValidator: typeValidator);
             var map = parser.Parse(mappingText);
             Console.WriteLine($"✓ Mapping '{map.Identifier}' loaded successfully");
             Console.WriteLine();
-
-            // TODO: Load context definitions if provided
-            if (!string.IsNullOrEmpty(contextPath))
-            {
-                if (!Directory.Exists(contextPath))
-                {
-                    Console.WriteLine($"⚠ Warning: Context directory not found: {contextPath}");
-                    Console.WriteLine();
-                }
-                else
-                {
-                    Console.WriteLine($"📂 Loading context from {contextPath}...");
-                    // Context loading will be implemented in future iterations
-                    Console.WriteLine();
-                }
-            }
 
             // Read input file
             Console.WriteLine($"📄 Reading input from {inputPath}...");

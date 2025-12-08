@@ -63,8 +63,17 @@ public static class ConvertCommand
 
             // Load and parse the mapping
             Console.WriteLine($"📖 Loading mapping from {mapPath}...");
+            
+            // Load context definitions if provided
+            var typeValidator = ContextLoader.LoadContext(contextPath);
+            if (!string.IsNullOrEmpty(contextPath) && Directory.Exists(contextPath))
+            {
+                Console.WriteLine($"📂 Loading context from {contextPath}...");
+                // Context has been loaded by ContextLoader
+            }
+            
             var mappingText = await File.ReadAllTextAsync(mapPath);
-            var parser = new MappingParser();
+            var parser = new MappingParser(preserveTrivia: false, typeValidator: typeValidator);
             var map = parser.Parse(mappingText);
             Console.WriteLine($"✓ Mapping '{map.Identifier}' loaded successfully");
 

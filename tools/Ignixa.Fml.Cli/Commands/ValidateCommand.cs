@@ -1,6 +1,7 @@
 using System.CommandLine;
 using Ignixa.FhirMappingLanguage.Parser;
 using Superpower.Model;
+using Ignixa.Fml.Cli.Helpers;
 
 namespace Ignixa.Fml.Cli.Commands;
 
@@ -43,7 +44,8 @@ public static class ValidateCommand
             Console.WriteLine($"📖 Validating mapping from {mapPath}...");
             Console.WriteLine();
 
-            // TODO: Load context definitions if provided
+            // Load context definitions if provided
+            var typeValidator = ContextLoader.LoadContext(contextPath);
             if (!string.IsNullOrEmpty(contextPath))
             {
                 if (!Directory.Exists(contextPath))
@@ -51,17 +53,17 @@ public static class ValidateCommand
                     Console.WriteLine($"⚠ Warning: Context directory not found: {contextPath}");
                     Console.WriteLine();
                 }
-                else
+                else if (typeValidator != null)
                 {
                     Console.WriteLine($"📂 Loading context from {contextPath}...");
-                    // Context loading will be implemented in future iterations
+                    // Context has been loaded by ContextLoader
                     Console.WriteLine();
                 }
             }
 
             // Load and parse the mapping
             var mappingText = await File.ReadAllTextAsync(mapPath);
-            var parser = new MappingParser();
+            var parser = new MappingParser(preserveTrivia: false, typeValidator: typeValidator);
             var map = parser.Parse(mappingText);
 
             // Display validation results
