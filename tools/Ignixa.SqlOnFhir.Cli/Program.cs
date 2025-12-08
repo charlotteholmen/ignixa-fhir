@@ -4,24 +4,21 @@
 // -------------------------------------------------------------------------------------------------
 
 using System.CommandLine;
-using Ignixa.FhirFakes.Cli.Commands;
 using Ignixa.Specification;
 using Ignixa.Specification.Generated;
+using Ignixa.SqlOnFhir.Cli.Commands;
 
-namespace Ignixa.FhirFakes.Cli;
+namespace Ignixa.SqlOnFhir.Cli;
 
 /// <summary>
-/// Entry point for the FHIR Fakes CLI tool.
+/// Entry point for the SQL on FHIR CLI tool.
 /// </summary>
 class Program
 {
     static async Task<int> Main(string[] args)
     {
         // Create root command
-        var rootCommand = new RootCommand("FHIR Fakes - Generate and model FHIR test data");
-
-        // Add help command for discoverability
-        rootCommand.AddCommand(HelpCommand.Create());
+        var rootCommand = new RootCommand("SQL on FHIR - Convert FHIR resources using ViewDefinitions");
 
         // Add version-specific commands
         AddFhirVersionCommands(rootCommand, "stu3", new STU3CoreSchemaProvider());
@@ -40,9 +37,9 @@ class Program
     private static void AddFhirVersionCommands(RootCommand root, string versionCode, IFhirSchemaProvider schemaProvider)
     {
         var command = new Command(versionCode, $"Use FHIR {versionCode.ToUpperInvariant()} specification");
-        command.AddCommand(ResourceCommand.Create(schemaProvider, versionCode));
-        command.AddCommand(ScenarioCommand.Create(schemaProvider, versionCode));
-        command.AddCommand(PopulationCommand.Create(schemaProvider, versionCode));
+        command.AddCommand(ConvertCommand.Create(schemaProvider, versionCode));
+        command.AddCommand(PreviewCommand.Create(schemaProvider, versionCode));
+        command.AddCommand(ValidateCommand.Create(schemaProvider, versionCode));
         root.AddCommand(command);
     }
 }
