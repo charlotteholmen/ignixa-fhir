@@ -44,7 +44,7 @@ internal static class SearchCommand
                 var token = tokens[i].Value;
                 if (token.StartsWith("--") && token.Contains('='))
                 {
-                    var parts = token.Substring(2).Split('=', 2);
+                    var parts = token[2..].Split('=', 2);
                     if (parts.Length == 2)
                     {
                         searchParams[parts[0]] = parts[1];
