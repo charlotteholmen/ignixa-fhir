@@ -666,16 +666,41 @@ public sealed class ScenarioContext
     /// </summary>
     /// <param name="metadataProvider">Provider for reference field metadata.</param>
     /// <param name="targetFormat">Target reference format.</param>
+    /// <remarks>
+    /// If no registry exists (e.g., lifecycle generator scenarios), builds one on-demand
+    /// from all resources in the context.
+    /// </remarks>
     public void RewriteReferences(IReferenceMetadataProvider metadataProvider, ReferenceFormat targetFormat)
     {
         ArgumentNullException.ThrowIfNull(metadataProvider);
-        
-        if (_registry == null)
+
+        // Build registry on-demand if it doesn't exist (lifecycle generator case)
+        IReadOnlyDictionary<string, ResourceIdentity> identities;
+        if (_registry != null)
         {
-            return; // No registry, can't rewrite
+            identities = _registry.All;
+        }
+        else
+        {
+            // No registry set up - build identity map from resources
+            var map = new Dictionary<string, ResourceIdentity>();
+            foreach (var resource in _allResources)
+            {
+                // Skip resources without valid IDs - they cannot be referenced
+                if (string.IsNullOrEmpty(resource.Id))
+                {
+                    continue;
+                }
+
+                var identity = new ResourceIdentity(resource.ResourceType, resource.Id, null);
+
+                // Use TryAdd to avoid overwriting duplicate IDs
+                map.TryAdd(resource.Id, identity);
+            }
+            identities = map;
         }
 
         var rewriter = new ReferenceRewriterService(metadataProvider);
-        rewriter.RewriteReferences(_allResources, _registry.All, targetFormat);
+        rewriter.RewriteReferences(_allResources, identities, targetFormat);
     }
 }
