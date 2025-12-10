@@ -4,6 +4,7 @@
 // -------------------------------------------------------------------------------------------------
 
 using System.Collections.Concurrent;
+using System.Collections.Frozen;
 using Ignixa.Abstractions;
 
 #pragma warning disable CS0618 // Type or member is obsolete
@@ -31,6 +32,31 @@ internal class SchemaAwareElement : IElement
     // Using ConcurrentDictionary for thread-safe concurrent access
     private readonly Lazy<ConcurrentDictionary<string, IType?>> _childDefinitionCache =
         new(() => new ConcurrentDictionary<string, IType?>());
+
+    // OPTIMIZATION: FHIR primitive type mapping (static to avoid repeated allocations)
+    // Reference: http://hl7.org/fhir/datatypes.html
+    // Most FHIR primitive types use lowercase names, but a few require special casing preservation.
+    // We split these into two collections for efficiency:
+    // 1. SpecialCasedPrimitives: Dictionary for types with non-lowercase casing (5 entries)
+    // 2. LowercasePrimitives: FrozenSet for lowercase types (14 entries) - faster lookups in .NET 9+
+
+    // Primitive types with special (non-lowercase) casing that must be preserved
+    private static readonly Dictionary<string, string> SpecialCasedPrimitives = new(StringComparer.OrdinalIgnoreCase)
+    {
+        { "dateTime", "dateTime" },
+        { "base64Binary", "base64Binary" },
+        { "unsignedInt", "unsignedInt" },
+        { "positiveInt", "positiveInt" },
+        { "integer64", "integer64" }
+    };
+
+    // All lowercase primitive types (for validation and normalization)
+    private static readonly FrozenSet<string> LowercasePrimitives = FrozenSet.ToFrozenSet(
+    [
+        "string", "integer", "boolean", "decimal", "date", "time",
+        "code", "uri", "url", "canonical", "uuid", "oid", "id",
+        "markdown", "instant"
+    ], StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// Public constructor for root elements (resources)
@@ -357,33 +383,27 @@ internal class SchemaAwareElement : IElement
     }
 
     /// <summary>
-    /// Normalizes FHIR type names extracted from choice elements to match FHIRPath conventions.
-    /// Primitive type names are lowercase (e.g., "String" → "string", "Integer" → "integer"),
+    /// Normalizes FHIR type names extracted from choice elements to match FHIR/FHIRPath conventions.
+    /// Primitive type names use FHIR's exact casing (e.g., "String" → "string", "DateTime" → "dateTime"),
     /// while complex types remain capitalized (e.g., "Quantity", "CodeableConcept").
     /// </summary>
     /// <param name="typeName">The type name extracted from the choice element suffix (e.g., "String", "Quantity").</param>
-    /// <returns>The normalized type name per FHIRPath conventions.</returns>
+    /// <returns>The normalized type name per FHIR conventions.</returns>
+#pragma warning disable CA1308 // FHIR spec requires lowercase primitive type names
     private static string NormalizeFhirPathTypeName(string typeName)
     {
-        // FHIR primitive types that should be lowercase in FHIRPath
-        // Reference: http://hl7.org/fhir/datatypes.html and FHIRPath specification
-        var primitiveLowercase = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "string", "integer", "boolean", "decimal",
-            "date", "dateTime", "time", "code",
-            "uri", "url", "canonical", "uuid", "oid", "id",
-            "markdown", "base64Binary", "instant",
-            "unsignedInt", "positiveInt", "integer64"
-        };
+        // Check special-cased types first (dateTime, base64Binary, unsignedInt, positiveInt, integer64)
+        if (SpecialCasedPrimitives.TryGetValue(typeName, out var canonicalName))
+            return canonicalName;
 
-        // If it's a primitive type, return lowercase version
-        // FHIRPath type names for primitives are lowercase per specification, ToLowerInvariant is intentional
-#pragma warning disable CA1308 // Normalize strings to uppercase
-        return primitiveLowercase.Contains(typeName)
-            ? typeName.ToLowerInvariant()
-            : typeName; // Keep complex types as-is (Quantity, CodeableConcept, etc.)
-#pragma warning restore CA1308 // Normalize strings to uppercase
+        // Check lowercase primitives (string, integer, boolean, etc.)
+        if (LowercasePrimitives.Contains(typeName))
+            return typeName.ToLowerInvariant();
+
+        // Not a primitive type - keep complex types as-is (Quantity, CodeableConcept, etc.)
+        return typeName;
     }
+#pragma warning restore CA1308
 
     /// <summary>
     /// Retrieves metadata of the specified type (IElement interface).
