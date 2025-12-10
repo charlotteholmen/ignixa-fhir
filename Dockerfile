@@ -21,6 +21,8 @@ COPY GitVersion.yml ./
 COPY .editorconfig ./
 
 # Copy all source project files for layer caching
+# Hosting layer
+COPY src/Application/Ignixa.Web/Ignixa.Web.csproj src/Application/Ignixa.Web/
 # Application layer
 COPY src/Application/Ignixa.Api/Ignixa.Api.csproj src/Application/Ignixa.Api/
 COPY src/Application/Ignixa.Application/Ignixa.Application.csproj src/Application/Ignixa.Application/
@@ -44,10 +46,10 @@ COPY src/DataLayer/Ignixa.DataLayer.FileSystem/Ignixa.DataLayer.FileSystem.cspro
 COPY src/DataLayer/Ignixa.DataLayer.InMemoryIndex/Ignixa.DataLayer.InMemoryIndex.csproj src/DataLayer/Ignixa.DataLayer.InMemoryIndex/
 COPY src/DataLayer/Ignixa.DataLayer.SqlEntityFramework/Ignixa.DataLayer.SqlEntityFramework.csproj src/DataLayer/Ignixa.DataLayer.SqlEntityFramework/
 
-# Restore dependencies for API project only (excludes test/bench projects)
+# Restore dependencies for Web project only (excludes test/bench projects)
 # DisableGitVersion=true because .git folder is not available in Docker build context
-WORKDIR /src/src/Application/Ignixa.Api
-RUN dotnet restore Ignixa.Api.csproj /p:DisableGitVersion=true
+WORKDIR /src/src/Application/Ignixa.Web
+RUN dotnet restore Ignixa.Web.csproj /p:DisableGitVersion=true
 
 # Copy remaining source files
 WORKDIR /src
@@ -55,8 +57,8 @@ COPY src/ src/
 
 # Build and publish with version information
 # DisableGitVersion=true because .git folder is not available in Docker build context
-WORKDIR /src/src/Application/Ignixa.Api
-RUN dotnet publish Ignixa.Api.csproj \
+WORKDIR /src/src/Application/Ignixa.Web
+RUN dotnet publish Ignixa.Web.csproj \
     --configuration Release \
     --no-restore \
     --output /app/publish \
@@ -113,4 +115,4 @@ USER nonroot
 EXPOSE 8080
 
 # Entry point
-ENTRYPOINT ["dotnet", "Ignixa.Api.dll"]
+ENTRYPOINT ["dotnet", "Ignixa.Web.dll"]
