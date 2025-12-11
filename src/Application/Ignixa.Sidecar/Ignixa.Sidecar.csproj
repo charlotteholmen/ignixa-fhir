@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Enable packaging for internal GitHub Packages feed -->
+    <IsPackable>true</IsPackable>
+    <PackageId>Ignixa.Sidecar</PackageId>
+    <Description>Sidecar provider pattern for delegating cross-cutting concerns (authorization, audit logging, telemetry) to external sidecars</Description>
+    <PackageTags>FHIR;HL7;Healthcare;Sidecar;Authorization;Audit</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Framework references -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- gRPC Client -->
+    <PackageReference Include="Grpc.Net.Client" />
+    <PackageReference Include="Google.Protobuf" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="All" />
+    
+    <!-- Resilience (Polly) -->
+    <PackageReference Include="Polly" />
+    <PackageReference Include="Microsoft.Extensions.Http.Polly" />
+    
+    <!-- Configuration and DI -->
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ignixa.Domain\Ignixa.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Proto files for gRPC services -->
+    <Protobuf Include="Protos\*.proto" GrpcServices="Client" />
+  </ItemGroup>
+
+</Project>

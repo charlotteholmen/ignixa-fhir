@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+option csharp_namespace = "Ignixa.Sidecar.Grpc";
+
+package ignixa.sidecar;
+
+// Authorization service for delegating authorization decisions to a sidecar
+service AuthorizationService {
+  // Authorize a request based on user claims, resource, and action
+  rpc Authorize (AuthorizationRequest) returns (AuthorizationResult);
+}
+
+// Request for authorization decision
+message AuthorizationRequest {
+  // User identifier (from claims)
+  string user_id = 1;
+  
+  // User claims (key-value pairs)
+  map<string, string> claims = 2;
+  
+  // Resource being accessed (e.g., "Patient/123")
+  string resource = 3;
+  
+  // Action being performed (e.g., "read", "write", "delete")
+  string action = 4;
+  
+  // Policy name to evaluate (optional, e.g., "FhirUserPolicy")
+  string policy_name = 5;
+  
+  // Tenant identifier
+  int32 tenant_id = 6;
+  
+  // Additional metadata for authorization decision
+  map<string, string> metadata = 7;
+}
+
+// Authorization result from the sidecar
+message AuthorizationResult {
+  // Whether the request is authorized
+  bool is_authorized = 1;
+  
+  // Reason for the decision (useful for audit/debugging)
+  string reason = 2;
+  
+  // Additional context returned by the authorization service
+  map<string, string> context = 3;
+}

@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+option csharp_namespace = "Ignixa.Sidecar.Grpc";
+
+package ignixa.sidecar;
+
+import "google/protobuf/timestamp.proto";
+
+// Logging service for delegating application logs to a sidecar
+service LoggingService {
+  // Log a single entry
+  rpc Log (LogEntry) returns (LogResponse);
+  
+  // Log a batch of entries for efficiency
+  rpc LogBatch (LogBatchRequest) returns (LogResponse);
+}
+
+// Log level enumeration
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_TRACE = 1;
+  LOG_LEVEL_DEBUG = 2;
+  LOG_LEVEL_INFORMATION = 3;
+  LOG_LEVEL_WARNING = 4;
+  LOG_LEVEL_ERROR = 5;
+  LOG_LEVEL_CRITICAL = 6;
+}
+
+// Single log entry
+message LogEntry {
+  // Timestamp of the log entry
+  google.protobuf.Timestamp timestamp = 1;
+  
+  // Log level
+  LogLevel level = 2;
+  
+  // Logger category/name
+  string category = 3;
+  
+  // Log message
+  string message = 4;
+  
+  // Exception details (if any)
+  string exception = 5;
+  
+  // Event ID (for structured logging)
+  int32 event_id = 6;
+  
+  // Correlation ID for distributed tracing
+  string correlation_id = 7;
+  
+  // Tenant identifier
+  int32 tenant_id = 8;
+  
+  // Structured log properties
+  map<string, string> properties = 9;
+}
+
+// Batch of log entries
+message LogBatchRequest {
+  // Collection of log entries
+  repeated LogEntry entries = 1;
+}
+
+// Response from logging
+message LogResponse {
+  // Whether the log entry/entries were successfully processed
+  bool success = 1;
+  
+  // Error message if logging failed
+  string error_message = 2;
+  
+  // Number of entries processed
+  int32 entries_processed = 3;
+}

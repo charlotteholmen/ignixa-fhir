@@ -1,0 +1,917 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Azure Resource Manager template for deploying Ignixa FHIR Server with Entra ID (Azure AD) authentication sidecar pattern. This template deploys the FHIR server with authentication delegated to an authentication sidecar that integrates with Microsoft Entra ID.",
+    "author": "Ignixa Contributors"
+  },
+  "parameters": {
+    "appName": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 24,
+      "metadata": {
+        "description": "Name of the Ignixa FHIR server application (must be globally unique for App Service)"
+      }
+    },
+    "entraClientId": {
+      "type": "string",
+      "metadata": {
+        "description": "Microsoft Entra ID (Azure AD) Application (client) ID for FHIR server authentication"
+      }
+    },
+    "entraTenantId": {
+      "type": "string",
+      "defaultValue": "[subscription().tenantId]",
+      "metadata": {
+        "description": "Microsoft Entra ID (Azure AD) Tenant ID. Defaults to the subscription's tenant."
+      }
+    },
+    "entraAudience": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Expected audience (aud claim) for tokens. Defaults to api://{entraClientId} if not specified."
+      }
+    },
+    "entraScopes": {
+      "type": "string",
+      "defaultValue": "user_impersonation",
+      "metadata": {
+        "description": "Comma-separated list of required scopes for FHIR access"
+      }
+    },
+    "dockerRegistryUrl": {
+      "type": "string",
+      "defaultValue": "https://ghcr.io",
+      "metadata": {
+        "description": "Docker registry URL (login server, e.g., https://ghcr.io)"
+      }
+    },
+    "dockerImage": {
+      "type": "string",
+      "defaultValue": "brendankowitz/ignixa-fhir",
+      "metadata": {
+        "description": "Docker image name (e.g., brendankowitz/ignixa-fhir)"
+      }
+    },
+    "dockerImageTag": {
+      "type": "string",
+      "defaultValue": "release",
+      "metadata": {
+        "description": "Docker image tag (e.g., release, 1.0.0, main)"
+      }
+    },
+    "dockerRegistryUsername": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Docker registry username (leave empty to use Managed Identity for ACR)"
+      }
+    },
+    "dockerRegistryPassword": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Docker registry password (leave empty for anonymous/public registries)"
+      }
+    },
+    "environment": {
+      "type": "string",
+      "defaultValue": "production",
+      "allowedValues": [
+        "development",
+        "staging",
+        "production"
+      ],
+      "metadata": {
+        "description": "Environment name for the deployment"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for all resources"
+      }
+    },
+    "appServicePlanSku": {
+      "type": "string",
+      "defaultValue": "B2",
+      "allowedValues": [
+        "B1",
+        "B2",
+        "B3",
+        "S1",
+        "S2",
+        "S3",
+        "P1V2",
+        "P2V2",
+        "P3V2",
+        "P1V3",
+        "P2V3",
+        "P3V3"
+      ],
+      "metadata": {
+        "description": "App Service Plan SKU (B2 recommended for basic production)"
+      }
+    },
+    "appServicePlanTier": {
+      "type": "string",
+      "defaultValue": "Basic",
+      "allowedValues": [
+        "Basic",
+        "Standard",
+        "Premium",
+        "PremiumV2",
+        "PremiumV3"
+      ],
+      "metadata": {
+        "description": "App Service Plan tier"
+      }
+    },
+    "sqlDatabaseSku": {
+      "type": "string",
+      "defaultValue": "Basic",
+      "allowedValues": [
+        "Basic",
+        "S0",
+        "S1",
+        "S2",
+        "S3",
+        "P1",
+        "P2",
+        "P4",
+        "P6"
+      ],
+      "metadata": {
+        "description": "Azure SQL Database SKU"
+      }
+    },
+    "sqlDatabaseMaxSizeGB": {
+      "type": "int",
+      "defaultValue": 2,
+      "minValue": 2,
+      "maxValue": 4096,
+      "metadata": {
+        "description": "Maximum size of SQL Database in GB"
+      }
+    },
+    "storageAccountType": {
+      "type": "string",
+      "defaultValue": "Standard_LRS",
+      "allowedValues": [
+        "Standard_LRS",
+        "Standard_GRS",
+        "Standard_RAGRS",
+        "Standard_ZRS",
+        "Premium_LRS"
+      ],
+      "metadata": {
+        "description": "Storage account replication type"
+      }
+    },
+    "logRetentionDays": {
+      "type": "int",
+      "defaultValue": 30,
+      "minValue": 7,
+      "maxValue": 730,
+      "metadata": {
+        "description": "Number of days to retain logs in Log Analytics"
+      }
+    },
+    "fhirVersion": {
+      "type": "string",
+      "defaultValue": "4.3",
+      "allowedValues": [
+        "3.0.2",
+        "4.0",
+        "4.3",
+        "5.0",
+        "6.0"
+      ],
+      "metadata": {
+        "description": "FHIR version to support (3.0.2=STU3, 4.0=R4, 4.3=R4B, 5.0=R5, 6.0=R6)"
+      }
+    },
+    "tenantMode": {
+      "type": "string",
+      "defaultValue": "Isolated",
+      "allowedValues": [
+        "Isolated",
+        "Distributed"
+      ],
+      "metadata": {
+        "description": "Multi-tenancy mode (Isolated=multi-customer SaaS, Distributed=single customer with sharding)"
+      }
+    },
+    "sidecarProviderMode": {
+      "type": "string",
+      "defaultValue": "Local",
+      "allowedValues": [
+        "Local",
+        "Sidecar",
+        "Hybrid"
+      ],
+      "metadata": {
+        "description": "Sidecar provider mode for cross-cutting concerns (authorization, audit logging)"
+      }
+    },
+    "enableTransactionWatcher": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Enable automatic transaction recovery and stall detection"
+      }
+    }
+  },
+  "variables": {
+    "appServicePlanName": "[concat(parameters('appName'), '-plan')]",
+    "managedIdentityName": "[concat(parameters('appName'), '-identity')]",
+    "sqlServerName": "[concat(parameters('appName'), '-sql')]",
+    "sqlDatabaseName": "FhirDatabase",
+    "storageAccountName": "[take(replace(concat(parameters('appName'), 'storage'), '-', ''), 24)]",
+    "durableTaskStorageAccountName": "[take(replace(concat(parameters('appName'), 'tasks'), '-', ''), 24)]",
+    "appInsightsName": "[concat(parameters('appName'), '-insights')]",
+    "logAnalyticsName": "[concat(parameters('appName'), '-logs')]",
+    "tenantId": "[subscription().tenantId]",
+    "storageBlobDataContributorRoleId": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+    "storageTableDataContributorRoleId": "0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3",
+    "storageQueueDataContributorRoleId": "974c5e8b-45b9-4653-ba55-5f855dd0fb88",
+    "sqlServerFqdn": "[concat(variables('sqlServerName'), '.database.windows.net')]",
+    "blobEndpoint": "[concat('https://', variables('storageAccountName'), '.blob.core.windows.net')]",
+    "durableTaskBlobEndpoint": "[concat('https://', variables('durableTaskStorageAccountName'), '.blob.core.windows.net')]",
+    "dockerRegistryServer": "[replace(parameters('dockerRegistryUrl'), 'https://', '')]",
+    "dockerImageFull": "[concat(replace(parameters('dockerRegistryUrl'), 'https://', ''), '/', parameters('dockerImage'), ':', parameters('dockerImageTag'))]",
+    "useDockerAuth": "[and(not(empty(parameters('dockerRegistryUsername'))), not(empty(parameters('dockerRegistryPassword'))))]",
+    "entraAudienceValue": "[if(empty(parameters('entraAudience')), concat('api://', parameters('entraClientId')), parameters('entraAudience'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('managedIdentityName')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "environment": "[parameters('environment')]",
+        "purpose": "FHIR Server Identity"
+      }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('appServicePlanName')]",
+      "location": "[parameters('location')]",
+      "kind": "linux",
+      "sku": {
+        "name": "[parameters('appServicePlanSku')]",
+        "tier": "[parameters('appServicePlanTier')]"
+      },
+      "properties": {
+        "reserved": true
+      },
+      "tags": {
+        "environment": "[parameters('environment')]",
+        "purpose": "FHIR Server"
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-12-01",
+      "name": "[parameters('appName')]",
+      "location": "[parameters('location')]",
+      "kind": "app,linux,container",
+      "identity": {
+        "type": "SystemAssigned, UserAssigned",
+        "userAssignedIdentities": {
+          "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('managedIdentityName'))]": {}
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('managedIdentityName'))]"
+      ],
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "httpsOnly": true,
+        "clientAffinityEnabled": false,
+        "siteConfig": {
+          "linuxFxVersion": "[concat('DOCKER|', variables('dockerImageFull'))]",
+          "alwaysOn": true,
+          "http20Enabled": true,
+          "minTlsVersion": "1.2",
+          "healthCheckPath": "/health/check",
+          "appSettings": [
+            {
+              "name": "WEBSITES_ENABLE_APP_SERVICE_STORAGE",
+              "value": "false"
+            },
+            {
+              "name": "WEBSITES_PORT",
+              "value": "80"
+            },
+            {
+              "name": "DOCKER_REGISTRY_SERVER_URL",
+              "value": "[parameters('dockerRegistryUrl')]"
+            },
+            {
+              "name": "DOCKER_REGISTRY_SERVER_USERNAME",
+              "value": "[if(variables('useDockerAuth'), parameters('dockerRegistryUsername'), '')]"
+            },
+            {
+              "name": "DOCKER_REGISTRY_SERVER_PASSWORD",
+              "value": "[if(variables('useDockerAuth'), parameters('dockerRegistryPassword'), '')]"
+            },
+            {
+              "name": "ASPNETCORE_ENVIRONMENT",
+              "value": "[parameters('environment')]"
+            },
+            {
+              "name": "DOTNET_ENVIRONMENT",
+              "value": "[parameters('environment')]"
+            },
+            {
+              "name": "ASPNETCORE_URLS",
+              "value": "http://+:80"
+            },
+            {
+              "name": "ASPNETCORE_FORWARDEDHEADERS_ENABLED",
+              "value": "true"
+            },
+            {
+              "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').InstrumentationKey]"
+            },
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "ApplicationInsightsAgent_EXTENSION_VERSION",
+              "value": "~3"
+            },
+            {
+              "name": "XDT_MicrosoftApplicationInsights_Mode",
+              "value": "default"
+            },
+            {
+              "name": "BlobStorage__Provider",
+              "value": "Azure"
+            },
+            {
+              "name": "BlobStorage__UseManagedIdentity",
+              "value": "true"
+            },
+            {
+              "name": "BlobStorage__StorageAccountUri",
+              "value": "[variables('blobEndpoint')]"
+            },
+            {
+              "name": "BlobStorage__ContainerName",
+              "value": "fhirstorage"
+            },
+            {
+              "name": "DurableTask__Provider",
+              "value": "AzureStorage"
+            },
+            {
+              "name": "DurableTask__AzureStorage__UseManagedIdentity",
+              "value": "true"
+            },
+            {
+              "name": "DurableTask__AzureStorage__StorageAccountName",
+              "value": "[variables('durableTaskStorageAccountName')]"
+            },
+            {
+              "name": "DurableTask__AzureStorage__TaskHubName",
+              "value": "ignixa"
+            },
+            {
+              "name": "Tenants__Mode",
+              "value": "[parameters('tenantMode')]"
+            },
+            {
+              "name": "TransactionWatcher__Enabled",
+              "value": "[parameters('enableTransactionWatcher')]"
+            },
+            {
+              "name": "TransactionWatcher__ScanInterval",
+              "value": "00:01:00"
+            },
+            {
+              "name": "TransactionWatcher__StallThreshold",
+              "value": "00:05:00"
+            },
+            {
+              "name": "Sidecar__ProviderMode",
+              "value": "[parameters('sidecarProviderMode')]"
+            },
+            {
+              "name": "Sidecar__Endpoint",
+              "value": "http://localhost:5050"
+            },
+            {
+              "name": "Sidecar__TimeoutMs",
+              "value": "5000"
+            },
+            {
+              "name": "Sidecar__FailOpen",
+              "value": "false"
+            },
+            {
+              "name": "Authentication__Entra__ClientId",
+              "value": "[parameters('entraClientId')]"
+            },
+            {
+              "name": "Authentication__Entra__TenantId",
+              "value": "[parameters('entraTenantId')]"
+            },
+            {
+              "name": "Authentication__Entra__Audience",
+              "value": "[variables('entraAudienceValue')]"
+            },
+            {
+              "name": "Authentication__Entra__Scopes",
+              "value": "[parameters('entraScopes')]"
+            },
+            {
+              "name": "Tenants__Configurations__0__TenantId",
+              "value": "0"
+            },
+            {
+              "name": "Tenants__Configurations__0__DisplayName",
+              "value": "System Partition (Reserved)"
+            },
+            {
+              "name": "Tenants__Configurations__0__FhirVersion",
+              "value": "4.0"
+            },
+            {
+              "name": "Tenants__Configurations__0__IsActive",
+              "value": "true"
+            },
+            {
+              "name": "Tenants__Configurations__0__IsSystemPartition",
+              "value": "true"
+            },
+            {
+              "name": "Tenants__Configurations__0__Storage__Type",
+              "value": "SqlEntityFramework"
+            },
+            {
+              "name": "Tenants__Configurations__0__Storage__InheritConnectionStringFromTenant",
+              "value": "true"
+            },
+            {
+              "name": "Tenants__Configurations__1__TenantId",
+              "value": "1"
+            },
+            {
+              "name": "Tenants__Configurations__1__DisplayName",
+              "value": "Production Database"
+            },
+            {
+              "name": "Tenants__Configurations__1__FhirVersion",
+              "value": "[parameters('fhirVersion')]"
+            },
+            {
+              "name": "Tenants__Configurations__1__IsActive",
+              "value": "true"
+            },
+            {
+              "name": "Tenants__Configurations__1__Storage__Type",
+              "value": "SqlEntityFramework"
+            },
+            {
+              "name": "Tenants__Configurations__1__Storage__ConnectionString",
+              "value": "[concat('Server=tcp:', variables('sqlServerFqdn'), ',1433;Initial Catalog=', variables('sqlDatabaseName'), ';User ID=', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('managedIdentityName')), '2023-01-31').clientId, ';Authentication=Active Directory Default;Encrypt=true;TrustServerCertificate=false;Connection Timeout=30;')]"
+            }
+          ]
+        }
+      },
+      "resources": [
+        {
+          "type": "config",
+          "apiVersion": "2023-12-01",
+          "name": "authsettingsV2",
+          "dependsOn": [
+            "[resourceId('Microsoft.Web/sites', parameters('appName'))]"
+          ],
+          "properties": {
+            "platform": {
+              "enabled": true
+            },
+            "globalValidation": {
+              "requireAuthentication": true,
+              "unauthenticatedClientAction": "Return401"
+            },
+            "identityProviders": {
+              "azureActiveDirectory": {
+                "enabled": true,
+                "registration": {
+                  "openIdIssuer": "[concat('https://login.microsoftonline.com/', parameters('entraTenantId'), '/v2.0')]",
+                  "clientId": "[parameters('entraClientId')]"
+                },
+                "validation": {
+                  "allowedAudiences": [
+                    "[variables('entraAudienceValue')]",
+                    "[parameters('entraClientId')]"
+                  ]
+                }
+              }
+            },
+            "login": {
+              "tokenStore": {
+                "enabled": true
+              }
+            }
+          }
+        }
+      ],
+      "tags": {
+        "environment": "[parameters('environment')]",
+        "purpose": "FHIR Server with Entra Auth"
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers",
+      "apiVersion": "2023-08-01-preview",
+      "name": "[variables('sqlServerName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('managedIdentityName'))]"
+      ],
+      "properties": {
+        "version": "12.0",
+        "publicNetworkAccess": "Enabled",
+        "minimalTlsVersion": "1.2",
+        "administrators": {
+          "administratorType": "ActiveDirectory",
+          "login": "[variables('managedIdentityName')]",
+          "sid": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('managedIdentityName')), '2023-01-31').principalId]",
+          "tenantId": "[variables('tenantId')]",
+          "principalType": "Application",
+          "azureADOnlyAuthentication": true
+        }
+      },
+      "tags": {
+        "environment": "[parameters('environment')]",
+        "purpose": "FHIR Server"
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers/firewallRules",
+      "apiVersion": "2023-08-01-preview",
+      "name": "[concat(variables('sqlServerName'), '/AllowAllAzureIps')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "properties": {
+        "startIpAddress": "0.0.0.0",
+        "endIpAddress": "0.0.0.0"
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2023-08-01-preview",
+      "name": "[concat(variables('sqlServerName'), '/', variables('sqlDatabaseName'))]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "sku": {
+        "name": "[parameters('sqlDatabaseSku')]",
+        "tier": "[if(equals(parameters('sqlDatabaseSku'), 'Basic'), 'Basic', if(startsWith(parameters('sqlDatabaseSku'), 'S'), 'Standard', 'Premium'))]"
+      },
+      "properties": {
+        "collation": "SQL_Latin1_General_CP1_CI_AS",
+        "maxSizeBytes": "[mul(parameters('sqlDatabaseMaxSizeGB'), 1073741824)]",
+        "catalogCollation": "DATABASE_DEFAULT"
+      },
+      "tags": {
+        "environment": "[parameters('environment')]",
+        "purpose": "FHIR Server"
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers/databases/transparentDataEncryption",
+      "apiVersion": "2023-08-01-preview",
+      "name": "[concat(variables('sqlServerName'), '/', variables('sqlDatabaseName'), '/current')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers/databases', variables('sqlServerName'), variables('sqlDatabaseName'))]"
+      ],
+      "properties": {
+        "state": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('storageAccountName')]",
+      "location": "[parameters('location')]",
+      "kind": "StorageV2",
+      "sku": {
+        "name": "[parameters('storageAccountType')]"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "accessTier": "Hot",
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": false,
+        "supportsHttpsTrafficOnly": true,
+        "minimumTlsVersion": "TLS1_2",
+        "publicNetworkAccess": "Enabled",
+        "networkAcls": {
+          "bypass": "AzureServices",
+          "defaultAction": "Allow"
+        }
+      },
+      "tags": {
+        "environment": "[parameters('environment')]",
+        "purpose": "FHIR Server Storage"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(variables('storageAccountName'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ],
+      "properties": {
+        "deleteRetentionPolicy": {
+          "enabled": true,
+          "days": 7
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(variables('storageAccountName'), '/default/fhir-exports')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('storageAccountName'), 'default')]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(variables('storageAccountName'), '/default/fhir-imports')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('storageAccountName'), 'default')]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(variables('storageAccountName'), '/default/fhirstorage')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('storageAccountName'), 'default')]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('durableTaskStorageAccountName')]",
+      "location": "[parameters('location')]",
+      "kind": "StorageV2",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "accessTier": "Hot",
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": false,
+        "supportsHttpsTrafficOnly": true,
+        "minimumTlsVersion": "TLS1_2",
+        "publicNetworkAccess": "Enabled",
+        "networkAcls": {
+          "bypass": "AzureServices",
+          "defaultAction": "Allow"
+        }
+      },
+      "tags": {
+        "environment": "[parameters('environment')]",
+        "purpose": "DurableTask Backend"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(variables('durableTaskStorageAccountName'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('durableTaskStorageAccountName'))]"
+      ],
+      "properties": {
+        "deleteRetentionPolicy": {
+          "enabled": true,
+          "days": 7
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), resourceId('Microsoft.Web/sites', parameters('appName')), variables('storageBlobDataContributorRoleId'))]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "[resourceId('Microsoft.Web/sites', parameters('appName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageBlobDataContributorRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('durableTaskStorageAccountName')), resourceId('Microsoft.Web/sites', parameters('appName')), variables('storageBlobDataContributorRoleId'))]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('durableTaskStorageAccountName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('durableTaskStorageAccountName'))]",
+        "[resourceId('Microsoft.Web/sites', parameters('appName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageBlobDataContributorRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('durableTaskStorageAccountName')), resourceId('Microsoft.Web/sites', parameters('appName')), variables('storageTableDataContributorRoleId'))]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('durableTaskStorageAccountName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('durableTaskStorageAccountName'))]",
+        "[resourceId('Microsoft.Web/sites', parameters('appName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageTableDataContributorRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('durableTaskStorageAccountName')), resourceId('Microsoft.Web/sites', parameters('appName')), variables('storageQueueDataContributorRoleId'))]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('durableTaskStorageAccountName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('durableTaskStorageAccountName'))]",
+        "[resourceId('Microsoft.Web/sites', parameters('appName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageQueueDataContributorRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2023-09-01",
+      "name": "[variables('logAnalyticsName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": "[parameters('logRetentionDays')]",
+        "workspaceCapping": {
+          "dailyQuotaGb": 10
+        }
+      },
+      "tags": {
+        "environment": "[parameters('environment')]",
+        "purpose": "FHIR Server Monitoring"
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('appInsightsName')]",
+      "location": "[parameters('location')]",
+      "kind": "web",
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
+      ],
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "RetentionInDays": "[parameters('logRetentionDays')]",
+        "DisableIpMasking": false,
+        "ImmediatePurgeDataOn30Days": true,
+        "publicNetworkAccessForIngestion": "Enabled",
+        "publicNetworkAccessForQuery": "Enabled"
+      },
+      "tags": {
+        "environment": "[parameters('environment')]",
+        "purpose": "FHIR Server Monitoring"
+      }
+    }
+  ],
+  "outputs": {
+    "appServiceUrl": {
+      "type": "string",
+      "value": "[concat('https://', reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01').defaultHostName)]",
+      "metadata": {
+        "description": "The URL of the deployed Ignixa FHIR Server"
+      }
+    },
+    "appServiceName": {
+      "type": "string",
+      "value": "[parameters('appName')]",
+      "metadata": {
+        "description": "The name of the App Service"
+      }
+    },
+    "appServiceManagedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', parameters('appName')), '2023-12-01', 'full').identity.principalId]",
+      "metadata": {
+        "description": "The System-Assigned Managed Identity Principal ID of the App Service"
+      }
+    },
+    "userAssignedIdentityClientId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('managedIdentityName')), '2023-01-31').clientId]",
+      "metadata": {
+        "description": "The User-Assigned Managed Identity Client ID (used for SQL authentication)"
+      }
+    },
+    "sqlServerFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName')), '2023-08-01-preview').fullyQualifiedDomainName]",
+      "metadata": {
+        "description": "The fully qualified domain name of the SQL Server"
+      }
+    },
+    "sqlServerName": {
+      "type": "string",
+      "value": "[variables('sqlServerName')]",
+      "metadata": {
+        "description": "The name of the SQL Server"
+      }
+    },
+    "databaseName": {
+      "type": "string",
+      "value": "[variables('sqlDatabaseName')]",
+      "metadata": {
+        "description": "The name of the SQL Database"
+      }
+    },
+    "storageAccountName": {
+      "type": "string",
+      "value": "[variables('storageAccountName')]",
+      "metadata": {
+        "description": "The name of the Storage Account for FHIR data"
+      }
+    },
+    "appInsightsInstrumentationKey": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').InstrumentationKey]",
+      "metadata": {
+        "description": "Application Insights Instrumentation Key"
+      }
+    },
+    "entraConfiguration": {
+      "type": "object",
+      "value": {
+        "clientId": "[parameters('entraClientId')]",
+        "tenantId": "[parameters('entraTenantId')]",
+        "audience": "[variables('entraAudienceValue')]",
+        "issuer": "[concat('https://login.microsoftonline.com/', parameters('entraTenantId'), '/v2.0')]"
+      },
+      "metadata": {
+        "description": "Microsoft Entra ID configuration for the FHIR server"
+      }
+    },
+    "sidecarConfiguration": {
+      "type": "object",
+      "value": {
+        "providerMode": "[parameters('sidecarProviderMode')]",
+        "endpoint": "http://localhost:5050"
+      },
+      "metadata": {
+        "description": "Sidecar provider configuration"
+      }
+    }
+  }
+}

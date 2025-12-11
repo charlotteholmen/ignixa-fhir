@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+option csharp_namespace = "Ignixa.Sidecar.Grpc";
+
+package ignixa.sidecar;
+
+import "google/protobuf/timestamp.proto";
+
+// Audit logger service for delegating audit events to a sidecar
+service AuditLoggerService {
+  // Log a single audit event
+  rpc LogAuditEvent (AuditEvent) returns (AuditResponse);
+  
+  // Log a batch of audit events for efficiency
+  rpc LogAuditEventBatch (AuditEventBatch) returns (AuditResponse);
+}
+
+// Single audit event
+message AuditEvent {
+  // User identifier
+  string user_id = 1;
+  
+  // Action performed (e.g., "read", "write", "delete", "search")
+  string action = 2;
+  
+  // Resource affected (e.g., "Patient/123")
+  string resource = 3;
+  
+  // Timestamp of the event
+  google.protobuf.Timestamp timestamp = 4;
+  
+  // Correlation ID for distributed tracing
+  string correlation_id = 5;
+  
+  // Tenant identifier
+  int32 tenant_id = 6;
+  
+  // Resource type (e.g., "Patient", "Observation")
+  string resource_type = 7;
+  
+  // Whether the operation was authorized
+  bool authorized = 8;
+  
+  // Outcome of the operation (e.g., "success", "failure", "error")
+  string outcome = 9;
+  
+  // Additional metadata
+  map<string, string> metadata = 10;
+}
+
+// Batch of audit events
+message AuditEventBatch {
+  // Collection of audit events
+  repeated AuditEvent events = 1;
+}
+
+// Response from audit logging
+message AuditResponse {
+  // Whether the audit event(s) were successfully logged
+  bool success = 1;
+  
+  // Error message if logging failed
+  string error_message = 2;
+  
+  // Number of events processed
+  int32 events_processed = 3;
+}
