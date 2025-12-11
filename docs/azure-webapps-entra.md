@@ -4,30 +4,28 @@ This guide explains how to set up the Ignixa FHIR Server on Azure Web Apps with 
 
 ## Overview
 
-The sidecar provider pattern allows the FHIR server to delegate cross-cutting concerns (authorization, audit logging, telemetry) to external services. When deploying to Azure, you can use Microsoft Entra ID for authentication and the sidecar pattern for authorization decisions.
+The sidecar provider pattern allows the FHIR server to delegate cross-cutting concerns (authorization, audit logging, telemetry) to external services. When deploying to Azure, you can use Microsoft Entra ID for authentication and the **Ignixa Entra Sidecar** for role-based authorization decisions.
 
 ### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Azure Web App                            │
+│                    Container Group / Pod                    │
 │  ┌────────────────────────────────────────────────────┐    │
 │  │              Ignixa FHIR Server                     │    │
+│  │                 (Port 8080)                         │    │
 │  │                                                     │    │
-│  │  ┌─────────────────┐    ┌─────────────────────┐   │    │
-│  │  │  FHIR Endpoints │───▶│ IFhirAuthorizationSvc│   │    │
-│  │  └─────────────────┘    └─────────────────────┘   │    │
-│  │           │                       │               │    │
-│  │           ▼                       ▼               │    │
-│  │  ┌─────────────────┐    ┌─────────────────────┐   │    │
-│  │  │   IAuditLogger  │    │  Local/Sidecar Impl │   │    │
-│  │  └─────────────────┘    └─────────────────────┘   │    │
-│  └────────────────────────────────────────────────────┘    │
-│                           │                                 │
-│                           ▼                                 │
+│  │  Sidecar:Endpoint = http://localhost:5050          │    │
+│  └──────────────────────┬─────────────────────────────┘    │
+│                         │ gRPC                              │
+│                         ▼                                   │
 │  ┌────────────────────────────────────────────────────┐    │
-│  │        App Service Authentication (EasyAuth)        │    │
-│  │              Microsoft Entra ID                     │    │
+│  │           Ignixa Entra Sidecar                      │    │
+│  │                 (Port 5050)                         │    │
+│  │                                                     │    │
+│  │  - AuthorizationService (Entra ID roles/scopes)    │    │
+│  │  - AuditLoggerService                              │    │
+│  │  - LoggingService                                  │    │
 │  └────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
                             │
@@ -36,6 +34,26 @@ The sidecar provider pattern allows the FHIR server to delegate cross-cutting co
                    │ Microsoft Entra │
                    │   ID (Azure AD) │
                    └─────────────────┘
+```
+
+## The Entra Sidecar
+
+The Ignixa Entra Sidecar (`tools/Ignixa.Sidecar.Entra`) is a gRPC server that implements the sidecar authorization services. It validates user claims from Entra ID tokens and makes authorization decisions based on:
+
+- **Required Roles**: Users must have specific Entra ID app roles
+- **Required Scopes**: Users must have specific delegated permissions
+- **Action Role Mapping**: Different roles for read/write/delete operations
+- **Resource Type Role Mapping**: Different roles for specific FHIR resource types
+
+### Building the Sidecar
+
+```bash
+# Build using Docker
+docker build -f tools/Ignixa.Sidecar.Entra/Dockerfile -t ignixa-sidecar-entra:latest .
+
+# Or build using .NET CLI
+cd tools/Ignixa.Sidecar.Entra
+dotnet build
 ```
 
 ## Prerequisites

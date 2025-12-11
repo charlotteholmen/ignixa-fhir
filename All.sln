@@ -159,6 +159,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ignixa.Sidecar", "src\Appli
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ignixa.Sidecar.Tests", "test\Ignixa.Sidecar.Tests\Ignixa.Sidecar.Tests.csproj", "{C9B6C915-BA5F-46A5-BBBA-77ECCC5CC1ED}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Ignixa.Sidecar.Entra", "tools\Ignixa.Sidecar.Entra\Ignixa.Sidecar.Entra.csproj", "{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -673,6 +675,18 @@ Global
 		{C9B6C915-BA5F-46A5-BBBA-77ECCC5CC1ED}.Release|x64.Build.0 = Release|Any CPU
 		{C9B6C915-BA5F-46A5-BBBA-77ECCC5CC1ED}.Release|x86.ActiveCfg = Release|Any CPU
 		{C9B6C915-BA5F-46A5-BBBA-77ECCC5CC1ED}.Release|x86.Build.0 = Release|Any CPU
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}.Debug|x64.Build.0 = Debug|Any CPU
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}.Debug|x86.Build.0 = Debug|Any CPU
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}.Release|Any CPU.Build.0 = Release|Any CPU
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}.Release|x64.ActiveCfg = Release|Any CPU
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}.Release|x64.Build.0 = Release|Any CPU
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}.Release|x86.ActiveCfg = Release|Any CPU
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -729,5 +743,6 @@ Global
 		{6E378004-2030-492A-9E9B-F8A7B3256E12} = {D52A6C36-F517-47E3-AD4E-C8F0CDAC3678}
 		{D9F950AD-4361-4C7E-8009-EFF3F58817EC} = {D52A6C36-F517-47E3-AD4E-C8F0CDAC3678}
 		{C9B6C915-BA5F-46A5-BBBA-77ECCC5CC1ED} = {0C88DD14-F956-CE84-757C-A364CCF449FC}
+		{79A42928-E7EF-4187-8AE7-2F9A1D3DE934} = {07C2787E-EAC7-C090-1BA3-A61EC2A24D84}
 	EndGlobalSection
 EndGlobal
