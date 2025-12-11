@@ -38,7 +38,7 @@ The sidecar provider pattern allows the FHIR server to delegate cross-cutting co
 
 ## The Entra Sidecar
 
-The Ignixa Entra Sidecar (`tools/Ignixa.Sidecar.Entra`) is a gRPC server that implements the sidecar authorization services. It validates user claims from Entra ID tokens and makes authorization decisions based on:
+The Ignixa Entra Sidecar (`sidecars/Ignixa.Sidecar.Entra`) is a gRPC server that implements the sidecar authorization services. It validates user claims from Entra ID tokens and makes authorization decisions based on:
 
 - **Required Roles**: Users must have specific Entra ID app roles
 - **Required Scopes**: Users must have specific delegated permissions
@@ -49,10 +49,10 @@ The Ignixa Entra Sidecar (`tools/Ignixa.Sidecar.Entra`) is a gRPC server that im
 
 ```bash
 # Build using Docker
-docker build -f tools/Ignixa.Sidecar.Entra/Dockerfile -t ignixa-sidecar-entra:latest .
+docker build -f sidecars/Ignixa.Sidecar.Entra/Dockerfile -t ignixa-sidecar-entra:latest .
 
 # Or build using .NET CLI
-cd tools/Ignixa.Sidecar.Entra
+cd sidecars/Ignixa.Sidecar.Entra
 dotnet build
 ```
 

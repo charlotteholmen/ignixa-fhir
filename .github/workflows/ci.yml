@@ -90,6 +90,7 @@ jobs:
           dotnet pack src/Application/Ignixa.Application.BackgroundOperations/Ignixa.Application.BackgroundOperations.csproj --configuration Release --no-build --output ./internal-packages -p:PackageVersion=${{ steps.build.outputs.nuget-version }}
           dotnet pack src/Application/Ignixa.Application.Operations/Ignixa.Application.Operations.csproj --configuration Release --no-build --output ./internal-packages -p:PackageVersion=${{ steps.build.outputs.nuget-version }}
           dotnet pack src/Application/Ignixa.Domain/Ignixa.Domain.csproj --configuration Release --no-build --output ./internal-packages -p:PackageVersion=${{ steps.build.outputs.nuget-version }}
+          dotnet pack src/Application/Ignixa.Sidecar/Ignixa.Sidecar.csproj --configuration Release --no-build --output ./internal-packages -p:PackageVersion=${{ steps.build.outputs.nuget-version }}
           # DataLayer (src/DataLayer/)
           dotnet pack src/DataLayer/Ignixa.DataLayer.SqlEntityFramework/Ignixa.DataLayer.SqlEntityFramework.csproj --configuration Release --no-build --output ./internal-packages -p:PackageVersion=${{ steps.build.outputs.nuget-version }}
           dotnet pack src/DataLayer/Ignixa.DataLayer.FileSystem/Ignixa.DataLayer.FileSystem.csproj --configuration Release --no-build --output ./internal-packages -p:PackageVersion=${{ steps.build.outputs.nuget-version }}
@@ -342,15 +343,92 @@ jobs:
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
             VCS_REF=${{ github.sha }}
 
+  build-and-push-sidecars:
+    name: Build and Push Sidecars
+    runs-on: ubuntu-latest
+    needs: [ build-and-unit-tests, e2e-tests-sql ]
+    if: success() && !inputs.skip_docker
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v3
+        with:
+          versionSpec: '6.x'
+
+      - name: Determine Version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v3
+        with:
+          useConfigFile: true
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata for Entra Sidecar
+        id: meta-entra
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-sidecar-entra
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Entra Sidecar
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./sidecars/Ignixa.Sidecar.Entra/Dockerfile
+          push: true
+          tags: ${{ steps.meta-entra.outputs.tags }}
+          labels: ${{ steps.meta-entra.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.gitversion.outputs.semVer }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            VCS_REF=${{ github.sha }}
+
+      - name: Build OpenIdDict Sidecar (no push - for validation only)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./sidecars/Ignixa.Sidecar.OpenIdDict/Dockerfile
+          push: false
+          load: true
+          tags: ignixa-sidecar-openiddict:${{ steps.gitversion.outputs.semVer }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.gitversion.outputs.semVer }}
+
   notify-success:
     name: Notify Success
     runs-on: ubuntu-latest
-    needs: [ build-and-unit-tests, e2e-tests-sql, build-and-push-container ]
+    needs: [ build-and-unit-tests, e2e-tests-sql, build-and-push-container, build-and-push-sidecars ]
     if: |
       always() &&
       needs.build-and-unit-tests.result == 'success' &&
       needs.e2e-tests-sql.result == 'success' &&
-      (needs.build-and-push-container.result == 'success' || needs.build-and-push-container.result == 'skipped')
+      (needs.build-and-push-container.result == 'success' || needs.build-and-push-container.result == 'skipped') &&
+      (needs.build-and-push-sidecars.result == 'success' || needs.build-and-push-sidecars.result == 'skipped')
 
     steps:
       - name: Create success status
@@ -359,16 +437,18 @@ jobs:
           echo "Unit tests: ✅"
           echo "E2E tests: ✅"
           echo "Docker build: ${{ needs.build-and-push-container.result == 'skipped' && '⏭️ Skipped' || '✅' }}"
+          echo "Sidecars build: ${{ needs.build-and-push-sidecars.result == 'skipped' && '⏭️ Skipped' || '✅' }}"
 
   notify-failure:
     name: Notify Failure
     runs-on: ubuntu-latest
-    needs: [ build-and-unit-tests, e2e-tests-sql, build-and-push-container ]
+    needs: [ build-and-unit-tests, e2e-tests-sql, build-and-push-container, build-and-push-sidecars ]
     if: |
       always() &&
       (needs.build-and-unit-tests.result == 'failure' ||
        needs.e2e-tests-sql.result == 'failure' ||
-       needs.build-and-push-container.result == 'failure')
+       needs.build-and-push-container.result == 'failure' ||
+       needs.build-and-push-sidecars.result == 'failure')
 
     steps:
       - name: Create failure status
@@ -377,4 +457,5 @@ jobs:
           echo "Unit tests: ${{ needs.build-and-unit-tests.result }}"
           echo "E2E tests: ${{ needs.e2e-tests-sql.result }}"
           echo "Docker build: ${{ needs.build-and-push-container.result }}"
+          echo "Sidecars build: ${{ needs.build-and-push-sidecars.result }}"
           exit 1

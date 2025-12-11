@@ -84,6 +84,9 @@
     <PackageVersion Include="Grpc.Tools" Version="2.67.0" />
     <!-- Entra ID Authentication -->
     <PackageVersion Include="Microsoft.Identity.Web" Version="3.9.0" />
+    <!-- OpenIdDict for local testing -->
+    <PackageVersion Include="OpenIddict.AspNetCore" Version="6.4.0" />
+    <PackageVersion Include="OpenIddict.EntityFrameworkCore" Version="6.4.0" />
     <!-- SearchParameter Conflict Resolution -->
     <PackageVersion Include="NuGet.Versioning" Version="6.8.0" />
     <!-- GitVersion for semantic versioning -->

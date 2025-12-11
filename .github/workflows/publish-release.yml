@@ -139,6 +139,38 @@ jobs:
 
           echo "✅ Docker image promoted successfully"
 
+      - name: Promote Entra Sidecar Image to Release
+        env:
+          IMAGE_REGISTRY: ghcr.io
+          IMAGE_NAMESPACE: ${{ github.repository }}-sidecar-entra
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.release_version }}
+          COMMIT_SHA: ${{ needs.prepare-release.outputs.commit_sha }}
+        run: |
+          SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
+          SOURCE_TAG="main-${SHORT_SHA}"
+          RELEASE_TAG="release"
+          VERSION_TAG="$RELEASE_VERSION"
+
+          IMAGE_URL="${IMAGE_REGISTRY}/${IMAGE_NAMESPACE}"
+
+          echo "Promoting Entra Sidecar image..."
+          echo "Source: ${IMAGE_URL}:${SOURCE_TAG}"
+          echo "To: ${IMAGE_URL}:${RELEASE_TAG}"
+          echo "To: ${IMAGE_URL}:${VERSION_TAG}"
+
+          # Pull the image (using lowercase for GHCR)
+          docker pull "${IMAGE_URL,,}:${SOURCE_TAG}"
+
+          # Retag with release and version
+          docker tag "${IMAGE_URL,,}:${SOURCE_TAG}" "${IMAGE_URL,,}:${RELEASE_TAG}"
+          docker tag "${IMAGE_URL,,}:${SOURCE_TAG}" "${IMAGE_URL,,}:${VERSION_TAG}"
+
+          # Push the new tags
+          docker push "${IMAGE_URL,,}:${RELEASE_TAG}"
+          docker push "${IMAGE_URL,,}:${VERSION_TAG}"
+
+          echo "✅ Entra Sidecar image promoted successfully"
+
   # =============================================================================
   # Stage 2b: Publish Core NuGet Packages to NuGet.org (runs in parallel with Docker)
   # =============================================================================

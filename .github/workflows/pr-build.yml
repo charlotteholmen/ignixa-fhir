@@ -8,6 +8,7 @@ on:
       - 'test/**'
       - 'bench/**'
       - 'tools/**'
+      - 'sidecars/**'
       - 'All.sln'
       - 'Directory.Packages.props'
       - 'Directory.Build.props'
@@ -178,10 +179,68 @@ jobs:
           docker images ignixa-fhir:pr-${{ github.event.pull_request.number }}
           docker inspect ignixa-fhir:pr-${{ github.event.pull_request.number }}
 
+  validate-sidecars:
+    name: Validate Sidecar Builds
+    runs-on: ubuntu-latest
+    # Run in parallel with unit tests for faster CI (Docker does its own build)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v3
+        with:
+          versionSpec: '6.x'
+
+      - name: Determine Version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v3
+        with:
+          useConfigFile: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Entra Sidecar (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./sidecars/Ignixa.Sidecar.Entra/Dockerfile
+          push: false
+          tags: ignixa-sidecar-entra:pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          load: true
+          build-args: |
+            VERSION=${{ steps.gitversion.outputs.semVer }}
+
+      - name: Build OpenIdDict Sidecar (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./sidecars/Ignixa.Sidecar.OpenIdDict/Dockerfile
+          push: false
+          tags: ignixa-sidecar-openiddict:pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          load: true
+          build-args: |
+            VERSION=${{ steps.gitversion.outputs.semVer }}
+
+      - name: Verify Sidecar images
+        run: |
+          echo "Verifying sidecar images..."
+          docker images | grep ignixa-sidecar
+          echo "✅ Both sidecars built successfully"
+
   pr-success:
     name: PR Validation Complete
     runs-on: ubuntu-latest
-    needs: [ build-and-unit-tests, e2e-tests-sql, validate-docker ]
+    needs: [ build-and-unit-tests, e2e-tests-sql, validate-docker, validate-sidecars ]
     if: success()
 
     steps:
@@ -197,13 +256,13 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '✅ **PR Validation Successful**\n\n- Unit tests passed\n- E2E tests passed (SQL Server)\n- Docker image builds successfully\n- Build uses GitVersion for semantic versioning'
+              body: '✅ **PR Validation Successful**\n\n- Unit tests passed\n- E2E tests passed (SQL Server)\n- Docker image builds successfully\n- Sidecar images build successfully\n- Build uses GitVersion for semantic versioning'
             })
 
   pr-failure:
     name: PR Validation Failed
     runs-on: ubuntu-latest
-    needs: [ build-and-unit-tests, e2e-tests-sql, validate-docker ]
+    needs: [ build-and-unit-tests, e2e-tests-sql, validate-docker, validate-sidecars ]
     if: failure()
 
     steps:

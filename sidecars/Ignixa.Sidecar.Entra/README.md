@@ -71,13 +71,13 @@ This sidecar implements the gRPC authorization and audit logging services define
 
 ```bash
 # Build from repository root
-docker build -f tools/Ignixa.Sidecar.Entra/Dockerfile -t ignixa-sidecar-entra:latest .
+docker build -f sidecars/Ignixa.Sidecar.Entra/Dockerfile -t ignixa-sidecar-entra:latest .
 ```
 
 ### Using .NET CLI
 
 ```bash
-cd tools/Ignixa.Sidecar.Entra
+cd sidecars/Ignixa.Sidecar.Entra
 dotnet build
 dotnet run
 ```
@@ -108,7 +108,7 @@ services:
   entra-sidecar:
     build:
       context: .
-      dockerfile: tools/Ignixa.Sidecar.Entra/Dockerfile
+      dockerfile: sidecars/Ignixa.Sidecar.Entra/Dockerfile
     environment:
       - EntraAuthorization__TenantId=your-tenant-id
       - EntraAuthorization__ClientId=your-client-id

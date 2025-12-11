@@ -1,4 +1,4 @@
-# Multi-stage Dockerfile for Ignixa Entra Sidecar
+# Multi-stage Dockerfile for Ignixa OpenIdDict Sidecar
 # Build arguments for versioning (passed from CI/CD)
 ARG VERSION=0.0.0-dev
 ARG BUILD_DATE
@@ -19,19 +19,19 @@ COPY .editorconfig ./
 COPY src/Application/Ignixa.Sidecar/Protos/ src/Application/Ignixa.Sidecar/Protos/
 
 # Copy sidecar project files for layer caching
-COPY tools/Ignixa.Sidecar.Entra/Ignixa.Sidecar.Entra.csproj tools/Ignixa.Sidecar.Entra/
+COPY sidecars/Ignixa.Sidecar.OpenIdDict/Ignixa.Sidecar.OpenIdDict.csproj sidecars/Ignixa.Sidecar.OpenIdDict/
 
 # Restore dependencies
-WORKDIR /src/tools/Ignixa.Sidecar.Entra
-RUN dotnet restore Ignixa.Sidecar.Entra.csproj /p:DisableGitVersion=true
+WORKDIR /src/sidecars/Ignixa.Sidecar.OpenIdDict
+RUN dotnet restore Ignixa.Sidecar.OpenIdDict.csproj /p:DisableGitVersion=true
 
 # Copy remaining source files
 WORKDIR /src
-COPY tools/Ignixa.Sidecar.Entra/ tools/Ignixa.Sidecar.Entra/
+COPY sidecars/Ignixa.Sidecar.OpenIdDict/ sidecars/Ignixa.Sidecar.OpenIdDict/
 
 # Build and publish
-WORKDIR /src/tools/Ignixa.Sidecar.Entra
-RUN dotnet publish Ignixa.Sidecar.Entra.csproj \
+WORKDIR /src/sidecars/Ignixa.Sidecar.OpenIdDict
+RUN dotnet publish Ignixa.Sidecar.OpenIdDict.csproj \
     --configuration Release \
     --no-restore \
     --output /app/publish \
@@ -45,8 +45,8 @@ ARG BUILD_DATE
 ARG VCS_REF
 
 # OCI Labels
-LABEL org.opencontainers.image.title="Ignixa Entra Sidecar" \
-      org.opencontainers.image.description="Sidecar container for Entra ID authorization with Ignixa FHIR Server" \
+LABEL org.opencontainers.image.title="Ignixa OpenIdDict Sidecar" \
+      org.opencontainers.image.description="Local development sidecar with OAuth token server for testing Ignixa FHIR Server" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
       org.opencontainers.image.revision="${VCS_REF}" \
@@ -68,10 +68,10 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 
 # Set environment variables
 ENV ASPNETCORE_URLS="http://+:5050;http://+:8080" \
-    ASPNETCORE_ENVIRONMENT=Production
+    ASPNETCORE_ENVIRONMENT=Development
 
 USER nonroot
 EXPOSE 5050 8080
 
 # Entry point
-ENTRYPOINT ["dotnet", "Ignixa.Sidecar.Entra.dll"]
+ENTRYPOINT ["dotnet", "Ignixa.Sidecar.OpenIdDict.dll"]
