@@ -5,6 +5,7 @@
 
 using Medino;
 using Microsoft.AspNetCore.Mvc;
+using Ignixa.Api.Extensions;
 using Ignixa.Api.Http;
 using Ignixa.Application.Features.Metadata;
 using Ignixa.Domain.Abstractions;
@@ -91,7 +92,7 @@ public static class MetadataEndpoints
         var query = new GetCapabilityStatementQuery(tenantId);
         var capabilityStatement = await mediator.SendAsync(query, cancellationToken);
 
-        return Results.Content(capabilityStatement.SerializeToString(), KnownContentTypes.ApplicationFhirJson);
+        return FhirResults.Ok(capabilityStatement, context);
     }
 
     /// <summary>
@@ -117,7 +118,7 @@ public static class MetadataEndpoints
         var query = new GetCapabilityStatementQuery(tenantId);
         var capabilityStatement = await mediator.SendAsync(query, cancellationToken);
 
-        return Results.Content(capabilityStatement.SerializeToString(), KnownContentTypes.ApplicationFhirJson);
+        return FhirResults.Ok(capabilityStatement, context);
     }
 
     /// <summary>

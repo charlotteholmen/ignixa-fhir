@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Azure;
 using Ignixa.Abstractions;
+using Ignixa.Api.Extensions;
 using Ignixa.Api.Filters;
 using Ignixa.Api.Http;
 using Ignixa.Api.Infrastructure;
@@ -355,7 +356,7 @@ public static class FhirEndpoints
 
             // Resource modified: Return resource with headers
             logger.LogInformation("Resource {ResourceType}/{Id} modified, returning resource", resourceType, id);
-            return FhirResults.Ok(conditionalResult.Resource.ResourceBytes)
+            return FhirResults.Ok(conditionalResult.Resource.ResourceBytes, context)
                 .WithETag(conditionalResult.Resource.VersionId)
                 .WithLastModified(conditionalResult.Resource.LastModified);
         }
@@ -389,7 +390,7 @@ public static class FhirEndpoints
         }
 
         // Return raw JSON bytes with FHIR headers (zero-copy serialization)
-        return FhirResults.Ok(result.ResourceBytes)
+        return FhirResults.Ok(result.ResourceBytes, context)
             .WithETag(result.VersionId)
             .WithLastModified(result.LastModified);
     }
@@ -525,7 +526,7 @@ public static class FhirEndpoints
             if (actualReturnPreference == ReturnPreference.Representation)
             {
                 // Return full resource representation with Location and ETag headers
-                return FhirResults.Created(location, result.ResourceBytes)
+                return FhirResults.Created(location, result.ResourceBytes, context)
                     .WithETag(result.Key.VersionId!)
                     .WithLastModified(result.LastModified);
             }
@@ -542,13 +543,13 @@ public static class FhirEndpoints
         if (actualReturnPreference == ReturnPreference.Representation)
         {
             // Return full resource representation with ETag headers
-            return FhirResults.Ok(result.ResourceBytes)
+            return FhirResults.Ok(result.ResourceBytes, context)
                 .WithETag(result.Key.VersionId!)
                 .WithLastModified(result.LastModified);
         }
 
         // Prefer: return=minimal - return minimal body
-        return FhirResults.Ok(result.ResourceBytes)
+        return FhirResults.Ok(result.ResourceBytes, context)
             .WithETag(result.Key.VersionId!)
             .WithLastModified(result.LastModified)
             .WithMinimalBody(resourceType, result.Key.Id, result.Key.VersionId!, result.LastModified);
@@ -605,6 +606,9 @@ public static class FhirEndpoints
         // Set response headers
         context.Response.ContentType = "application/fhir+json; charset=utf-8";
 
+        // Check for _pretty parameter
+        bool pretty = context.Request.Query.GetPrettyParameter();
+
         // Stream Bundle response with count-as-render pagination
         await StreamingBundleSerializer.SerializeWithPaginationAsync(
             outputStream: context.Response.Body,
@@ -615,7 +619,7 @@ public static class FhirEndpoints
             baseUrl: baseUrl,
             queryString: context.Request.QueryString.Value ?? string.Empty,
             schemaProvider: schemaProvider,
-            pretty: false,
+            pretty: pretty,
             cancellationToken: ct);
 
         return Results.Empty;
@@ -697,6 +701,9 @@ public static class FhirEndpoints
         // Set response headers
         context.Response.ContentType = "application/fhir+json; charset=utf-8";
 
+        // Check for _pretty parameter (from query or form data)
+        bool pretty = context.Request.Query.GetPrettyParameter();
+
         // Stream Bundle response with count-as-render pagination
         // Pagination links will be GET requests with search parameters preserved
         await StreamingBundleSerializer.SerializeWithPaginationAsync(
@@ -708,7 +715,7 @@ public static class FhirEndpoints
             baseUrl: baseUrl,
             queryString: queryString, // POST _search: convert to GET with query parameters
             schemaProvider: schemaProvider,
-            pretty: false,
+            pretty: pretty,
             cancellationToken: ct);
 
         return Results.Empty;
@@ -819,7 +826,8 @@ public static class FhirEndpoints
                 {
                     // return=OperationOutcome - return OperationOutcome with success message
                     var outcome = CreateSuccessOperationOutcome($"Successfully created {resourceType}/{result.Resource.ResourceId}");
-                    return Results.Content(outcome.SerializeToString(), KnownContentTypes.ApplicationFhirJson, statusCode: StatusCodes.Status201Created);
+                    context.Response.StatusCode = StatusCodes.Status201Created;
+                    return FhirResults.Ok(outcome, context);
                 }
                 else
                 {
@@ -978,7 +986,7 @@ public static class FhirEndpoints
         if (actualReturnPreference == ReturnPreference.Representation)
         {
             // Return full resource representation
-            return FhirResults.Created(createLocation, createResult.ResourceBytes)
+            return FhirResults.Created(createLocation, createResult.ResourceBytes, context)
                 .WithETag(createResult.Key.VersionId!)
                 .WithLastModified(createResult.LastModified);
         }
@@ -1127,6 +1135,9 @@ public static class FhirEndpoints
                     context.Response.Headers.Append("Preference-Applied", PreferHeaderParser.ToPreferenceAppliedHeader(validationOverride.Value));
                 }
 
+                // Check for _pretty parameter
+                bool pretty = context.Request.Query.GetPrettyParameter();
+
                 // Stream responses directly to HTTP (headers are now locked)
                 await StreamingBundleSerializer.SerializeStreamAsync(
                     outputStream: context.Response.Body,
@@ -1135,7 +1146,7 @@ public static class FhirEndpoints
                     total: null,
                     selfLink: null,
                     nextLink: null,
-                    pretty: false,
+                    pretty: pretty,
                     cancellationToken: ct);
 
                 // Complete background tasks
@@ -1268,7 +1279,8 @@ public static class FhirEndpoints
             {
                 // return=OperationOutcome - return OperationOutcome with success message
                 var outcome = CreateSuccessOperationOutcome($"Successfully created {resourceType}/{result.Resource.ResourceId}");
-                return Results.Content(outcome.SerializeToString(), KnownContentTypes.ApplicationFhirJson, statusCode: StatusCodes.Status201Created);
+                context.Response.StatusCode = StatusCodes.Status201Created;
+                return FhirResults.Ok(outcome, context);
             }
             else
             {
@@ -1293,7 +1305,7 @@ public static class FhirEndpoints
             {
                 // return=OperationOutcome - return OperationOutcome with success message
                 var outcome = CreateSuccessOperationOutcome($"Successfully updated {resourceType}/{result.Resource.ResourceId}");
-                return Results.Content(outcome.SerializeToString(), KnownContentTypes.ApplicationFhirJson, statusCode: StatusCodes.Status200OK);
+                return FhirResults.Ok(outcome, context);
             }
             else
             {
@@ -1404,7 +1416,8 @@ public static class FhirEndpoints
                     : $"Deleted {result.DeletedCount} matching resource(s). Deleted IDs: {string.Join(", ", result.DeletedIds)}"
             });
 
-            return Results.Content(outcome.SerializeToString(), KnownContentTypes.ApplicationFhirJson, statusCode: StatusCodes.Status200OK);
+            bool pretty = context.Request.Query.GetPrettyParameter();
+            return Results.Bytes(outcome.SerializeToBytes(pretty), KnownContentTypes.ApplicationFhirJson);
         }
     }
 
@@ -1461,6 +1474,9 @@ public static class FhirEndpoints
         // Set response headers
         context.Response.ContentType = "application/fhir+json; charset=utf-8";
 
+        // Check for _pretty parameter
+        bool pretty = context.Request.Query.GetPrettyParameter();
+
         // Stream Bundle response with count-as-render pagination
         await StreamingBundleSerializer.SerializeWithPaginationAsync(
             outputStream: context.Response.Body,
@@ -1471,7 +1487,7 @@ public static class FhirEndpoints
             baseUrl: baseUrl,
             queryString: context.Request.QueryString.Value ?? string.Empty,
             schemaProvider: schemaProvider,
-            pretty: false,
+            pretty: pretty,
             cancellationToken: ct);
 
         return Results.Empty;
@@ -1551,6 +1567,9 @@ public static class FhirEndpoints
         context.Response.ContentType = "application/fhir+json; charset=utf-8";
 
         // Stream Bundle response with count-as-render pagination
+        // Check for _pretty parameter (from query or form data)
+        bool pretty = context.Request.Query.GetPrettyParameter();
+
         await StreamingBundleSerializer.SerializeWithPaginationAsync(
             outputStream: context.Response.Body,
             bundleType: "searchset",
@@ -1560,7 +1579,7 @@ public static class FhirEndpoints
             baseUrl: baseUrl,
             queryString: queryString,
             schemaProvider: schemaProvider,
-            pretty: false,
+            pretty: pretty,
             cancellationToken: ct);
 
         return Results.Empty;
