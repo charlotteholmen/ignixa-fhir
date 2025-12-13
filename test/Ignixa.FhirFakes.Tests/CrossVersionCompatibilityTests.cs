@@ -483,7 +483,7 @@ public class CrossVersionCompatibilityTests
     {
         foreach (var schema in _schemaProviders)
         {
-            _output.WriteLine($"Testing Procedure performedPeriod with {schema.Version}");
+            _output.WriteLine($"Testing Procedure performed/occurrence period with {schema.Version}");
 
             // Act
             var scenario = new ScenarioBuilder(schema)
@@ -494,10 +494,13 @@ public class CrossVersionCompatibilityTests
 
             var procedure = scenario.Procedures[0];
 
-            // Assert - performedPeriod should exist across all versions
-            procedure.MutableNode["performedPeriod"].Should().NotBeNull($"performedPeriod should exist in {schema.Version}");
-            var start = procedure.MutableNode["performedPeriod"]?["start"]?.GetValue<string>();
-            start.Should().NotBeNullOrEmpty($"performedPeriod.start should be set in {schema.Version}");
+            // Assert - performed/occurrence period should exist (version-aware field name)
+            // STU3/R4/R4B: performedPeriod (from performed[x])
+            // R5: occurrencePeriod (renamed from performed[x] to occurrence[x])
+            var periodFieldName = schema.Version == FhirVersion.R5 ? "occurrencePeriod" : "performedPeriod";
+            procedure.MutableNode[periodFieldName].Should().NotBeNull($"{periodFieldName} should exist in {schema.Version}");
+            var start = procedure.MutableNode[periodFieldName]?["start"]?.GetValue<string>();
+            start.Should().NotBeNullOrEmpty($"{periodFieldName}.start should be set in {schema.Version}");
         }
     }
 
@@ -626,11 +629,23 @@ public class CrossVersionCompatibilityTests
 
             var serviceRequest = scenario.ServiceRequests[0];
 
-            // Assert - code should exist with proper coding structure
+            // Assert - code should exist with proper structure (version-aware)
+            // R4/R4B: code is CodeableConcept -> code.coding
+            // R5: code is CodeableReference -> code.concept.coding
             var code = serviceRequest.MutableNode["code"];
             code.Should().NotBeNull($"code should exist in {schema.Version}");
 
-            var coding = code?["coding"]?[0];
+            JsonNode? coding;
+            if (schema.Version == FhirVersion.R5)
+            {
+                // R5: CodeableReference with concept part
+                coding = code?["concept"]?["coding"]?[0];
+            }
+            else
+            {
+                // R4/R4B: CodeableConcept directly
+                coding = code?["coding"]?[0];
+            }
             coding.Should().NotBeNull($"code.coding should exist in {schema.Version}");
 
             var system = coding?["system"]?.GetValue<string>();
@@ -714,6 +729,115 @@ public class CrossVersionCompatibilityTests
         exception.Should().NotBeNull("ServiceRequest should not work with STU3");
         exception.Should().BeOfType<ArgumentException>();
         _output.WriteLine($"Expected failure for STU3: {exception?.Message}");
+    }
+
+    #endregion
+
+    #region MedicationRequest Compatibility Tests
+
+    [Fact]
+    public void GivenMedicationRequest_WhenGeneratedAcrossAllVersions_ThenAllSucceed()
+    {
+        foreach (var schema in _schemaProviders)
+        {
+            _output.WriteLine($"Testing MedicationRequest with {schema.Version} ({schema.FullVersion})");
+
+            // Act
+            var exception = Record.Exception(() =>
+            {
+                var scenario = new ScenarioBuilder(schema)
+                    .WithPatient()
+                    .AddEncounter("Medication visit")
+                    .AddMedicationOrder(MedicationOrderState.Metformin500mg())
+                    .Build();
+
+                // Assert basic structure
+                scenario.Medications.Should().HaveCount(1);
+                scenario.Medications[0].ResourceType.Should().Be("MedicationRequest");
+                scenario.Medications[0].Id.Should().NotBeNullOrEmpty();
+            });
+
+            exception.Should().BeNull($"MedicationRequest should work with {schema.Version}");
+        }
+    }
+
+    [Fact]
+    public void GivenMedicationRequest_WhenGeneratedAcrossAllVersions_ThenHasRequiredFields()
+    {
+        foreach (var schema in _schemaProviders)
+        {
+            _output.WriteLine($"Testing MedicationRequest required fields with {schema.Version}");
+
+            // Act
+            var scenario = new ScenarioBuilder(schema)
+                .WithPatient()
+                .AddEncounter("Medication visit")
+                .AddMedicationOrder(MedicationOrderState.Lisinopril10mg())
+                .Build();
+
+            var medicationRequest = scenario.Medications[0];
+
+            // Assert - Common required fields across all versions
+            medicationRequest.MutableNode["status"].Should().NotBeNull($"status is required in {schema.Version}");
+            medicationRequest.MutableNode["intent"].Should().NotBeNull($"intent is required in {schema.Version}");
+            medicationRequest.MutableNode["subject"].Should().NotBeNull($"subject is required in {schema.Version}");
+        }
+    }
+
+    [Fact]
+    public void GivenMedicationRequest_WhenGeneratedAcrossAllVersions_ThenUsesMedicationField()
+    {
+        foreach (var schema in _schemaProviders)
+        {
+            _output.WriteLine($"Testing MedicationRequest medication[x] field with {schema.Version}");
+
+            // Act
+            var scenario = new ScenarioBuilder(schema)
+                .WithPatient()
+                .AddMedicationOrder(MedicationOrderState.Atorvastatin20mg())
+                .Build();
+
+            var medicationRequest = scenario.Medications[0];
+
+            // Assert - All FHIR versions use medication[x] choice element
+            // STU3/R4/R4B/R5 all serialize as "medicationCodeableConcept" or "medicationReference"
+            // (STU3 spec: medication[x][1..1]: CodeableConcept|Reference(Medication))
+            var hasMedicationCodeableConcept = medicationRequest.MutableNode["medicationCodeableConcept"] != null;
+            var hasMedicationReference = medicationRequest.MutableNode["medicationReference"] != null;
+
+            (hasMedicationCodeableConcept || hasMedicationReference)
+                .Should().BeTrue($"{schema.Version} should have medicationCodeableConcept or medicationReference");
+
+            // If using CodeableConcept, verify structure
+            if (hasMedicationCodeableConcept)
+            {
+                var coding = medicationRequest.MutableNode["medicationCodeableConcept"]?["coding"]?[0];
+                coding.Should().NotBeNull($"medicationCodeableConcept should have coding in {schema.Version}");
+                coding?["code"]?.GetValue<string>().Should().NotBeNullOrEmpty($"should have medication code in {schema.Version}");
+            }
+        }
+    }
+
+    [Fact]
+    public void GivenMedicationRequestWithDosage_WhenGeneratedAcrossAllVersions_ThenHasDosageInstruction()
+    {
+        foreach (var schema in _schemaProviders)
+        {
+            _output.WriteLine($"Testing MedicationRequest dosageInstruction with {schema.Version}");
+
+            // Act
+            var scenario = new ScenarioBuilder(schema)
+                .WithPatient()
+                .AddMedicationOrder(MedicationOrderState.Albuterol())
+                .Build();
+
+            var medicationRequest = scenario.Medications[0];
+
+            // Assert - dosageInstruction should exist across all versions
+            var dosageInstruction = medicationRequest.MutableNode["dosageInstruction"] as JsonArray;
+            dosageInstruction.Should().NotBeNull($"dosageInstruction should exist in {schema.Version}");
+            dosageInstruction!.Count.Should().BeGreaterThan(0, $"should have dosage entries in {schema.Version}");
+        }
     }
 
     #endregion

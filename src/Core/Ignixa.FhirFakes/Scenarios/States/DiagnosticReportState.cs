@@ -81,6 +81,10 @@ public sealed class DiagnosticReportState : ScenarioState
         var node = report.MutableNode;
         var reportId = Guid.NewGuid().ToString();
 
+        // Remove any existing choice element variants to avoid conflicts
+        // The faker may generate placeholder values for choice elements
+        RemoveChoiceConflicts(node, "effective");
+
         // Set required fields
         node["id"] = reportId;
         node["status"] = Status;
@@ -127,22 +131,40 @@ public sealed class DiagnosticReportState : ScenarioState
             ["reference"] = $"Patient/{context.Patient.Id}"
         };
 
-        // Set encounter reference if available
+        // Set encounter reference if available (STU3 uses "context" instead of "encounter")
+        var encounterField = VersionFieldOverrides.GetFieldName(
+            faker.SchemaProvider.Version,
+            "DiagnosticReport",
+            "encounter");
+
         if (context.CurrentEncounter is not null)
         {
-            node["encounter"] = new JsonObject
+            node[encounterField] = new JsonObject
             {
                 ["reference"] = $"Encounter/{context.CurrentEncounter.Id}"
             };
         }
+        else
+        {
+            // Clear any faker-generated encounter reference
+            node.Remove(encounterField);
+            // Also clear STU3 "context" field if present
+            node.Remove("context");
+        }
 
-        // Set effective date
-        node["effectiveDateTime"] = context.CurrentTime.ToString("o");
+        // Set effective date using version-appropriate field name (R4+ normative is "effectiveDateTime")
+        var effectiveField = VersionFieldOverrides.GetFieldName(
+            faker.SchemaProvider.Version,
+            "DiagnosticReport",
+            "effectiveDateTime");
+        node[effectiveField] = context.CurrentTime.ToString("o");
 
         // Set issued date (when report was made available)
         node["issued"] = context.CurrentTime.AddMinutes(_faker.Random.Int(5, 120)).ToString("o");
 
         // Set performer
+        // In all versions (STU3-R5), performer is a BackboneElement[] with actor (Reference).
+        // The role/function field differs: STU3 uses "role", R4+ uses "function" (optional in both).
         var performers = new JsonArray();
 
         // Add practitioner reference if available
@@ -150,7 +172,10 @@ public sealed class DiagnosticReportState : ScenarioState
         {
             performers.Add(new JsonObject
             {
-                ["reference"] = $"Practitioner/{context.CurrentPractitioner.Id}"
+                ["actor"] = new JsonObject
+                {
+                    ["reference"] = $"Practitioner/{context.CurrentPractitioner.Id}"
+                }
             });
         }
 
@@ -159,7 +184,10 @@ public sealed class DiagnosticReportState : ScenarioState
         {
             performers.Add(new JsonObject
             {
-                ["reference"] = $"Organization/{context.CurrentOrganization.Id}"
+                ["actor"] = new JsonObject
+                {
+                    ["reference"] = $"Organization/{context.CurrentOrganization.Id}"
+                }
             });
         }
 
@@ -169,7 +197,10 @@ public sealed class DiagnosticReportState : ScenarioState
             var performerName = PerformerName ?? GeneratePerformerName(isImaging);
             performers.Add(new JsonObject
             {
-                ["display"] = performerName
+                ["actor"] = new JsonObject
+                {
+                    ["display"] = performerName
+                }
             });
         }
 
@@ -214,6 +245,11 @@ public sealed class DiagnosticReportState : ScenarioState
         {
             node["result"] = observationReferences;
         }
+        else
+        {
+            // Clear any faker-generated result references
+            node.Remove("result");
+        }
 
         // Set conclusion for imaging reports
         if (!string.IsNullOrEmpty(Conclusion))
@@ -256,6 +292,11 @@ public sealed class DiagnosticReportState : ScenarioState
         var observation = faker.Generate("Observation");
         var node = observation.MutableNode;
 
+        // Remove any existing choice element variants to avoid conflicts
+        // The faker may generate placeholder values for choice elements
+        RemoveChoiceConflicts(node, "effective");
+        RemoveChoiceConflicts(node, "value");
+
         node["id"] = Guid.NewGuid().ToString();
         node["status"] = "final";
 
@@ -297,20 +338,40 @@ public sealed class DiagnosticReportState : ScenarioState
             ["reference"] = $"Patient/{context.Patient!.Id}"
         };
 
-        // Set encounter reference if available
+        // Set encounter reference if available (STU3 uses "context" instead of "encounter")
+        var encounterField = VersionFieldOverrides.GetFieldName(
+            faker.SchemaProvider.Version,
+            "Observation",
+            "encounter");
+
         if (context.CurrentEncounter is not null)
         {
-            node["encounter"] = new JsonObject
+            node[encounterField] = new JsonObject
             {
                 ["reference"] = $"Encounter/{context.CurrentEncounter.Id}"
             };
         }
+        else
+        {
+            // Clear any faker-generated encounter reference
+            node.Remove(encounterField);
+            // Also clear STU3 "context" field if present
+            node.Remove("context");
+        }
 
-        // Set effective date
-        node["effectiveDateTime"] = context.CurrentTime.ToString("o");
+        // Set effective date using version-appropriate field name (R4+ normative is "effectiveDateTime")
+        var effectiveField = VersionFieldOverrides.GetFieldName(
+            faker.SchemaProvider.Version,
+            "Observation",
+            "effectiveDateTime");
+        node[effectiveField] = context.CurrentTime.ToString("o");
 
-        // Set value
-        node["valueQuantity"] = new JsonObject
+        // Set value using version-appropriate field name (R4+ normative is "valueQuantity")
+        var valueField = VersionFieldOverrides.GetFieldName(
+            faker.SchemaProvider.Version,
+            "Observation",
+            "valueQuantity");
+        node[valueField] = new JsonObject
         {
             ["value"] = value,
             ["unit"] = unit,

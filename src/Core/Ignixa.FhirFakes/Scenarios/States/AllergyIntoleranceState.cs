@@ -93,10 +93,15 @@ public sealed class AllergyIntoleranceState : ScenarioState
         var allergy = faker.Generate("AllergyIntolerance");
         var node = allergy.MutableNode;
 
+        // Remove any existing choice element variants to avoid conflicts
+        // The faker may generate placeholder values for choice elements
+        RemoveChoiceConflicts(node, "onset");
+
         // Set required fields
         node["id"] = Guid.NewGuid().ToString();
 
-        // Set clinical status
+        // Set clinical status (required in R4+, optional in STU3)
+        // Always set it for completeness, but note the requirement difference
         node["clinicalStatus"] = new JsonObject
         {
             ["coding"] = new JsonArray
@@ -110,7 +115,8 @@ public sealed class AllergyIntoleranceState : ScenarioState
             }
         };
 
-        // Set verification status
+        // Set verification status (required in R4+, optional in STU3)
+        // Always set it for completeness, but note the requirement difference
         node["verificationStatus"] = new JsonObject
         {
             ["coding"] = new JsonArray
@@ -157,21 +163,40 @@ public sealed class AllergyIntoleranceState : ScenarioState
         };
 
         // Set encounter reference if available
-        if (context.CurrentEncounter is not null)
+        // STU3 doesn't have an encounter field for AllergyIntolerance, so check if it should be skipped
+        var encounterField = VersionFieldOverrides.GetFieldName(
+            faker.SchemaProvider.Version,
+            "AllergyIntolerance",
+            "encounter");
+
+        if (context.CurrentEncounter is not null && !string.IsNullOrEmpty(encounterField))
         {
-            node["encounter"] = new JsonObject
+            node[encounterField] = new JsonObject
             {
                 ["reference"] = $"Encounter/{context.CurrentEncounter.Id}"
             };
         }
+        else
+        {
+            // Clear any faker-generated encounter reference (R4+ only, STU3 doesn't have encounter)
+            node.Remove("encounter");
+        }
 
-        // Set onset date
+        // Set onset date using version-appropriate field name (R4+ normative is "onsetDateTime")
         var onsetDateTime = OnsetDate ?? context.CurrentTime.AddYears(-_faker.Random.Int(1, 20));
-        node["onsetDateTime"] = onsetDateTime.ToString("o");
+        var onsetField = VersionFieldOverrides.GetFieldName(
+            faker.SchemaProvider.Version,
+            "AllergyIntolerance",
+            "onsetDateTime");
+        node[onsetField] = onsetDateTime.ToString("o");
 
-        // Set recorded date
+        // Set recorded date (STU3 uses "assertedDate" instead of "recordedDate")
         var recordedDateTime = RecordedDate ?? context.CurrentTime;
-        node["recordedDate"] = recordedDateTime.ToString("o");
+        var recordedDateField = VersionFieldOverrides.GetFieldName(
+            faker.SchemaProvider.Version,
+            "AllergyIntolerance",
+            "recordedDate");
+        node[recordedDateField] = recordedDateTime.ToString("o");
 
         // Set recorder (who documented this allergy)
         var recorderNode = new JsonObject
@@ -300,7 +325,7 @@ public sealed class AllergyIntoleranceState : ScenarioState
         {
             var manifestationCode = MapReactionToCode(reaction);
 
-            reactions.Add(new JsonObject
+            var reactionNode = new JsonObject
             {
                 ["manifestation"] = new JsonArray
                 {
@@ -318,9 +343,13 @@ public sealed class AllergyIntoleranceState : ScenarioState
                         ["text"] = reaction
                     }
                 },
-                ["severity"] = Severity,
-                ["onset"] = _faker.Date.Recent(365).ToString("o")
-            });
+                ["severity"] = Severity
+            };
+
+            // Note: AllergyIntolerance.reaction.onset[x] has onsetDateTime as the R4+ normative
+            // For now we set as a simple string representation for cross-version compatibility
+            reactionNode["onset"] = _faker.Date.Recent(365).ToString("o");
+            reactions.Add(reactionNode);
         }
 
         return reactions;
