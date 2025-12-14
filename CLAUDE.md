@@ -559,6 +559,133 @@ cd codegen && ./generate.sh   # Linux/Mac
 
 ---
 
+## E2E Testing Setup
+
+E2E tests require SQL Server and Azurite (Azure Storage emulator) containers. **DO NOT** run E2E tests without these containers - they will fail with 500 errors.
+
+### Starting Test Containers
+
+```bash
+# Set password and start containers
+export SQL_SA_PASSWORD="YourStrong!Passw0rd"
+docker compose -f docker-compose.test.yml up -d --wait
+
+# Verify SQL Server is ready
+docker exec ignixa-test-sql /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost -C -U sa -P "$SQL_SA_PASSWORD" \
+  -Q "SELECT @@VERSION" -b
+```
+
+### Running E2E Tests
+
+```bash
+# Run all E2E tests (requires containers running)
+export TEST_SQL_CONNECTION_STRING="Server=localhost,1433;Database=FhirTest;User Id=sa;Password=$SQL_SA_PASSWORD;TrustServerCertificate=true;Encrypt=false"
+dotnet test test/Ignixa.Api.E2ETests/Ignixa.Api.E2ETests.csproj
+
+# Run specific E2E test
+dotnet test test/Ignixa.Api.E2ETests/Ignixa.Api.E2ETests.csproj --filter "FullyQualifiedName~TestClassName"
+```
+
+### Test Fixture Architecture
+
+**File**: `test/Ignixa.Api.E2ETests/Fixtures/IgnixaApiFixture.cs`
+
+The fixture performs these initialization steps:
+1. Creates SQL database if not exists
+2. Calls `/$versions` to discover supported FHIR versions (with fallback)
+3. Calls `/metadata` to get CapabilityStatement
+4. Syncs base search parameters to SQL database
+5. Initializes `SearchTestHarness` with capability statement
+
+**Key Properties**:
+- `Client` - HttpClient for making requests
+- `Harness` - SearchTestHarness for creating resources and searching
+- `SchemaProvider` - Version-specific FHIR schema provider
+- `FhirVersion` - Detected from server's capability statement
+- `SupportedFhirVersions` - List of all supported versions from `$versions`
+
+### Container Configuration
+
+**File**: `docker-compose.test.yml`
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| `sqlserver` | 1433 | SQL Server 2022 for FHIR resource storage |
+| `azurite` | 10000-10002 | Azure Storage emulator for blob/queue/table |
+
+### Cleanup
+
+```bash
+# Stop and remove containers
+docker compose -f docker-compose.test.yml down -v
+```
+
+### CI Workflow Reference
+
+See `.github/workflows/ci.yml` job `e2e-tests-sql` for the complete CI setup.
+
+---
+
+## Adding New FHIR Operations
+
+### Pattern: System-Level Operation (e.g., `$versions`)
+
+**1. Add endpoint handler** in `src/Application/Ignixa.Api/Endpoints/`:
+
+```csharp
+// In MetadataEndpoints.cs or OperationEndpoints.cs
+private static IEndpointRouteBuilder MapVersionsEndpoints(this IEndpointRouteBuilder endpoints)
+{
+    // Tenant-agnostic route
+    endpoints.MapGet("/$versions", HandleGetVersions)
+        .WithName("GetVersions")
+        .Produces(StatusCodes.Status200OK, contentType: KnownContentTypes.ApplicationFhirJson);
+
+    // Tenant-explicit route
+    endpoints.MapGet("/tenant/{tenantId:int}/$versions", HandleGetTenantVersions)
+        .WithName("GetTenantVersions")
+        .Produces(StatusCodes.Status200OK, contentType: KnownContentTypes.ApplicationFhirJson);
+
+    return endpoints;
+}
+```
+
+**2. Implement handlers**:
+- Use `IFhirVersionContext` for version-specific schema providers
+- Use `ParametersJsonNode` for operation responses
+- Use `FhirResults.Ok(resource, httpContext)` for proper content negotiation
+
+**3. Register in main mapping method**:
+```csharp
+public static IEndpointRouteBuilder MapMetadataEndpoints(this IEndpointRouteBuilder endpoints)
+{
+    endpoints.MapMetadataTenantEndpoints();
+    endpoints.MapMetadataAgnosticEndpoints();
+    endpoints.MapVersionsEndpoints();  // Add new operations
+    return endpoints;
+}
+```
+
+**4. Add tests**:
+- Unit tests in `test/Ignixa.Api.Tests/Infrastructure/`
+- E2E tests in `test/Ignixa.Api.E2ETests/`
+
+### Pattern: Resource-Level Operation (e.g., `Patient/$everything`)
+
+See `OperationEndpoints.cs` for `HandlePatientEverything` as a reference.
+
+### Key Services for Operations
+
+| Service | Purpose |
+|---------|---------|
+| `IFhirVersionContext` | Get schema providers for each FHIR version |
+| `IMediator` | Send queries/commands via Medino |
+| `RecyclableMemoryStreamManager` | Efficient memory management for request bodies |
+| `ITenantConfigurationStore` | Get tenant configuration |
+
+---
+
 ## Status
 
 | Category | Status |

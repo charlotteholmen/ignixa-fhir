@@ -83,6 +83,12 @@ public class IgnixaApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
     /// </summary>
     public FhirVersion FhirVersion { get; private set; }
 
+    /// <summary>
+    /// List of all FHIR versions supported by the server, retrieved from $versions endpoint.
+    /// Can be used to determine which schema providers to load for multi-version testing.
+    /// </summary>
+    public IReadOnlyList<FhirVersion> SupportedFhirVersions { get; private set; } = [];
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.ConfigureAppConfiguration((context, config) =>
@@ -186,6 +192,10 @@ public class IgnixaApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
         {
             await SyncBaseSearchParametersAsync();
         }
+
+        // Fetch /$versions to get all supported FHIR versions
+        // This can be used to determine which schema providers to load for multi-version testing
+        SupportedFhirVersions = await FetchSupportedVersionsAsync();
 
         // Fetch /metadata once and cache it
         var metadataResponse = await Client.GetAsync("/metadata");
@@ -308,6 +318,76 @@ public class IgnixaApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
             FhirVersion.R5 => new R5CoreSchemaProvider(),
             FhirVersion.R6 => new R6CoreSchemaProvider(),
             _ => throw new NotSupportedException($"FHIR version {version} not supported")
+        };
+    }
+
+    /// <summary>
+    /// Fetches the list of supported FHIR versions from the $versions endpoint.
+    /// </summary>
+    private async Task<IReadOnlyList<FhirVersion>> FetchSupportedVersionsAsync()
+    {
+        try
+        {
+            var response = await Client.GetAsync("/$versions");
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"Warning: /$versions returned {response.StatusCode}. Falling back to default versions.");
+                return GetDefaultSupportedVersions();
+            }
+
+            var json = await response.Content.ReadAsStringAsync();
+            var parameters = JsonSourceNodeFactory.Parse<Serialization.Models.ParametersJsonNode>(json);
+
+            var versions = new List<FhirVersion>();
+
+            foreach (var versionParam in parameters.Parameter.Where(p => p.Name == "version"))
+            {
+                var codePart = versionParam.Part.FirstOrDefault(p => p.Name == "code");
+                if (codePart != null)
+                {
+                    var code = codePart.GetValueAs<string>("valueCode");
+                    if (!string.IsNullOrEmpty(code))
+                    {
+                        var version = ParseFhirVersionFromCode(code);
+                        if (version.HasValue)
+                        {
+                            versions.Add(version.Value);
+                        }
+                    }
+                }
+            }
+
+            return versions.Count > 0 ? versions : GetDefaultSupportedVersions();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Warning: Failed to fetch /$versions: {ex.Message}. Falling back to default versions.");
+            return GetDefaultSupportedVersions();
+        }
+    }
+
+    /// <summary>
+    /// Returns the default list of supported FHIR versions (fallback if $versions fails).
+    /// </summary>
+    private static IReadOnlyList<FhirVersion> GetDefaultSupportedVersions()
+    {
+        return [FhirVersion.R4, FhirVersion.R4B, FhirVersion.R5, FhirVersion.R6, FhirVersion.Stu3];
+    }
+
+    /// <summary>
+    /// Parses a FHIR version code string (e.g., "4.0.1") to a FhirVersion enum.
+    /// </summary>
+    private static FhirVersion? ParseFhirVersionFromCode(string code)
+    {
+        return code switch
+        {
+            "3.0.2" => FhirVersion.Stu3,
+            "4.0.1" => FhirVersion.R4,
+            "4.3.0" => FhirVersion.R4B,
+            "5.0.0" => FhirVersion.R5,
+            "6.0.0-ballot2" => FhirVersion.R6,
+            _ => null // Unknown version codes are skipped
         };
     }
 }

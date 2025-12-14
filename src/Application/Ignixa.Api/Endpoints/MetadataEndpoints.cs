@@ -5,12 +5,15 @@
 
 using Medino;
 using Microsoft.AspNetCore.Mvc;
+using Ignixa.Abstractions;
 using Ignixa.Api.Extensions;
 using Ignixa.Api.Http;
 using Ignixa.Application.Features.Metadata;
+using Ignixa.Application.Features.Search;
 using Ignixa.Domain.Abstractions;
 using Ignixa.Domain.Exceptions;
 using Ignixa.Serialization;
+using Ignixa.Serialization.Models;
 
 namespace Ignixa.Api.Endpoints;
 
@@ -24,6 +27,7 @@ public static class MetadataEndpoints
     {
         endpoints.MapMetadataTenantEndpoints();
         endpoints.MapMetadataAgnosticEndpoints();
+        endpoints.MapVersionsEndpoints();
         return endpoints;
     }
 
@@ -158,5 +162,118 @@ public static class MetadataEndpoints
                 $"The server cannot produce content matching the requested Accept header: '{acceptHeader}'. " +
                 $"Supported media types: KnownContentTypes.ApplicationFhirJson, KnownContentTypes.ApplicationJson");
         }
+    }
+
+    /// <summary>
+    /// Registers $versions endpoints for listing supported FHIR versions.
+    /// https://build.fhir.org/capabilitystatement-operation-versions.html
+    /// </summary>
+    private static IEndpointRouteBuilder MapVersionsEndpoints(this IEndpointRouteBuilder endpoints)
+    {
+        // Tenant-agnostic route: GET /$versions
+        endpoints.MapGet("/$versions", HandleGetVersions)
+            .WithName("GetVersions")
+            .Produces(StatusCodes.Status200OK, contentType: KnownContentTypes.ApplicationFhirJson);
+
+        // Tenant-explicit route: GET /tenant/{tenantId}/$versions
+        endpoints.MapGet("/tenant/{tenantId:int}/$versions", HandleGetTenantVersions)
+            .WithName("GetTenantVersions")
+            .Produces(StatusCodes.Status200OK, contentType: KnownContentTypes.ApplicationFhirJson);
+
+        return endpoints;
+    }
+
+    /// <summary>
+    /// GET /$versions
+    /// Returns the FHIR versions supported by the server.
+    /// Returns a Parameters resource with a list of version parameters.
+    /// </summary>
+    private static IResult HandleGetVersions(
+        HttpContext context,
+        [FromServices] IFhirVersionContext versionContext,
+        [FromServices] ILoggerFactory loggerFactory)
+    {
+        var logger = loggerFactory.CreateLogger(typeof(MetadataEndpoints).FullName!);
+        logger.LogInformation("GET /$versions");
+
+        // Validate Accept header
+        ValidateAcceptHeader(context);
+
+        var parameters = BuildVersionsParameters(versionContext);
+        return FhirResults.Ok(parameters, context);
+    }
+
+    /// <summary>
+    /// GET /tenant/{tenantId}/$versions
+    /// Returns the FHIR versions supported by the server for a specific tenant.
+    /// Returns a Parameters resource with a list of version parameters.
+    /// </summary>
+    private static IResult HandleGetTenantVersions(
+        HttpContext context,
+        int tenantId,
+        [FromServices] IFhirVersionContext versionContext,
+        [FromServices] ILoggerFactory loggerFactory)
+    {
+        var logger = loggerFactory.CreateLogger(typeof(MetadataEndpoints).FullName!);
+        logger.LogInformation("GET /tenant/{TenantId}/$versions", tenantId);
+
+        // Validate Accept header
+        ValidateAcceptHeader(context);
+
+        // For now, all tenants support all FHIR versions
+        // In the future, this could be tenant-specific
+        var parameters = BuildVersionsParameters(versionContext);
+        return FhirResults.Ok(parameters, context);
+    }
+
+    /// <summary>
+    /// Builds a Parameters resource containing all supported FHIR versions.
+    /// Format follows https://build.fhir.org/capabilitystatement-operation-versions.html
+    /// </summary>
+    private static ParametersJsonNode BuildVersionsParameters(IFhirVersionContext versionContext)
+    {
+        var parameters = new ParametersJsonNode();
+
+        // Define supported FHIR versions with their enum values
+        // Note: Order matters for default version selection (R4 is most commonly used)
+        var supportedVersions = new[]
+        {
+            (FhirVersion.R4, isDefault: true),
+            (FhirVersion.R4B, isDefault: false),
+            (FhirVersion.R5, isDefault: false),
+            (FhirVersion.R6, isDefault: false),
+            (FhirVersion.Stu3, isDefault: false),
+        };
+
+        foreach (var (fhirVersion, isDefault) in supportedVersions)
+        {
+            // Get the full version string from the schema provider
+            var schemaProvider = versionContext.GetBaseSchemaProvider(fhirVersion);
+            var fullVersion = schemaProvider.FullVersion;
+
+            // Create a parameter for this version
+            var versionParam = new ParameterJsonNode();
+            versionParam.Name = "version";
+
+            // Add nested parts as per the spec
+            var versionCodePart = new ParameterJsonNode();
+            versionCodePart.Name = "code";
+            versionCodePart.SetValue("valueCode", fullVersion);
+
+            versionParam.Part.Add(versionCodePart);
+
+            // Add default flag if this is the default version
+            if (isDefault)
+            {
+                var defaultPart = new ParameterJsonNode();
+                defaultPart.Name = "default";
+                defaultPart.SetValue("valueBoolean", true);
+                versionParam.Part.Add(defaultPart);
+            }
+
+            parameters.Parameter.Add(versionParam);
+        }
+
+        return parameters;
     }
 }
