@@ -187,6 +187,7 @@ public static class MetadataEndpoints
     /// GET /$versions
     /// Returns the FHIR versions supported by the server.
     /// Returns a Parameters resource with a list of version parameters.
+    /// R4 is marked as default for tenant-agnostic requests.
     /// </summary>
     private static IResult HandleGetVersions(
         HttpContext context,
@@ -199,7 +200,8 @@ public static class MetadataEndpoints
         // Validate Accept header
         ValidateAcceptHeader(context);
 
-        var parameters = BuildVersionsParameters(versionContext);
+        // For tenant-agnostic requests, R4 is the system default
+        var parameters = BuildVersionsParameters(versionContext, FhirVersion.R4);
         return FhirResults.Ok(parameters, context);
     }
 
@@ -207,12 +209,15 @@ public static class MetadataEndpoints
     /// GET /tenant/{tenantId}/$versions
     /// Returns the FHIR versions supported by the server for a specific tenant.
     /// Returns a Parameters resource with a list of version parameters.
+    /// The tenant's configured FHIR version is marked as the default.
     /// </summary>
-    private static IResult HandleGetTenantVersions(
+    private static async Task<IResult> HandleGetTenantVersions(
         HttpContext context,
         int tenantId,
         [FromServices] IFhirVersionContext versionContext,
-        [FromServices] ILoggerFactory loggerFactory)
+        [FromServices] ITenantConfigurationStore tenantConfigStore,
+        [FromServices] ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
     {
         var logger = loggerFactory.CreateLogger(typeof(MetadataEndpoints).FullName!);
         logger.LogInformation("GET /tenant/{TenantId}/$versions", tenantId);
@@ -220,9 +225,13 @@ public static class MetadataEndpoints
         // Validate Accept header
         ValidateAcceptHeader(context);
 
-        // For now, all tenants support all FHIR versions
-        // In the future, this could be tenant-specific
-        var parameters = BuildVersionsParameters(versionContext);
+        // Get tenant configuration to determine default FHIR version
+        var tenantConfig = await tenantConfigStore.GetTenantConfigurationAsync(tenantId, cancellationToken);
+        FhirVersion? defaultVersion = tenantConfig != null
+            ? ParseFhirVersionFromConfig(tenantConfig.FhirVersion)
+            : FhirVersion.R4;
+
+        var parameters = BuildVersionsParameters(versionContext, defaultVersion);
         return FhirResults.Ok(parameters, context);
     }
 
@@ -230,22 +239,23 @@ public static class MetadataEndpoints
     /// Builds a Parameters resource containing all supported FHIR versions.
     /// Format follows https://build.fhir.org/capabilitystatement-operation-versions.html
     /// </summary>
-    internal static ParametersJsonNode BuildVersionsParameters(IFhirVersionContext versionContext)
+    /// <param name="versionContext">The FHIR version context for schema providers.</param>
+    /// <param name="defaultVersion">The FHIR version to mark as default (from tenant config or R4 for system-wide).</param>
+    internal static ParametersJsonNode BuildVersionsParameters(IFhirVersionContext versionContext, FhirVersion? defaultVersion)
     {
         var parameters = new ParametersJsonNode();
 
-        // Define supported FHIR versions with their enum values
-        // Note: Order matters for default version selection (R4 is most commonly used)
-        var supportedVersions = new[]
-        {
-            (FhirVersion.R4, isDefault: true),
-            (FhirVersion.R4B, isDefault: false),
-            (FhirVersion.R5, isDefault: false),
-            (FhirVersion.R6, isDefault: false),
-            (FhirVersion.Stu3, isDefault: false),
-        };
+        // Define supported FHIR versions
+        FhirVersion[] supportedVersions =
+        [
+            FhirVersion.R4,
+            FhirVersion.R4B,
+            FhirVersion.R5,
+            FhirVersion.R6,
+            FhirVersion.Stu3,
+        ];
 
-        foreach (var (fhirVersion, isDefault) in supportedVersions)
+        foreach (var fhirVersion in supportedVersions)
         {
             // Get the full version string from the schema provider
             var schemaProvider = versionContext.GetBaseSchemaProvider(fhirVersion);
@@ -262,8 +272,8 @@ public static class MetadataEndpoints
 
             versionParam.Part.Add(versionCodePart);
 
-            // Add default flag if this is the default version
-            if (isDefault)
+            // Add default flag if this matches the tenant's configured version
+            if (fhirVersion == defaultVersion)
             {
                 var defaultPart = new ParameterJsonNode();
                 defaultPart.Name = "default";
@@ -275,5 +285,21 @@ public static class MetadataEndpoints
         }
 
         return parameters;
+    }
+
+    /// <summary>
+    /// Parses a tenant's FhirVersion config string (e.g., "4.0", "5.0") to a FhirVersion enum.
+    /// </summary>
+    private static FhirVersion? ParseFhirVersionFromConfig(string? fhirVersionConfig)
+    {
+        return fhirVersionConfig switch
+        {
+            "3.0" => FhirVersion.Stu3,
+            "4.0" => FhirVersion.R4,
+            "4.3" => FhirVersion.R4B,
+            "5.0" => FhirVersion.R5,
+            "6.0" => FhirVersion.R6,
+            _ => null // Unknown version defaults to no specific default
+        };
     }
 }

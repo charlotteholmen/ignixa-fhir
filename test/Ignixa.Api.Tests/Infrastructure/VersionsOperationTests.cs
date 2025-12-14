@@ -27,7 +27,7 @@ public class VersionsOperationTests
         var versionContext = CreateMockVersionContext();
 
         // Act
-        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext);
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext, FhirVersion.R4);
 
         // Assert
         parameters.Should().NotBeNull();
@@ -41,7 +41,7 @@ public class VersionsOperationTests
         var versionContext = CreateMockVersionContext();
 
         // Act
-        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext);
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext, FhirVersion.R4);
 
         // Assert
         var versionParams = parameters.Parameter.Where(p => p.Name == "version").ToList();
@@ -55,7 +55,7 @@ public class VersionsOperationTests
         var versionContext = CreateMockVersionContext();
 
         // Act
-        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext);
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext, FhirVersion.R4);
 
         // Extract version codes
         var versionCodes = ExtractVersionCodes(parameters);
@@ -69,37 +69,67 @@ public class VersionsOperationTests
     }
 
     [Fact]
-    public void BuildVersionsParameters_MarksR4AsDefault()
+    public void BuildVersionsParameters_MarksR4AsDefaultWhenSpecified()
     {
         // Arrange
         var versionContext = CreateMockVersionContext();
 
         // Act
-        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext);
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext, FhirVersion.R4);
 
         // Find default version
-        var defaultVersions = new List<string>();
-        foreach (var versionParam in parameters.Parameter.Where(p => p.Name == "version"))
-        {
-            var defaultPart = versionParam.Part.FirstOrDefault(p => p.Name == "default");
-            if (defaultPart != null)
-            {
-                var isDefault = defaultPart.GetValueAs<bool>("valueBoolean");
-                if (isDefault)
-                {
-                    var codePart = versionParam.Part.FirstOrDefault(p => p.Name == "code");
-                    var code = codePart?.GetValueAs<string>("valueCode");
-                    if (!string.IsNullOrEmpty(code))
-                    {
-                        defaultVersions.Add(code);
-                    }
-                }
-            }
-        }
+        var defaultVersionCode = FindDefaultVersion(parameters);
 
         // Assert
-        defaultVersions.Should().HaveCount(1, "exactly one version should be default");
-        defaultVersions[0].Should().Be("4.0.1", "R4 should be the default version");
+        defaultVersionCode.Should().Be("4.0.1", "R4 should be the default version when specified");
+    }
+
+    [Fact]
+    public void BuildVersionsParameters_MarksR5AsDefaultWhenTenantConfiguredForR5()
+    {
+        // Arrange
+        var versionContext = CreateMockVersionContext();
+
+        // Act - tenant configured for R5
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext, FhirVersion.R5);
+
+        // Find default version
+        var defaultVersionCode = FindDefaultVersion(parameters);
+
+        // Assert
+        defaultVersionCode.Should().Be("5.0.0", "R5 should be the default version when tenant is configured for R5");
+    }
+
+    [Fact]
+    public void BuildVersionsParameters_MarksStu3AsDefaultWhenTenantConfiguredForStu3()
+    {
+        // Arrange
+        var versionContext = CreateMockVersionContext();
+
+        // Act - tenant configured for Stu3
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext, FhirVersion.Stu3);
+
+        // Find default version
+        var defaultVersionCode = FindDefaultVersion(parameters);
+
+        // Assert
+        defaultVersionCode.Should().Be("3.0.2", "Stu3 should be the default version when tenant is configured for Stu3");
+    }
+
+    [Fact]
+    public void BuildVersionsParameters_NoDefaultWhenNullSpecified()
+    {
+        // Arrange
+        var versionContext = CreateMockVersionContext();
+
+        // Act - no default specified
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext, null);
+
+        // Find default version
+        var defaultVersionCode = FindDefaultVersion(parameters);
+
+        // Assert
+        defaultVersionCode.Should().BeNull("no version should be marked as default when null is specified");
     }
 
     [Fact]
@@ -109,7 +139,7 @@ public class VersionsOperationTests
         var versionContext = CreateMockVersionContext();
 
         // Act
-        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext);
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext, FhirVersion.R4);
         var json = parameters.SerializeToString();
 
         // Assert
@@ -131,6 +161,25 @@ public class VersionsOperationTests
         mock.GetBaseSchemaProvider(FhirVersion.Stu3).Returns(new STU3CoreSchemaProvider());
 
         return mock;
+    }
+
+    private static string? FindDefaultVersion(ParametersJsonNode parameters)
+    {
+        foreach (var versionParam in parameters.Parameter.Where(p => p.Name == "version"))
+        {
+            var defaultPart = versionParam.Part.FirstOrDefault(p => p.Name == "default");
+            if (defaultPart != null)
+            {
+                var isDefault = defaultPart.GetValueAs<bool>("valueBoolean");
+                if (isDefault)
+                {
+                    var codePart = versionParam.Part.FirstOrDefault(p => p.Name == "code");
+                    return codePart?.GetValueAs<string>("valueCode");
+                }
+            }
+        }
+
+        return null;
     }
 
     private static List<string> ExtractVersionCodes(ParametersJsonNode parameters)
