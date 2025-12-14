@@ -230,7 +230,7 @@ public static class MetadataEndpoints
     /// Builds a Parameters resource containing all supported FHIR versions.
     /// Format follows https://build.fhir.org/capabilitystatement-operation-versions.html
     /// </summary>
-    private static ParametersJsonNode BuildVersionsParameters(IFhirVersionContext versionContext)
+    internal static ParametersJsonNode BuildVersionsParameters(IFhirVersionContext versionContext)
     {
         var parameters = new ParametersJsonNode();
 

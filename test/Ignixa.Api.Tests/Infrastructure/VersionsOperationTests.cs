@@ -10,8 +10,6 @@ using Ignixa.Application.Features.Search;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Specification.Generated;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Logging;
 using NSubstitute;
 
 namespace Ignixa.Api.Tests.Infrastructure;
@@ -28,8 +26,8 @@ public class VersionsOperationTests
         // Arrange
         var versionContext = CreateMockVersionContext();
 
-        // Act - Use reflection to call private method (or make it internal)
-        var parameters = InvokeBuildVersionsParameters(versionContext);
+        // Act
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext);
 
         // Assert
         parameters.Should().NotBeNull();
@@ -43,7 +41,7 @@ public class VersionsOperationTests
         var versionContext = CreateMockVersionContext();
 
         // Act
-        var parameters = InvokeBuildVersionsParameters(versionContext);
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext);
 
         // Assert
         var versionParams = parameters.Parameter.Where(p => p.Name == "version").ToList();
@@ -57,7 +55,7 @@ public class VersionsOperationTests
         var versionContext = CreateMockVersionContext();
 
         // Act
-        var parameters = InvokeBuildVersionsParameters(versionContext);
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext);
 
         // Extract version codes
         var versionCodes = ExtractVersionCodes(parameters);
@@ -77,7 +75,7 @@ public class VersionsOperationTests
         var versionContext = CreateMockVersionContext();
 
         // Act
-        var parameters = InvokeBuildVersionsParameters(versionContext);
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext);
 
         // Find default version
         var defaultVersions = new List<string>();
@@ -111,7 +109,7 @@ public class VersionsOperationTests
         var versionContext = CreateMockVersionContext();
 
         // Act
-        var parameters = InvokeBuildVersionsParameters(versionContext);
+        var parameters = MetadataEndpoints.BuildVersionsParameters(versionContext);
         var json = parameters.SerializeToString();
 
         // Assert
@@ -133,22 +131,6 @@ public class VersionsOperationTests
         mock.GetBaseSchemaProvider(FhirVersion.Stu3).Returns(new STU3CoreSchemaProvider());
 
         return mock;
-    }
-
-    private static ParametersJsonNode InvokeBuildVersionsParameters(IFhirVersionContext versionContext)
-    {
-        // We need to access the private BuildVersionsParameters method
-        // Use reflection to invoke it
-        var method = typeof(MetadataEndpoints).GetMethod(
-            "BuildVersionsParameters",
-            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-
-        if (method == null)
-        {
-            throw new InvalidOperationException("BuildVersionsParameters method not found");
-        }
-
-        return (ParametersJsonNode)method.Invoke(null, [versionContext])!;
     }
 
     private static List<string> ExtractVersionCodes(ParametersJsonNode parameters)
