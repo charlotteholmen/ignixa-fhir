@@ -4,12 +4,14 @@
 // -------------------------------------------------------------------------------------------------
 
 using Autofac;
+using Ignixa.Api.Authentication;
 using Ignixa.Api.Infrastructure;
 using Ignixa.Api.Services;
 using Ignixa.Application.Infrastructure;
 using Ignixa.Domain.Abstractions;
 using Ignixa.FhirPath.Parser;
 using Ignixa.Serialization;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HostFiltering;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IO;
@@ -67,6 +69,13 @@ public static class CoreServicesRegistration
             options.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore;
         });
 
+        // Configure authorization options from appsettings.json (Authorization section)
+        services.Configure<Ignixa.Application.Features.Authorization.AuthorizationOptions>(
+            configuration.GetSection(Ignixa.Application.Features.Authorization.AuthorizationOptions.SectionName));
+
+        // JWT Bearer authentication
+        ConfigureJwtAuthentication(services, configuration, environment);
+
         return services;
     }
 
@@ -115,5 +124,71 @@ public static class CoreServicesRegistration
                 options.AllowedHosts.Add(host);
             }
         });
+    }
+
+    private static void ConfigureJwtAuthentication(
+        IServiceCollection services,
+        IConfiguration configuration,
+        IHostEnvironment environment)
+    {
+        // Check if authorization is enabled
+        var authEnabled = configuration.GetValue<bool>("Authorization:Enabled", true);
+        if (!authEnabled)
+        {
+            return;
+        }
+
+        // In production, RequireAuthentication must be true
+        var requireAuth = configuration.GetValue<bool>("Authorization:RequireAuthentication", true);
+        if (environment.IsProduction() && !requireAuth)
+        {
+            throw new InvalidOperationException(
+                "Authorization:RequireAuthentication must be true in production environments. " +
+                "Disabling authentication in production is a security risk.");
+        }
+
+        var authConfig = configuration.GetSection("Authentication");
+
+        // Use single OIDC configurator (works with all standard OIDC providers)
+        var configurator = new Ignixa.Api.Authentication.Providers.OidcJwtProviderConfigurator();
+
+        services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+            .AddJwtBearer(options =>
+            {
+                // Configure OIDC settings
+                configurator.Configure(options, authConfig);
+
+                // Common configuration (applies to all providers)
+                // Map claims using FHIR claim types
+                // Use standard OpenID Connect "name" claim or fallback to "sub"
+                options.TokenValidationParameters.NameClaimType = "name";
+                options.TokenValidationParameters.RoleClaimType =
+                    Ignixa.Application.Features.Authorization.FhirClaimTypes.Role;
+
+                // Events for debugging and custom processing
+                options.Events = new JwtBearerEvents
+                {
+                    OnAuthenticationFailed = context =>
+                    {
+                        var logger = context.HttpContext.RequestServices
+                            .GetRequiredService<ILogger<JwtBearerHandler>>();
+                        logger.LogWarning(
+                            "Authentication failed: {Error}",
+                            context.Exception.Message);
+                        return Task.CompletedTask;
+                    },
+                    OnTokenValidated = context =>
+                    {
+                        var logger = context.HttpContext.RequestServices
+                            .GetRequiredService<ILogger<JwtBearerHandler>>();
+                        logger.LogDebug(
+                            "Token validated for user: {User}",
+                            context.Principal?.Identity?.Name ?? "Unknown");
+                        return Task.CompletedTask;
+                    }
+                };
+            });
+
+        services.AddAuthorization();
     }
 }
