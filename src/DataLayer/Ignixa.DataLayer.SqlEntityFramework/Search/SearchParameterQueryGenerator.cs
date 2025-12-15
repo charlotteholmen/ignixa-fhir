@@ -591,6 +591,19 @@ public class SearchParameterQueryGenerator
 
             if (typeId.HasValue)
             {
+                // Optimization: If resourceTypeId is already specified (e.g., from a typed forward chain like subject:Patient),
+                // and the requested _type doesn't match, return empty results immediately.
+                // This prevents expensive queries when searching for impossible conditions like "Patient._type=Observation"
+                if (resourceTypeId.HasValue && resourceTypeId.Value != typeId.Value)
+                {
+                    _logger.LogDebug(
+                        "Type mismatch in _type filter: query is constrained to ResourceTypeId={ConstrainedTypeId}, but _type={RequestedType} (typeId={RequestedTypeId}). Returning empty results.",
+                        resourceTypeId.Value,
+                        stringExpr.Value,
+                        typeId.Value);
+                    return Enumerable.Empty<long>().AsQueryable();
+                }
+
                 var query = _context.Resources
                     .Where(r => r.ResourceTypeId == typeId.Value
                         && !r.IsHistory
@@ -605,7 +618,7 @@ public class SearchParameterQueryGenerator
         // Handle MultiaryExpression for multiple resource types with OR/AND
         if (expr is MultiaryExpression multiaryExpr)
         {
-            return await ProcessResourceTypeMultiaryExpressionAsync(multiaryExpr, ct);
+            return await ProcessResourceTypeMultiaryExpressionAsync(resourceTypeId, multiaryExpr, ct);
         }
 
         // Handle NotExpression for _type:not modifier
@@ -622,6 +635,7 @@ public class SearchParameterQueryGenerator
     /// Uses the SearchIndexReferenceDataCache to look up resource type IDs.
     /// </summary>
     private async Task<IQueryable<long>> ProcessResourceTypeMultiaryExpressionAsync(
+        short? resourceTypeId,
         MultiaryExpression multiaryExpr,
         CancellationToken ct)
     {
@@ -639,13 +653,20 @@ public class SearchParameterQueryGenerator
                 var typeId = await _cache.GetResourceTypeIdAsync(stringExpr.Value);
                 if (typeId.HasValue)
                 {
-                    resourceTypeIds.Add(typeId.Value);
+                    // Optimization: Skip types that don't match the constrained resourceTypeId
+                    if (!resourceTypeId.HasValue || resourceTypeId.Value == typeId.Value)
+                    {
+                        resourceTypeIds.Add(typeId.Value);
+                    }
                 }
             }
         }
 
         if (resourceTypeIds.Count == 0)
         {
+            _logger.LogDebug(
+                "No matching resource types found for _type filter. Query constrained to ResourceTypeId={ConstrainedTypeId}",
+                resourceTypeId);
             return Enumerable.Empty<long>().AsQueryable();
         }
 
@@ -737,12 +758,19 @@ public class SearchParameterQueryGenerator
 
             if (typeId.HasValue)
             {
-                resourceTypeIds.Add(typeId.Value);
+                // Optimization: Skip types that don't match the constrained resourceTypeId
+                if (!resourceTypeId.HasValue || resourceTypeId.Value == typeId.Value)
+                {
+                    resourceTypeIds.Add(typeId.Value);
+                }
             }
         }
 
         if (resourceTypeIds.Count == 0)
         {
+            _logger.LogDebug(
+                "No matching resource types found for _type IN filter. Query constrained to ResourceTypeId={ConstrainedTypeId}",
+                resourceTypeId);
             return Enumerable.Empty<long>().AsQueryable();
         }
 
@@ -1407,13 +1435,21 @@ public class SearchParameterQueryGenerator
     {
         var value = Convert.ToDecimal(binaryExpr.Value);
 
-        // When resourceTypeId is null (system-wide search), don't filter by resource type
-        // Filter by SearchParamId to only match values indexed for this specific parameter
+        _logger.LogDebug(
+            "GenerateNumberQuery: ResourceTypeId={ResourceTypeId}, SearchParamId={SearchParamId}, Operator={Operator}, Value={Value}",
+            resourceTypeId,
+            searchParamId,
+            binaryExpr.BinaryOperator,
+            value);
+
+        // Uses standard LINQ - EF Core correctly generates decimal(36,18) parameters.
+        // Previous FromSqlRaw workaround was unnecessary; the root cause was SqlMetaData in row generators
+        // defaulting to decimal(18,0) instead of decimal(36,18), which truncated fractional values during insertion.
+
         var query = _context.NumberSearchParams
             .Where(sp => (!resourceTypeId.HasValue || sp.ResourceTypeId == resourceTypeId.Value)
                 && (!searchParamId.HasValue || sp.SearchParamId == searchParamId.Value));
 
-        // Apply comparison based on operator
         query = binaryExpr.BinaryOperator switch
         {
             BinaryOperator.Equal => query.Where(sp => sp.LowValue <= value && sp.HighValue >= value),
@@ -1478,7 +1514,7 @@ public class SearchParameterQueryGenerator
         return query.Select(sp => sp.ResourceSurrogateId);
     }
 
-    private async Task<IQueryable<long>> GenerateQuantityQueryAsync(
+    private Task<IQueryable<long>> GenerateQuantityQueryAsync(
         short? resourceTypeId,
         short? searchParamId,
         BinaryExpression binaryExpr,
@@ -1486,15 +1522,21 @@ public class SearchParameterQueryGenerator
     {
         var value = Convert.ToDecimal(binaryExpr.Value);
 
-        // Note: System and Code would need to come from additional expressions in a MultiaryExpression
-        // For now, we'll just handle the numeric comparison
-        // When resourceTypeId is null (system-wide search), don't filter by resource type
-        // Filter by SearchParamId to only match values indexed for this specific parameter
+        _logger.LogDebug(
+            "GenerateQuantityQuery: ResourceTypeId={ResourceTypeId}, SearchParamId={SearchParamId}, Operator={Operator}, Value={Value}",
+            resourceTypeId,
+            searchParamId,
+            binaryExpr.BinaryOperator,
+            value);
+
+        // Uses standard LINQ - EF Core correctly generates decimal(36,18) parameters.
+        // Previous FromSqlRaw workaround was unnecessary; the root cause was SqlMetaData in row generators
+        // defaulting to decimal(18,0) instead of decimal(36,18), which truncated fractional values during insertion.
+
         var query = _context.QuantitySearchParams
             .Where(sp => (!resourceTypeId.HasValue || sp.ResourceTypeId == resourceTypeId.Value)
                 && (!searchParamId.HasValue || sp.SearchParamId == searchParamId.Value));
 
-        // Apply comparison based on operator
         query = binaryExpr.BinaryOperator switch
         {
             BinaryOperator.Equal => query.Where(sp => sp.LowValue <= value && sp.HighValue >= value),
@@ -1506,7 +1548,7 @@ public class SearchParameterQueryGenerator
             _ => throw new NotSupportedException($"BinaryOperator {binaryExpr.BinaryOperator} is not supported for Quantity")
         };
 
-        return await Task.FromResult(query.Select(sp => sp.ResourceSurrogateId));
+        return Task.FromResult(query.Select(sp => sp.ResourceSurrogateId));
     }
 
     /// <summary>
