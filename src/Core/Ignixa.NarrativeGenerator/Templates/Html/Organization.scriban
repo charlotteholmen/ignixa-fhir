@@ -1,0 +1,56 @@
+﻿{{~ # Auto-generated Scriban narrative template for Organization ~}}
+{{~ # FHIR StructureDefinition: http://hl7.org/fhir/StructureDefinition/Organization ~}}
+
+<div class="fhir-narrative fhir-organization" lang="{{ l10n.lang }}" dir="{{ l10n.is_rtl ? "rtl" : "ltr" }}">
+  <div class="fhir-header">
+    <h3 class="fhir-resource-type">{{ l10n.t "Organization.Title" }}</h3>
+    {{~ if (fhir.exists resource "id") ~}}
+    <span class="fhir-id"Organization.Id" }}">{{ fhir.path resource "id" }}</span>
+    {{~ end ~}}
+  </div>
+
+  <dl class="fhir-details">
+    {{~ if (fhir.exists resource "id") ~}}
+    <dt>{{ l10n.t "Organization.Id" }}</dt>
+    <dd>{{ fhir.path resource "id" }}</dd>
+    {{~ end ~}}
+    {{~ dt_resource = resource ~}}
+    {{~ dt_path = "identifier" ~}}
+    {{~ dt_label_key = "Organization.Identifier" ~}}
+    {{~ dt_section = false ~}}
+    {{~ include "Html/Datatypes/Identifier" ~}}
+    {{~ if (fhir.exists resource "name") ~}}
+    <dt>{{ l10n.t "Organization.Name" }}</dt>
+    <dd>{{ fhir.path resource "name" }}</dd>
+    {{~ end ~}}
+    {{~ if (fhir.exists resource "text") ~}}
+    <dt>{{ l10n.t "Organization.Text" }}</dt>
+    <dd>{{ fhir.path resource "text" }}</dd>
+    {{~ end ~}}
+    {{~ if (fhir.exists resource "description") ~}}
+    <dt>{{ l10n.t "Organization.Description" }}</dt>
+    <dd>{{ fhir.path resource "description" }}</dd>
+    {{~ end ~}}
+    {{~ if (fhir.exists resource "active") ~}}
+    <dt>{{ l10n.t "Organization.Active" }}</dt>
+    {{~ bool_value = fhir.path resource "active" ~}}
+    <dd>
+      {{~ if bool_value == "true" ~}}
+        {{ l10n.t "Common.Yes" }}
+      {{~ else ~}}
+        {{ l10n.t "Common.No" }}
+      {{~ end ~}}
+    </dd>
+    {{~ end ~}}
+    {{~ dt_resource = resource ~}}
+    {{~ dt_path = "type" ~}}
+    {{~ dt_label_key = "Organization.Type" ~}}
+    {{~ include "Html/Datatypes/CodeableConcept" ~}}
+    {{~ dt_resource = resource ~}}
+    {{~ dt_path = "partOf" ~}}
+    {{~ dt_label_key = "Organization.PartOf" ~}}
+    {{~ dt_single = true ~}}
+    {{~ include "Html/Datatypes/Reference" ~}}
+  </dl>
+
+</div>

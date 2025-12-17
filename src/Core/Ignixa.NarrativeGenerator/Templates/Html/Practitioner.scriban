@@ -1,0 +1,71 @@
+﻿{{~ # Auto-generated Scriban narrative template for Practitioner ~}}
+{{~ # FHIR StructureDefinition: http://hl7.org/fhir/StructureDefinition/Practitioner ~}}
+
+<div class="fhir-narrative fhir-practitioner" lang="{{ l10n.lang }}" dir="{{ l10n.is_rtl ? "rtl" : "ltr" }}">
+  <div class="fhir-header">
+    <h3 class="fhir-resource-type">{{ l10n.t "Practitioner.Title" }}</h3>
+    {{~ if (fhir.exists resource "id") ~}}
+    <span class="fhir-id"Practitioner.Id" }}">{{ fhir.path resource "id" }}</span>
+    {{~ end ~}}
+  </div>
+
+  <dl class="fhir-details">
+    {{~ if (fhir.exists resource "id") ~}}
+    <dt>{{ l10n.t "Practitioner.Id" }}</dt>
+    <dd>{{ fhir.path resource "id" }}</dd>
+    {{~ end ~}}
+    {{~ dt_resource = resource ~}}
+    {{~ dt_path = "identifier" ~}}
+    {{~ dt_label_key = "Practitioner.Identifier" ~}}
+    {{~ dt_section = false ~}}
+    {{~ include "Html/Datatypes/Identifier" ~}}
+    {{~ dt_resource = resource ~}}
+    {{~ dt_path = "name" ~}}
+    {{~ dt_label_key = "Practitioner.Name" ~}}
+    {{~ dt_section = false ~}}
+    {{~ include "Html/Datatypes/HumanName" ~}}
+    {{~ if (fhir.exists resource "text") ~}}
+    <dt>{{ l10n.t "Practitioner.Text" }}</dt>
+    <dd>{{ fhir.path resource "text" }}</dd>
+    {{~ end ~}}
+    {{~ if (fhir.exists resource "active") ~}}
+    <dt>{{ l10n.t "Practitioner.Active" }}</dt>
+    {{~ bool_value = fhir.path resource "active" ~}}
+    <dd>
+      {{~ if bool_value == "true" ~}}
+        {{ l10n.t "Common.Yes" }}
+      {{~ else ~}}
+        {{ l10n.t "Common.No" }}
+      {{~ end ~}}
+    </dd>
+    {{~ end ~}}
+    {{~ dt_resource = resource ~}}
+    {{~ dt_path = "telecom" ~}}
+    {{~ dt_label_key = "Practitioner.Telecom" ~}}
+    {{~ include "Html/Datatypes/ContactPoint" ~}}
+    {{~ if (fhir.exists resource "gender") ~}}
+    <dt>{{ l10n.t "Practitioner.Gender" }}</dt>
+    <dd>{{ fhir.path resource "gender" }}</dd>
+    {{~ end ~}}
+    {{~ if (fhir.exists resource "birthDate") ~}}
+    <dt>{{ l10n.t "Practitioner.BirthDate" }}</dt>
+    <dd>{{ fhir.format_date (fhir.path resource "birthDate") }}</dd>
+    {{~ end ~}}
+    {{~ if (fhir.exists resource "deceased[x]") ~}}
+    <dt>{{ l10n.t "Practitioner.Deceased" }}</dt>
+    {{~ bool_value = fhir.path resource "deceased[x]" ~}}
+    <dd>
+      {{~ if bool_value == "true" ~}}
+        {{ l10n.t "Common.Yes" }}
+      {{~ else ~}}
+        {{ l10n.t "Common.No" }}
+      {{~ end ~}}
+    </dd>
+    {{~ end ~}}
+    {{~ dt_resource = resource ~}}
+    {{~ dt_path = "address" ~}}
+    {{~ dt_label_key = "Practitioner.Address" ~}}
+    {{~ include "Html/Datatypes/Address" ~}}
+  </dl>
+
+</div>
