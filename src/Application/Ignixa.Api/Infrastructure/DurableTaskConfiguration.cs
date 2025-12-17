@@ -3,6 +3,7 @@ using Azure.Identity;
 using Azure.Storage.Common;
 using DurableTask.AzureStorage;
 using DurableTask.Core;
+using DurableTask.SqlServer;
 using Ignixa.Application.BackgroundOperations.Export.Activities;
 using Ignixa.Application.BackgroundOperations.Export.Orchestrations;
 using Ignixa.Application.BackgroundOperations.Import.Orchestrations;
@@ -22,18 +23,21 @@ public static class DurableTaskConfiguration
 {
     /// <summary>
     /// Registers DurableTask services with the service collection.
-    /// Supports FileSystem and AzureStorage orchestration service providers.
+    /// Supports FileSystem, SqlServer, and AzureStorage orchestration service providers.
     /// </summary>
     public static IServiceCollection AddDurableTask(this IServiceCollection services)
     {
         services.AddSingleton<IOrchestrationService>(sp =>
         {
             var configuration = sp.GetRequiredService<IConfiguration>();
-            var provider = configuration["DurableTask:Provider"] ?? "FileSystem";
+            var provider = configuration["DurableTask:Provider"] ?? "SqlServer";
 
-            return provider.Equals("AzureStorage", StringComparison.OrdinalIgnoreCase)
-                ? CreateAzureStorageOrchestrationService(sp, configuration)
-                : CreateFileBasedOrchestrationService(sp, configuration);
+            return provider.ToUpperInvariant() switch
+            {
+                "SQLSERVER" => CreateSqlServerOrchestrationService(sp, configuration),
+                "AZURESTORAGE" => CreateAzureStorageOrchestrationService(sp, configuration),
+                _ => CreateFileBasedOrchestrationService(sp, configuration),
+            };
         });
 
         // Register TaskHubWorker
@@ -96,6 +100,90 @@ public static class DurableTaskConfiguration
             },
             logger,
             innerLogger);
+    }
+
+    /// <summary>
+    /// Creates a SQL Server-based orchestration service for production use.
+    /// Uses SQL Server for orchestration state with no additional dependencies beyond existing SQL Server.
+    /// Schema is automatically initialized via CreateIfNotExistsAsync in the hosted service.
+    /// </summary>
+    private static IOrchestrationService CreateSqlServerOrchestrationService(IServiceProvider sp, IConfiguration configuration)
+    {
+        var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+        var logger = loggerFactory.CreateLogger("DurableTask.SqlServer");
+
+        // Get connection string from Tenant 0 (system partition) settings
+        // Tenant 0 may inherit its connection string from another tenant (default: Tenant 1)
+        var connectionString = GetSystemPartitionConnectionString(configuration);
+
+        if (string.IsNullOrEmpty(connectionString))
+        {
+            throw new InvalidOperationException(
+                "DurableTask SqlServer connection string not found. Ensure Tenant 0 (system partition) has a valid " +
+                "SQL Server connection string configured, either directly or via InheritConnectionStringFromTenant.");
+        }
+
+        var taskHubName = configuration["DurableTask:SqlServer:TaskHubName"] ?? "ignixa";
+
+        logger.LogInformation(
+            "Initializing DurableTask with SQL Server backend (TaskHub: {TaskHubName})",
+            taskHubName);
+
+        var settings = new SqlOrchestrationServiceSettings(connectionString, taskHubName);
+
+        return new SqlOrchestrationService(settings);
+    }
+
+    /// <summary>
+    /// Gets the connection string from Tenant 0 (system partition).
+    /// If Tenant 0 has no direct connection string, it inherits from the tenant specified by InheritConnectionStringFromTenant.
+    /// </summary>
+    private static string? GetSystemPartitionConnectionString(IConfiguration configuration)
+    {
+        var tenantsSection = configuration.GetSection("Tenants:Configurations");
+        if (!tenantsSection.Exists())
+        {
+            return null;
+        }
+
+        // Find Tenant 0 (system partition) configuration
+        IConfigurationSection? tenant0Section = null;
+        foreach (var tenantSection in tenantsSection.GetChildren())
+        {
+            var tenantId = tenantSection.GetValue<int>("TenantId", -1);
+            if (tenantId == 0)
+            {
+                tenant0Section = tenantSection;
+                break;
+            }
+        }
+
+        if (tenant0Section == null)
+        {
+            return null;
+        }
+
+        // Check if Tenant 0 has a direct connection string
+        var connectionString = tenant0Section["Storage:ConnectionString"];
+        if (!string.IsNullOrEmpty(connectionString))
+        {
+            return connectionString;
+        }
+
+        // Tenant 0 inherits connection string from another tenant (default: Tenant 1)
+        var inheritFromTenantId = tenant0Section.GetValue<int>("Storage:InheritConnectionStringFromTenant", 1);
+
+        // Find the tenant to inherit from
+        foreach (var tenantSection in tenantsSection.GetChildren())
+        {
+            var tenantId = tenantSection.GetValue<int>("TenantId", -1);
+            if (tenantId == inheritFromTenantId)
+            {
+                return tenantSection["Storage:ConnectionString"];
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

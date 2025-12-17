@@ -1,5 +1,6 @@
 using Azure;
 using DurableTask.Core;
+using DurableTask.SqlServer;
 
 namespace Ignixa.Api.Infrastructure;
 
@@ -8,6 +9,7 @@ namespace Ignixa.Api.Infrastructure;
 /// Starts the worker in the background without blocking application startup.
 /// Stops it gracefully on shutdown.
 /// Includes retry logic for storage permission propagation delays (RBAC can take up to 5 minutes).
+/// Automatically initializes database schema for SqlServer provider.
 /// </summary>
 public class DurableTaskHostedService : BackgroundService
 {
@@ -61,11 +63,67 @@ public class DurableTaskHostedService : BackgroundService
 
     private async Task<bool> InitializeWithRetryAsync(CancellationToken stoppingToken)
     {
-        if (_orchestrationService is not DurableTask.AzureStorage.AzureStorageOrchestrationService azureService)
+        // Handle SqlServer provider - initialize schema
+        if (_orchestrationService is SqlOrchestrationService sqlService)
         {
-            return true; // Non-Azure backends don't need retry logic
+            return await InitializeSqlServerAsync(sqlService, stoppingToken);
         }
 
+        // Handle Azure Storage provider - may need retry for RBAC propagation
+        if (_orchestrationService is DurableTask.AzureStorage.AzureStorageOrchestrationService azureService)
+        {
+            return await InitializeAzureStorageAsync(azureService, stoppingToken);
+        }
+
+        // FileSystem and InMemory providers don't need initialization
+        return true;
+    }
+
+    private async Task<bool> InitializeSqlServerAsync(SqlOrchestrationService sqlService, CancellationToken stoppingToken)
+    {
+        for (int attempt = 1; attempt <= MaxRetries; attempt++)
+        {
+            try
+            {
+                _logger.LogInformation("Initializing SQL Server orchestration service schema (attempt {Attempt}/{MaxRetries})...", attempt, MaxRetries);
+                await sqlService.CreateIfNotExistsAsync();
+                _logger.LogInformation("SQL Server orchestration service schema initialized successfully");
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInformation("DurableTask SQL Server initialization cancelled");
+                return false;
+            }
+            catch (Exception ex) when (IsSqlServerTransientError(ex))
+            {
+                if (attempt == MaxRetries)
+                {
+                    _logger.LogError(ex, "SQL Server orchestration service failed to initialize after {MaxRetries} attempts", MaxRetries);
+                    return false;
+                }
+
+                var delay = TimeSpan.FromSeconds(InitialRetryDelay.TotalSeconds * attempt);
+                _logger.LogWarning(
+                    ex,
+                    "SQL Server transient error during initialization. Retrying in {Delay}... (attempt {Attempt}/{MaxRetries})",
+                    delay, attempt, MaxRetries);
+
+                await Task.Delay(delay, stoppingToken);
+            }
+            catch (Exception ex)
+            {
+                // Non-transient errors (configuration, authentication, permissions) - fail fast
+                _logger.LogError(ex, "SQL Server orchestration service initialization failed with non-transient error");
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private async Task<bool> InitializeAzureStorageAsync(DurableTask.AzureStorage.AzureStorageOrchestrationService azureService, CancellationToken stoppingToken)
+    {
         for (int attempt = 1; attempt <= MaxRetries; attempt++)
         {
             try
@@ -83,7 +141,7 @@ public class DurableTaskHostedService : BackgroundService
                     return false;
                 }
 
-                var delay = TimeSpan.FromSeconds(InitialRetryDelay.TotalSeconds * attempt); // 10s, 20s, 30s...
+                var delay = TimeSpan.FromSeconds(InitialRetryDelay.TotalSeconds * attempt);
                 _logger.LogWarning(
                     "Storage authorization failed (403). RBAC permissions may still be propagating. Retrying in {Delay}... (attempt {Attempt}/{MaxRetries})",
                     delay, attempt, MaxRetries);
@@ -111,6 +169,44 @@ public class DurableTaskHostedService : BackgroundService
         return ex.InnerException is RequestFailedException { Status: 403 }
             || ex.Message.Contains("AuthorizationFailure", StringComparison.OrdinalIgnoreCase)
             || ex.Message.Contains("not authorized", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSqlServerTransientError(Exception ex)
+    {
+        // Check for SqlException with transient error numbers
+        // See: https://learn.microsoft.com/en-us/azure/azure-sql/database/troubleshoot-common-errors-issues
+        if (ex is Microsoft.Data.SqlClient.SqlException sqlEx)
+        {
+            // Transient SQL Server error numbers
+            return sqlEx.Number switch
+            {
+                -2 => true,     // Timeout expired
+                20 => true,     // Instance does not support encryption
+                64 => true,     // Connection was successfully established but error occurred during login
+                233 => true,    // Connection initialization error
+                10053 => true,  // Connection was aborted
+                10054 => true,  // Connection was forcibly closed
+                10060 => true,  // Connection timeout
+                40143 => true,  // Connection could not be initialized
+                40197 => true,  // Service has encountered an error processing request
+                40501 => true,  // Service is busy
+                40613 => true,  // Database is not currently available
+                49918 => true,  // Not enough resources to process request
+                49919 => true,  // Cannot process create or update request
+                49920 => true,  // Cannot process request due to too many operations
+                _ => false
+            };
+        }
+
+        // Check inner exception
+        if (ex.InnerException is not null)
+        {
+            return IsSqlServerTransientError(ex.InnerException);
+        }
+
+        // Check for timeout patterns in message (fallback)
+        return ex.Message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+            && !ex.Message.Contains("login failed", StringComparison.OrdinalIgnoreCase);
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
