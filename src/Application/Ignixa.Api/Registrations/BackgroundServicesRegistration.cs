@@ -28,7 +28,7 @@ public static class BackgroundServicesRegistration
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
 
-        var terminologyAutoImportEnabled = configuration.GetValue<bool>("Terminology:EnableAutoImport", false);
+        var terminologyAutoImportEnabled = configuration.GetValue<bool>("Experimental:Features:Terminology:EnableAutoImport", false);
 
         // Index loader service
         services.AddHostedService<IndexLoaderService>();
@@ -79,13 +79,13 @@ public static class BackgroundServicesRegistration
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        var mcpEnabled = configuration.GetValue<bool>("Mcp:Enabled", true);
+        var mcpEnabled = configuration.GetValue<bool>("Experimental:Features:Mcp:Enabled", true);
         if (mcpEnabled)
         {
             services
                 .AddMcpServer()
                 .WithHttpTransport()
-                .WithToolsFromAssembly(typeof(Ignixa.Application.Features.Mcp.Tools.DiagnosticTool).Assembly)
+                .WithToolsFromAssembly(typeof(Ignixa.Application.Features.Experimental.Mcp.Tools.DiagnosticTool).Assembly)
                 .WithToolsFromAssembly(typeof(Ignixa.Application.BackgroundOperations.JobManagement.GetJobStatusTool).Assembly);
         }
 

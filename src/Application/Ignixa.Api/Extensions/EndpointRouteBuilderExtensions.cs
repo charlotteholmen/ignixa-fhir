@@ -4,6 +4,8 @@
 // -------------------------------------------------------------------------------------------------
 
 using Ignixa.Api.Endpoints;
+using Ignixa.Api.Filters;
+using Ignixa.Api.Endpoints.Experimental;
 
 namespace Ignixa.Api.Extensions;
 
@@ -45,9 +47,6 @@ public static class EndpointRouteBuilderExtensions
         // FHIR operation endpoints ($validate, etc.)
         app.MapOperationEndpoints();
 
-        // Terminology endpoints ($expand, $translate, $subsumes)
-        app.MapTerminologyEndpoints();
-
         // PATCH endpoints (direct and conditional)
         app.MapPatchEndpoints();
 
@@ -60,13 +59,25 @@ public static class EndpointRouteBuilderExtensions
         // SMART on FHIR discovery endpoints (/.well-known/smart-configuration)
         app.MapSmartDiscoveryEndpoints();
 
-        // MCP endpoints (conditional)
-        var mcpEnabled = configuration.GetValue<bool>("Mcp:Enabled", true);
-        if (mcpEnabled)
-        {
-            app.MapMcpEndpoints();
-        }
+        // Experimental endpoints (MCP, Transform, Terminology)
+        // Controlled by Experimental:Enabled and per-feature configuration
+        // Apply standard FHIR filters to experimental tenant endpoints
+        app.MapExperimentalEndpoints(configuration, ConfigureExperimentalTenantGroup);
 
         return app;
+    }
+
+    /// <summary>
+    /// Configures the experimental tenant route group with standard FHIR filters.
+    /// This ensures experimental endpoints have the same authorization, audit, metrics,
+    /// and resource type validation as core FHIR endpoints.
+    /// </summary>
+    private static void ConfigureExperimentalTenantGroup(RouteGroupBuilder tenantGroup)
+    {
+        tenantGroup
+            .AddEndpointFilter<FhirAuthorizationFilter>()
+            .AddEndpointFilter<FhirAuditFilter>()
+            .AddEndpointFilter<FhirMetricsFilter>()
+            .AddEndpointFilter<ResourceTypeValidationFilter>();
     }
 }
