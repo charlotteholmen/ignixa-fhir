@@ -4,20 +4,28 @@
 // -------------------------------------------------------------------------------------------------
 
 using Autofac;
+using Ignixa.Abstractions;
 using Ignixa.Application.Events.Package;
 using Ignixa.Application.Features.Experimental.Configuration;
+using Ignixa.Application.Features.Experimental.Ips.Api;
+using Ignixa.Application.Features.Experimental.Ips.Events;
+using Ignixa.Application.Features.Experimental.Ips.Generator;
+using Ignixa.Application.Features.Experimental.Ips.Strategy;
 using Ignixa.Application.Features.Experimental.Mcp.Authorization;
 using Ignixa.Application.Features.Experimental.Terminology.Expand;
 using Ignixa.Application.Features.Experimental.Terminology.Subsumes;
 using Ignixa.Application.Features.Experimental.Terminology.Translate;
 using Ignixa.Application.Features.Experimental.Transform;
 using Ignixa.Application.Features.Experimental.Transform.Events;
+using Ignixa.Application.Features.Search;
 using Ignixa.Application.Infrastructure;
+using Ignixa.Domain.Abstractions;
 using Ignixa.FhirMappingLanguage.Mutator;
 using Ignixa.FhirMappingLanguage.Parser;
 using Ignixa.FhirMappingLanguage.Registry;
 using Ignixa.FhirPath;
 using Ignixa.FhirPath.Evaluation;
+using Ignixa.NarrativeGenerator;
 using Ignixa.Serialization.SourceNodes;
 using Medino;
 using Microsoft.Extensions.Configuration;
@@ -67,6 +75,12 @@ public static class ExperimentalAutofacRegistration
         if (options.Features.Terminology.Enabled)
         {
             builder.RegisterTerminologyHandlers();
+        }
+
+        // Feature: Summary - Patient $summary (IPS)
+        if (options.Features.Summary.Enabled)
+        {
+            builder.RegisterIpsHandlers();
         }
 
         return builder;
@@ -149,6 +163,56 @@ public static class ExperimentalAutofacRegistration
 
         builder.RegisterType<SubsumesHandler>()
             .As<IRequestHandler<SubsumesQuery, SubsumesQueryResult>>()
+            .InstancePerDependency();
+    }
+
+    private static void RegisterIpsHandlers(this ContainerBuilder builder)
+    {
+        // NOTE: INarrativeGenerator is registered in ApplicationServicesRegistration.RegisterNarrativeServices()
+        // as it's a general-purpose service used by multiple features
+
+        // IPS Generation Strategy (singleton - stateless configuration)
+        builder.RegisterType<DefaultIpsGenerationStrategy>()
+            .As<IIpsGenerationStrategy>()
+            .SingleInstance();
+
+        // IPS Generation Strategy Registry (singleton)
+        builder.RegisterType<Ignixa.Application.Features.Experimental.Ips.Registry.IpsGenerationStrategyRegistry>()
+            .As<IIpsGenerationStrategyRegistry>()
+            .SingleInstance();
+
+        // IPS Generation Strategy Factory (singleton - stateless parser)
+        builder.RegisterType<StructureDefinitionStrategyFactory>()
+            .As<IStructureDefinitionStrategyFactory>()
+            .SingleInstance();
+
+        // ISchema (request-scoped, tenant-aware)
+        builder.Register(c =>
+        {
+            var versionContext = c.Resolve<IFhirVersionContext>();
+            var requestContextAccessor = c.Resolve<IFhirRequestContextAccessor>();
+
+            var requestContext = requestContextAccessor.RequestContext;
+            return requestContext is not null
+                ? versionContext.GetSchemaProvider(requestContext.FhirVersion, requestContext.TenantId)
+                : versionContext.GetBaseSchemaProvider(FhirVersion.R4);
+        })
+        .As<ISchema>()
+        .InstancePerLifetimeScope();
+
+        // IPS Generator Service (scoped per request - uses request context)
+        builder.RegisterType<IpsGeneratorService>()
+            .As<IIpsGeneratorService>()
+            .InstancePerLifetimeScope();
+
+        // IPS Generator Handler
+        builder.RegisterType<IpsGeneratorHandler>()
+            .As<IRequestHandler<IpsGeneratorQuery, IpsGeneratorResult>>()
+            .InstancePerDependency();
+
+        // Package loaded event handler to register IPS strategies
+        builder.RegisterType<PackageInstalledStrategyRegistrationHandler>()
+            .As<INotificationHandler<PackageLoadedEvent>>()
             .InstancePerDependency();
     }
 }

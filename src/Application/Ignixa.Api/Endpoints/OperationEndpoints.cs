@@ -41,6 +41,7 @@ public static class OperationEndpoints
     /// - POST /Patient/$member-match - Member match operation
     ///
     /// NOTE: $transform endpoints moved to Experimental/TransformEndpoints.cs
+    /// NOTE: $summary endpoints moved to Experimental/SummaryEndpoints.cs
     /// </summary>
     public static IEndpointRouteBuilder MapOperationEndpoints(this IEndpointRouteBuilder endpoints)
     {
@@ -83,6 +84,7 @@ public static class OperationEndpoints
             .Produces<object>(StatusCodes.Status404NotFound, KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
 
+        // NOTE: $summary endpoints moved to Experimental/SummaryEndpoints.cs
         // NOTE: $transform endpoints moved to Experimental/TransformEndpoints.cs
 
         // POST /Patient/$member-match - Member match operation (tenant-explicit)
@@ -130,6 +132,7 @@ public static class OperationEndpoints
             .Produces<object>(StatusCodes.Status404NotFound, KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson);
 
+        // NOTE: $summary endpoints moved to Experimental/SummaryEndpoints.cs
         // NOTE: $transform endpoints moved to Experimental/TransformEndpoints.cs
 
         // POST /Patient/$member-match - Member match operation (agnostic route)
@@ -496,6 +499,7 @@ public static class OperationEndpoints
     }
 
     // NOTE: $transform handlers moved to Experimental/TransformEndpoints.cs
+    // NOTE: $summary handlers moved to Experimental/SummaryEndpoints.cs
 
     // ==================== $member-match Operation Handlers ====================
 
