@@ -1314,4 +1314,60 @@ public class SqlEntityFrameworkSearchService : ISearchService
 
         return result.Value;
     }
+
+    /// <inheritdoc/>
+    public async IAsyncEnumerable<ReindexResourceInfo> GetResourcesForReindexAsync(
+        string resourceType,
+        long startSurrogateId,
+        long endSurrogateId,
+        long maxTransactionId,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        _logger.LogInformation(
+            "Getting resources for reindex: ResourceType={ResourceType}, Range=[{Start}..{End}], MaxTxId={MaxTxId}",
+            resourceType,
+            startSurrogateId,
+            endSurrogateId,
+            maxTransactionId);
+
+        var resourceTypeId = await GetResourceTypeIdAsync(resourceType, ct);
+        if (!resourceTypeId.HasValue)
+        {
+            _logger.LogWarning("ResourceType not found: {ResourceType}", resourceType);
+            yield break;
+        }
+
+        var query = _context.Resources
+            .Where(r => r.ResourceTypeId == resourceTypeId.Value
+                && !r.IsHistory
+                && !r.IsDeleted
+                && r.ResourceSurrogateId >= startSurrogateId
+                && r.ResourceSurrogateId <= endSurrogateId
+                && r.TransactionId <= maxTransactionId)
+            .OrderBy(r => r.ResourceSurrogateId)
+            .AsNoTracking();
+
+        _logger.LogDebug("Executing reindex query:\n{SQL}", query.ToQueryString());
+
+        long count = 0;
+        await foreach (var entity in query.AsAsyncEnumerable().WithCancellation(ct))
+        {
+            count++;
+
+            yield return new ReindexResourceInfo(
+                SurrogateId: entity.ResourceSurrogateId,
+                TransactionId: entity.TransactionId ?? 0,
+                ResourceType: resourceType,
+                ResourceId: entity.ResourceId,
+                VersionId: entity.Version.ToString(),
+                ResourceBytes: _compressor.DecompressBytes(entity.RawResource));
+        }
+
+        _logger.LogInformation(
+            "Returned {Count} resources for reindex: ResourceType={ResourceType}, Range=[{Start}..{End}]",
+            count,
+            resourceType,
+            startSurrogateId,
+            endSurrogateId);
+    }
 }

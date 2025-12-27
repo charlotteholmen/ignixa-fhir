@@ -1,5 +1,6 @@
 using Ignixa.Abstractions;
 using Ignixa.Domain.Models;
+using Ignixa.Search.Indexing;
 using Ignixa.Serialization.SourceNodes;
 
 namespace Ignixa.Domain.Abstractions;
@@ -173,5 +174,18 @@ public interface IFhirRepository
     Task HardDeleteResourceAsync(
         short resourceTypeId,
         string resourceId,
+        CancellationToken ct = default);
+
+    /// <summary>
+    /// Upserts search index entries for resources during reindexing operations.
+    /// For each resource in the batch, inserts new search index entries or updates existing ones.
+    /// Used by ReindexWorkerActivity to efficiently batch index updates.
+    /// </summary>
+    /// <param name="resourceIndices">List of (SurrogateId, SearchIndexEntries) tuples.
+    /// Each tuple contains the resource's surrogate ID and the search index entries to upsert.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Task representing the async operation.</returns>
+    Task UpsertSearchIndicesAsync(
+        IReadOnlyList<(long SurrogateId, IReadOnlyList<SearchIndexEntry> Entries)> resourceIndices,
         CancellationToken ct = default);
 }

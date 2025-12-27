@@ -359,4 +359,57 @@ public class FileBasedSearchService : ISearchService
 
         return ranges.AsReadOnly();
     }
+
+    public async IAsyncEnumerable<ReindexResourceInfo> GetResourcesForReindexAsync(
+        string resourceType,
+        long startSurrogateId,
+        long endSurrogateId,
+        long maxTransactionId,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        _logger.LogInformation(
+            "Getting resources for reindex: ResourceType={ResourceType}, Range=[{Start}..{End}], MaxTxId={MaxTxId}",
+            resourceType,
+            startSurrogateId,
+            endSurrogateId,
+            maxTransactionId);
+
+        var allMetadata = await _repository.GetResourceMetadataAsync(resourceType, ct);
+
+        if (allMetadata.Count == 0)
+        {
+            _logger.LogWarning("No resources found for ResourceType={ResourceType}", resourceType);
+            yield break;
+        }
+
+        int count = 0;
+        for (int i = (int)startSurrogateId; i <= Math.Min((int)endSurrogateId, allMetadata.Count - 1); i++)
+        {
+            var (location, _) = allMetadata[i];
+
+            var resource = await _repository.GetAsync(
+                new ResourceKey(resourceType, location.Id, null),
+                ct);
+
+            if (resource is null || resource.IsDeleted)
+                continue;
+
+            count++;
+
+            yield return new ReindexResourceInfo(
+                SurrogateId: i,
+                TransactionId: 0,
+                ResourceType: resourceType,
+                ResourceId: location.Id,
+                VersionId: location.VersionId ?? "1",
+                ResourceBytes: resource.ResourceBytes);
+        }
+
+        _logger.LogInformation(
+            "Returned {Count} resources for reindex: ResourceType={ResourceType}, Range=[{Start}..{End}]",
+            count,
+            resourceType,
+            startSurrogateId,
+            endSurrogateId);
+    }
 }

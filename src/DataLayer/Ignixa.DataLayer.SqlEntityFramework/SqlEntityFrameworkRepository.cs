@@ -12,6 +12,7 @@ using Ignixa.DataLayer.SqlEntityFramework.Indexing;
 using Ignixa.Domain.Abstractions;
 using Ignixa.Domain.Exceptions;
 using Ignixa.Domain.Models;
+using Ignixa.Search.Indexing;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 
@@ -1084,5 +1085,28 @@ public class SqlEntityFrameworkRepository : IFhirRepository
                     resourceId);
             }
         }
+    }
+
+    /// <inheritdoc/>
+    public async Task UpsertSearchIndicesAsync(
+        IReadOnlyList<(long SurrogateId, IReadOnlyList<SearchIndexEntry> Entries)> resourceIndices,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(resourceIndices);
+
+        if (resourceIndices.Count == 0)
+        {
+            return;
+        }
+
+        _logger.LogDebug(
+            "Upserting search indices for {Count} resources",
+            resourceIndices.Count);
+
+        await _sqlMergeRepository.UpsertSearchIndicesAsync(resourceIndices, ct);
+
+        _logger.LogInformation(
+            "Upserted search indices for {Count} resources",
+            resourceIndices.Count);
     }
 }

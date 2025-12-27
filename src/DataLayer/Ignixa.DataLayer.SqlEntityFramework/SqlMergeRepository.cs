@@ -12,6 +12,8 @@ using Ignixa.DataLayer.SqlEntityFramework.Indexing;
 using Ignixa.DataLayer.SqlEntityFramework.RowGenerators;
 using Ignixa.Domain.Exceptions;
 using Ignixa.Domain.Models;
+using Ignixa.Search.Indexing;
+using Ignixa.Search.Indexing.SearchValues;
 using Microsoft.Data.SqlClient;
 using Microsoft.Data.SqlClient.Server;
 using Microsoft.EntityFrameworkCore;
@@ -413,6 +415,779 @@ public class SqlMergeRepository
         return list.Count > 0 ? list : null;
     }
 
+    /// <summary>
+    /// Upserts search index entries for resources during reindexing.
+    /// Uses EF Core with proper diff/sync logic to efficiently update search indices:
+    /// - INSERT entries that don't exist
+    /// - DELETE entries that exist in DB but not in incoming set (for the specific SearchParamIds)
+    /// - UPDATE entries handled through delete+insert (EF Core change tracking)
+    /// </summary>
+    /// <param name="resourceIndices">List of (SurrogateId, SearchIndexEntries) tuples.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task UpsertSearchIndicesAsync(
+        IReadOnlyList<(long SurrogateId, IReadOnlyList<SearchIndexEntry> Entries)> resourceIndices,
+        CancellationToken cancellationToken = default)
+    {
+        if (resourceIndices == null || resourceIndices.Count == 0)
+        {
+            return;
+        }
+
+        var totalEntries = resourceIndices.Sum(ri => ri.Entries.Count);
+
+        _logger.LogDebug(
+            "UpsertSearchIndicesAsync: Starting sync for {EntryCount} index entries across {ResourceCount} resources",
+            totalEntries,
+            resourceIndices.Count);
+
+        var surrogateIds = resourceIndices.Select(r => r.SurrogateId).ToList();
+
+        var resourceTypeMap = await _context.Resources
+            .AsNoTracking()
+            .Where(r => surrogateIds.Contains(r.ResourceSurrogateId))
+            .ToDictionaryAsync(
+                r => r.ResourceSurrogateId,
+                r => r.ResourceTypeId,
+                cancellationToken);
+
+        if (resourceTypeMap.Count == 0)
+        {
+            _logger.LogWarning("UpsertSearchIndicesAsync: No resources found for provided surrogate IDs");
+            return;
+        }
+
+        var searchParamIds = new HashSet<short>();
+        foreach (var (_, entries) in resourceIndices)
+        {
+            foreach (var entry in entries)
+            {
+                var searchParamUrl = entry.SearchParameter.Url?.ToString();
+                if (!string.IsNullOrEmpty(searchParamUrl) &&
+                    _referenceDataCache.SearchParameterMappings.TryGetValue(searchParamUrl, out var spId) &&
+                    spId > 0)
+                {
+                    searchParamIds.Add(spId);
+                }
+            }
+        }
+
+        if (searchParamIds.Count == 0)
+        {
+            _logger.LogWarning("UpsertSearchIndicesAsync: No valid search parameter IDs found");
+            return;
+        }
+
+        var searchParamIdsList = searchParamIds.ToList();
+
+        await SyncTokenSearchParamsAsync(resourceIndices, resourceTypeMap, searchParamIdsList, cancellationToken);
+        await SyncTokenTextAsync(resourceIndices, resourceTypeMap, searchParamIdsList, cancellationToken);
+        await SyncStringSearchParamsAsync(resourceIndices, resourceTypeMap, searchParamIdsList, cancellationToken);
+        await SyncReferenceSearchParamsAsync(resourceIndices, resourceTypeMap, searchParamIdsList, cancellationToken);
+        await SyncNumberSearchParamsAsync(resourceIndices, resourceTypeMap, searchParamIdsList, cancellationToken);
+        await SyncQuantitySearchParamsAsync(resourceIndices, resourceTypeMap, searchParamIdsList, cancellationToken);
+        await SyncDateTimeSearchParamsAsync(resourceIndices, resourceTypeMap, searchParamIdsList, cancellationToken);
+        await SyncUriSearchParamsAsync(resourceIndices, resourceTypeMap, searchParamIdsList, cancellationToken);
+
+        _logger.LogInformation(
+            "UpsertSearchIndicesAsync: Successfully synced {EntryCount} index entries for {ResourceCount} resources",
+            totalEntries,
+            resourceIndices.Count);
+    }
+
+    private async Task SyncTokenSearchParamsAsync(
+        IReadOnlyList<(long SurrogateId, IReadOnlyList<SearchIndexEntry> Entries)> resourceIndices,
+        Dictionary<long, short> resourceTypeMap,
+        List<short> searchParamIdsList,
+        CancellationToken cancellationToken)
+    {
+        var surrogateIds = resourceIndices.Select(r => r.SurrogateId).ToList();
+
+        var existingEntries = await _context.TokenSearchParams
+            .Where(e => surrogateIds.Contains(e.ResourceSurrogateId) &&
+                       searchParamIdsList.Contains(e.SearchParamId))
+            .ToListAsync(cancellationToken);
+
+        var existingLookup = existingEntries
+            .ToLookup(e => (e.ResourceSurrogateId, e.SearchParamId, e.Code, e.SystemId));
+
+        var toInsert = new List<Entities.TokenSearchParamEntity>();
+        var processedKeys = new HashSet<(long, short, string, int?)>();
+
+        foreach (var (surrogateId, entries) in resourceIndices)
+        {
+            if (!resourceTypeMap.TryGetValue(surrogateId, out var resourceTypeId))
+                continue;
+
+            foreach (var entry in entries)
+            {
+                if (entry.Value is not TokenSearchValue tokenValue)
+                    continue;
+
+                if (string.IsNullOrEmpty(tokenValue.Code))
+                    continue;
+
+                var searchParamUrl = entry.SearchParameter.Url?.ToString();
+                if (string.IsNullOrEmpty(searchParamUrl) ||
+                    !_referenceDataCache.SearchParameterMappings.TryGetValue(searchParamUrl, out var searchParamId) ||
+                    searchParamId <= 0)
+                    continue;
+
+                int? systemId = null;
+                if (!string.IsNullOrEmpty(tokenValue.System) &&
+                    _referenceDataCache.SystemMappings.TryGetValue(tokenValue.System, out var sysId))
+                {
+                    systemId = sysId;
+                }
+
+                var key = (surrogateId, searchParamId, tokenValue.Code, systemId);
+                processedKeys.Add(key);
+
+                if (!existingLookup[key].Any())
+                {
+                    var entity = new Entities.TokenSearchParamEntity
+                    {
+                        ResourceTypeId = resourceTypeId,
+                        ResourceSurrogateId = surrogateId,
+                        SearchParamId = searchParamId,
+                        SystemId = systemId,
+                        Code = tokenValue.Code.Length > 256 ? tokenValue.Code[..256] : tokenValue.Code,
+                        CodeOverflow = tokenValue.Code.Length > 256 ? tokenValue.Code[256..] : null
+                    };
+                    toInsert.Add(entity);
+                }
+            }
+        }
+
+        var toDelete = existingEntries
+            .Where(e => !processedKeys.Contains((e.ResourceSurrogateId, e.SearchParamId, e.Code, e.SystemId)))
+            .ToList();
+
+        if (toDelete.Count > 0)
+        {
+            _context.TokenSearchParams.RemoveRange(toDelete);
+        }
+
+        if (toInsert.Count > 0)
+        {
+            _context.TokenSearchParams.AddRange(toInsert);
+        }
+
+        if (toDelete.Count > 0 || toInsert.Count > 0)
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            _logger.LogDebug("TokenSearchParams: Deleted {Deleted}, Inserted {Inserted}", toDelete.Count, toInsert.Count);
+        }
+    }
+
+    private async Task SyncTokenTextAsync(
+        IReadOnlyList<(long SurrogateId, IReadOnlyList<SearchIndexEntry> Entries)> resourceIndices,
+        Dictionary<long, short> resourceTypeMap,
+        List<short> searchParamIdsList,
+        CancellationToken cancellationToken)
+    {
+        var surrogateIds = resourceIndices.Select(r => r.SurrogateId).ToList();
+
+        var existingEntries = await _context.TokenTexts
+            .Where(e => surrogateIds.Contains(e.ResourceSurrogateId) &&
+                       searchParamIdsList.Contains(e.SearchParamId))
+            .ToListAsync(cancellationToken);
+
+        var existingLookup = existingEntries
+            .ToLookup(e => (e.ResourceSurrogateId, e.SearchParamId, e.Text));
+
+        var toInsert = new List<Entities.TokenTextEntity>();
+        var processedKeys = new HashSet<(long, short, string)>();
+
+        foreach (var (surrogateId, entries) in resourceIndices)
+        {
+            if (!resourceTypeMap.TryGetValue(surrogateId, out var resourceTypeId))
+                continue;
+
+            foreach (var entry in entries)
+            {
+                if (entry.Value is not TokenSearchValue tokenValue)
+                    continue;
+
+                if (string.IsNullOrEmpty(tokenValue.Text))
+                    continue;
+
+                var searchParamUrl = entry.SearchParameter.Url?.ToString();
+                if (string.IsNullOrEmpty(searchParamUrl) ||
+                    !_referenceDataCache.SearchParameterMappings.TryGetValue(searchParamUrl, out var searchParamId) ||
+                    searchParamId <= 0)
+                    continue;
+
+                var text = tokenValue.Text.Length > 400 ? tokenValue.Text[..400] : tokenValue.Text;
+                var key = (surrogateId, searchParamId, text);
+                processedKeys.Add(key);
+
+                if (!existingLookup[key].Any())
+                {
+                    var entity = new Entities.TokenTextEntity
+                    {
+                        ResourceTypeId = resourceTypeId,
+                        ResourceSurrogateId = surrogateId,
+                        SearchParamId = searchParamId,
+                        Text = text,
+                        IsHistory = false
+                    };
+                    toInsert.Add(entity);
+                }
+            }
+        }
+
+        var toDelete = existingEntries
+            .Where(e => !processedKeys.Contains((e.ResourceSurrogateId, e.SearchParamId, e.Text)))
+            .ToList();
+
+        if (toDelete.Count > 0)
+        {
+            _context.TokenTexts.RemoveRange(toDelete);
+        }
+
+        if (toInsert.Count > 0)
+        {
+            _context.TokenTexts.AddRange(toInsert);
+        }
+
+        if (toDelete.Count > 0 || toInsert.Count > 0)
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            _logger.LogDebug("TokenText: Deleted {Deleted}, Inserted {Inserted}", toDelete.Count, toInsert.Count);
+        }
+    }
+
+    private async Task SyncStringSearchParamsAsync(
+        IReadOnlyList<(long SurrogateId, IReadOnlyList<SearchIndexEntry> Entries)> resourceIndices,
+        Dictionary<long, short> resourceTypeMap,
+        List<short> searchParamIdsList,
+        CancellationToken cancellationToken)
+    {
+        var surrogateIds = resourceIndices.Select(r => r.SurrogateId).ToList();
+
+        var existingEntries = await _context.StringSearchParams
+            .Where(e => surrogateIds.Contains(e.ResourceSurrogateId) &&
+                       searchParamIdsList.Contains(e.SearchParamId))
+            .ToListAsync(cancellationToken);
+
+        var existingLookup = existingEntries
+            .ToLookup(e => (e.ResourceSurrogateId, e.SearchParamId, e.Text));
+
+        var toInsert = new List<Entities.StringSearchParamEntity>();
+        var processedKeys = new HashSet<(long, short, string)>();
+
+        foreach (var (surrogateId, entries) in resourceIndices)
+        {
+            if (!resourceTypeMap.TryGetValue(surrogateId, out var resourceTypeId))
+                continue;
+
+            foreach (var entry in entries)
+            {
+                if (entry.Value is not StringSearchValue stringValue)
+                    continue;
+
+                var searchParamUrl = entry.SearchParameter.Url?.ToString();
+                if (string.IsNullOrEmpty(searchParamUrl) ||
+                    !_referenceDataCache.SearchParameterMappings.TryGetValue(searchParamUrl, out var searchParamId) ||
+                    searchParamId <= 0)
+                    continue;
+
+                var text = stringValue.String ?? string.Empty;
+                if (string.IsNullOrEmpty(text))
+                    continue;
+
+                var normalizedText = text.Length > 256 ? text[..256] : text;
+                var key = (surrogateId, searchParamId, normalizedText);
+                processedKeys.Add(key);
+
+                if (!existingLookup[key].Any())
+                {
+                    var entity = new Entities.StringSearchParamEntity
+                    {
+                        ResourceTypeId = resourceTypeId,
+                        ResourceSurrogateId = surrogateId,
+                        SearchParamId = searchParamId,
+                        Text = normalizedText,
+                        TextOverflow = text.Length > 256 ? text[256..] : null,
+                        IsMin = stringValue.IsMin,
+                        IsMax = stringValue.IsMax
+                    };
+                    toInsert.Add(entity);
+                }
+            }
+        }
+
+        var toDelete = existingEntries
+            .Where(e => !processedKeys.Contains((e.ResourceSurrogateId, e.SearchParamId, e.Text)))
+            .ToList();
+
+        if (toDelete.Count > 0)
+        {
+            _context.StringSearchParams.RemoveRange(toDelete);
+        }
+
+        if (toInsert.Count > 0)
+        {
+            _context.StringSearchParams.AddRange(toInsert);
+        }
+
+        if (toDelete.Count > 0 || toInsert.Count > 0)
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            _logger.LogDebug("StringSearchParams: Deleted {Deleted}, Inserted {Inserted}", toDelete.Count, toInsert.Count);
+        }
+    }
+
+    private async Task SyncReferenceSearchParamsAsync(
+        IReadOnlyList<(long SurrogateId, IReadOnlyList<SearchIndexEntry> Entries)> resourceIndices,
+        Dictionary<long, short> resourceTypeMap,
+        List<short> searchParamIdsList,
+        CancellationToken cancellationToken)
+    {
+        var surrogateIds = resourceIndices.Select(r => r.SurrogateId).ToList();
+
+        var existingEntries = await _context.ReferenceSearchParams
+            .Where(e => surrogateIds.Contains(e.ResourceSurrogateId) &&
+                       searchParamIdsList.Contains(e.SearchParamId))
+            .ToListAsync(cancellationToken);
+
+        var existingLookup = existingEntries
+            .ToLookup(e => (e.ResourceSurrogateId, e.SearchParamId, e.ReferenceResourceId, e.ReferenceResourceTypeId, e.BaseUri));
+
+        var toInsert = new List<Entities.ReferenceSearchParamEntity>();
+        var processedKeys = new HashSet<(long, short, string, short?, string?)>();
+
+        foreach (var (surrogateId, entries) in resourceIndices)
+        {
+            if (!resourceTypeMap.TryGetValue(surrogateId, out var resourceTypeId))
+                continue;
+
+            foreach (var entry in entries)
+            {
+                if (entry.Value is not ReferenceSearchValue refValue)
+                    continue;
+
+                var searchParamUrl = entry.SearchParameter.Url?.ToString();
+                if (string.IsNullOrEmpty(searchParamUrl) ||
+                    !_referenceDataCache.SearchParameterMappings.TryGetValue(searchParamUrl, out var searchParamId) ||
+                    searchParamId <= 0)
+                    continue;
+
+                short? refResourceTypeId = null;
+                if (!string.IsNullOrEmpty(refValue.ResourceType) &&
+                    _referenceDataCache.ResourceTypeMappings.TryGetValue(refValue.ResourceType, out var rtId))
+                {
+                    refResourceTypeId = rtId;
+                }
+
+                var baseUri = refValue.BaseUri?.ToString();
+                if (baseUri is { Length: > 128 })
+                {
+                    baseUri = baseUri[..128];
+                }
+
+                var key = (surrogateId, searchParamId, refValue.ResourceId, refResourceTypeId, baseUri);
+                processedKeys.Add(key);
+
+                if (!existingLookup[key].Any())
+                {
+                    var entity = new Entities.ReferenceSearchParamEntity
+                    {
+                        ResourceTypeId = resourceTypeId,
+                        ResourceSurrogateId = surrogateId,
+                        SearchParamId = searchParamId,
+                        BaseUri = baseUri,
+                        ReferenceResourceTypeId = refResourceTypeId,
+                        ReferenceResourceId = refValue.ResourceId.Length > 64 ? refValue.ResourceId[..64] : refValue.ResourceId,
+                        ReferenceResourceVersion = null
+                    };
+                    toInsert.Add(entity);
+                }
+            }
+        }
+
+        var toDelete = existingEntries
+            .Where(e => !processedKeys.Contains((e.ResourceSurrogateId, e.SearchParamId, e.ReferenceResourceId, e.ReferenceResourceTypeId, e.BaseUri)))
+            .ToList();
+
+        if (toDelete.Count > 0)
+        {
+            _context.ReferenceSearchParams.RemoveRange(toDelete);
+        }
+
+        if (toInsert.Count > 0)
+        {
+            _context.ReferenceSearchParams.AddRange(toInsert);
+        }
+
+        if (toDelete.Count > 0 || toInsert.Count > 0)
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            _logger.LogDebug("ReferenceSearchParams: Deleted {Deleted}, Inserted {Inserted}", toDelete.Count, toInsert.Count);
+        }
+    }
+
+    private async Task SyncNumberSearchParamsAsync(
+        IReadOnlyList<(long SurrogateId, IReadOnlyList<SearchIndexEntry> Entries)> resourceIndices,
+        Dictionary<long, short> resourceTypeMap,
+        List<short> searchParamIdsList,
+        CancellationToken cancellationToken)
+    {
+        var surrogateIds = resourceIndices.Select(r => r.SurrogateId).ToList();
+
+        var existingEntries = await _context.NumberSearchParams
+            .Where(e => surrogateIds.Contains(e.ResourceSurrogateId) &&
+                       searchParamIdsList.Contains(e.SearchParamId))
+            .ToListAsync(cancellationToken);
+
+        var existingLookup = existingEntries
+            .ToDictionary(e => (e.ResourceSurrogateId, e.SearchParamId));
+
+        var toInsert = new List<Entities.NumberSearchParamEntity>();
+        var toUpdate = new List<Entities.NumberSearchParamEntity>();
+        var processedKeys = new HashSet<(long, short)>();
+
+        foreach (var (surrogateId, entries) in resourceIndices)
+        {
+            if (!resourceTypeMap.TryGetValue(surrogateId, out var resourceTypeId))
+                continue;
+
+            foreach (var entry in entries)
+            {
+                if (entry.Value is not NumberSearchValue numValue)
+                    continue;
+
+                var searchParamUrl = entry.SearchParameter.Url?.ToString();
+                if (string.IsNullOrEmpty(searchParamUrl) ||
+                    !_referenceDataCache.SearchParameterMappings.TryGetValue(searchParamUrl, out var searchParamId) ||
+                    searchParamId <= 0)
+                    continue;
+
+                var key = (surrogateId, searchParamId);
+                processedKeys.Add(key);
+
+                var singleValue = numValue.Low == numValue.High ? numValue.Low : null;
+                var lowValue = numValue.Low ?? 0m;
+                var highValue = numValue.High ?? 0m;
+
+                if (existingLookup.TryGetValue(key, out var existing))
+                {
+                    if (existing.SingleValue != singleValue ||
+                        existing.LowValue != lowValue ||
+                        existing.HighValue != highValue)
+                    {
+                        existing.SingleValue = singleValue;
+                        existing.LowValue = lowValue;
+                        existing.HighValue = highValue;
+                        toUpdate.Add(existing);
+                    }
+                }
+                else
+                {
+                    var entity = new Entities.NumberSearchParamEntity
+                    {
+                        ResourceTypeId = resourceTypeId,
+                        ResourceSurrogateId = surrogateId,
+                        SearchParamId = searchParamId,
+                        SingleValue = singleValue,
+                        LowValue = lowValue,
+                        HighValue = highValue
+                    };
+                    toInsert.Add(entity);
+                }
+            }
+        }
+
+        var toDelete = existingEntries
+            .Where(e => !processedKeys.Contains((e.ResourceSurrogateId, e.SearchParamId)))
+            .ToList();
+
+        if (toDelete.Count > 0)
+        {
+            _context.NumberSearchParams.RemoveRange(toDelete);
+        }
+
+        if (toInsert.Count > 0)
+        {
+            _context.NumberSearchParams.AddRange(toInsert);
+        }
+
+        if (toDelete.Count > 0 || toInsert.Count > 0 || toUpdate.Count > 0)
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            _logger.LogDebug("NumberSearchParams: Deleted {Deleted}, Inserted {Inserted}, Updated {Updated}",
+                toDelete.Count, toInsert.Count, toUpdate.Count);
+        }
+    }
+
+    private async Task SyncQuantitySearchParamsAsync(
+        IReadOnlyList<(long SurrogateId, IReadOnlyList<SearchIndexEntry> Entries)> resourceIndices,
+        Dictionary<long, short> resourceTypeMap,
+        List<short> searchParamIdsList,
+        CancellationToken cancellationToken)
+    {
+        var surrogateIds = resourceIndices.Select(r => r.SurrogateId).ToList();
+
+        var existingEntries = await _context.QuantitySearchParams
+            .Where(e => surrogateIds.Contains(e.ResourceSurrogateId) &&
+                       searchParamIdsList.Contains(e.SearchParamId))
+            .ToListAsync(cancellationToken);
+
+        var existingLookup = existingEntries
+            .ToDictionary(e => (e.ResourceSurrogateId, e.SearchParamId));
+
+        var toInsert = new List<Entities.QuantitySearchParamEntity>();
+        var toUpdate = new List<Entities.QuantitySearchParamEntity>();
+        var processedKeys = new HashSet<(long, short)>();
+
+        foreach (var (surrogateId, entries) in resourceIndices)
+        {
+            if (!resourceTypeMap.TryGetValue(surrogateId, out var resourceTypeId))
+                continue;
+
+            foreach (var entry in entries)
+            {
+                if (entry.Value is not QuantitySearchValue qtyValue)
+                    continue;
+
+                var searchParamUrl = entry.SearchParameter.Url?.ToString();
+                if (string.IsNullOrEmpty(searchParamUrl) ||
+                    !_referenceDataCache.SearchParameterMappings.TryGetValue(searchParamUrl, out var searchParamId) ||
+                    searchParamId <= 0)
+                    continue;
+
+                int? systemId = null;
+                if (!string.IsNullOrEmpty(qtyValue.System) &&
+                    _referenceDataCache.SystemMappings.TryGetValue(qtyValue.System, out var sysId))
+                {
+                    systemId = sysId;
+                }
+
+                int? quantityCodeId = null;
+                if (!string.IsNullOrEmpty(qtyValue.Code) &&
+                    _referenceDataCache.QuantityCodeMappings.TryGetValue(qtyValue.Code, out var qcId))
+                {
+                    quantityCodeId = qcId;
+                }
+
+                var key = (surrogateId, searchParamId);
+                processedKeys.Add(key);
+
+                var singleValue = qtyValue.Low == qtyValue.High ? qtyValue.Low : null;
+                var lowValue = qtyValue.Low ?? 0m;
+                var highValue = qtyValue.High ?? 0m;
+
+                if (existingLookup.TryGetValue(key, out var existing))
+                {
+                    if (existing.SystemId != systemId ||
+                        existing.QuantityCodeId != quantityCodeId ||
+                        existing.SingleValue != singleValue ||
+                        existing.LowValue != lowValue ||
+                        existing.HighValue != highValue)
+                    {
+                        existing.SystemId = systemId;
+                        existing.QuantityCodeId = quantityCodeId;
+                        existing.SingleValue = singleValue;
+                        existing.LowValue = lowValue;
+                        existing.HighValue = highValue;
+                        toUpdate.Add(existing);
+                    }
+                }
+                else
+                {
+                    var entity = new Entities.QuantitySearchParamEntity
+                    {
+                        ResourceTypeId = resourceTypeId,
+                        ResourceSurrogateId = surrogateId,
+                        SearchParamId = searchParamId,
+                        SystemId = systemId,
+                        QuantityCodeId = quantityCodeId,
+                        SingleValue = singleValue,
+                        LowValue = lowValue,
+                        HighValue = highValue
+                    };
+                    toInsert.Add(entity);
+                }
+            }
+        }
+
+        var toDelete = existingEntries
+            .Where(e => !processedKeys.Contains((e.ResourceSurrogateId, e.SearchParamId)))
+            .ToList();
+
+        if (toDelete.Count > 0)
+        {
+            _context.QuantitySearchParams.RemoveRange(toDelete);
+        }
+
+        if (toInsert.Count > 0)
+        {
+            _context.QuantitySearchParams.AddRange(toInsert);
+        }
+
+        if (toDelete.Count > 0 || toInsert.Count > 0 || toUpdate.Count > 0)
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            _logger.LogDebug("QuantitySearchParams: Deleted {Deleted}, Inserted {Inserted}, Updated {Updated}",
+                toDelete.Count, toInsert.Count, toUpdate.Count);
+        }
+    }
+
+    private async Task SyncDateTimeSearchParamsAsync(
+        IReadOnlyList<(long SurrogateId, IReadOnlyList<SearchIndexEntry> Entries)> resourceIndices,
+        Dictionary<long, short> resourceTypeMap,
+        List<short> searchParamIdsList,
+        CancellationToken cancellationToken)
+    {
+        var surrogateIds = resourceIndices.Select(r => r.SurrogateId).ToList();
+
+        var existingEntries = await _context.DateTimeSearchParams
+            .Where(e => surrogateIds.Contains(e.ResourceSurrogateId) &&
+                       searchParamIdsList.Contains(e.SearchParamId))
+            .ToListAsync(cancellationToken);
+
+        var existingLookup = existingEntries
+            .ToLookup(e => (e.ResourceSurrogateId, e.SearchParamId, e.StartDateTime));
+
+        var toInsert = new List<Entities.DateTimeSearchParamEntity>();
+        var processedKeys = new HashSet<(long, short, DateTime)>();
+
+        foreach (var (surrogateId, entries) in resourceIndices)
+        {
+            if (!resourceTypeMap.TryGetValue(surrogateId, out var resourceTypeId))
+                continue;
+
+            foreach (var entry in entries)
+            {
+                if (entry.Value is not DateTimeSearchValue dtValue)
+                    continue;
+
+                var searchParamUrl = entry.SearchParameter.Url?.ToString();
+                if (string.IsNullOrEmpty(searchParamUrl) ||
+                    !_referenceDataCache.SearchParameterMappings.TryGetValue(searchParamUrl, out var searchParamId) ||
+                    searchParamId <= 0)
+                    continue;
+
+                var startDateTime = dtValue.Start.UtcDateTime;
+                var key = (surrogateId, searchParamId, startDateTime);
+                processedKeys.Add(key);
+
+                if (!existingLookup[key].Any())
+                {
+                    var entity = new Entities.DateTimeSearchParamEntity
+                    {
+                        ResourceTypeId = resourceTypeId,
+                        ResourceSurrogateId = surrogateId,
+                        SearchParamId = searchParamId,
+                        StartDateTime = startDateTime,
+                        EndDateTime = dtValue.End.UtcDateTime,
+                        IsLongerThanADay = (dtValue.End - dtValue.Start).TotalDays > 1,
+                        IsMin = dtValue.IsMin,
+                        IsMax = dtValue.IsMax
+                    };
+                    toInsert.Add(entity);
+                }
+            }
+        }
+
+        var toDelete = existingEntries
+            .Where(e => !processedKeys.Contains((e.ResourceSurrogateId, e.SearchParamId, e.StartDateTime)))
+            .ToList();
+
+        if (toDelete.Count > 0)
+        {
+            _context.DateTimeSearchParams.RemoveRange(toDelete);
+        }
+
+        if (toInsert.Count > 0)
+        {
+            _context.DateTimeSearchParams.AddRange(toInsert);
+        }
+
+        if (toDelete.Count > 0 || toInsert.Count > 0)
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            _logger.LogDebug("DateTimeSearchParams: Deleted {Deleted}, Inserted {Inserted}", toDelete.Count, toInsert.Count);
+        }
+    }
+
+    private async Task SyncUriSearchParamsAsync(
+        IReadOnlyList<(long SurrogateId, IReadOnlyList<SearchIndexEntry> Entries)> resourceIndices,
+        Dictionary<long, short> resourceTypeMap,
+        List<short> searchParamIdsList,
+        CancellationToken cancellationToken)
+    {
+        var surrogateIds = resourceIndices.Select(r => r.SurrogateId).ToList();
+
+        var existingEntries = await _context.UriSearchParams
+            .Where(e => surrogateIds.Contains(e.ResourceSurrogateId) &&
+                       searchParamIdsList.Contains(e.SearchParamId))
+            .ToListAsync(cancellationToken);
+
+        var existingLookup = existingEntries
+            .ToLookup(e => (e.ResourceSurrogateId, e.SearchParamId, e.Uri));
+
+        var toInsert = new List<Entities.UriSearchParamEntity>();
+        var processedKeys = new HashSet<(long, short, string)>();
+
+        foreach (var (surrogateId, entries) in resourceIndices)
+        {
+            if (!resourceTypeMap.TryGetValue(surrogateId, out var resourceTypeId))
+                continue;
+
+            foreach (var entry in entries)
+            {
+                if (entry.Value is not UriSearchValue uriValue)
+                    continue;
+
+                var searchParamUrl = entry.SearchParameter.Url?.ToString();
+                if (string.IsNullOrEmpty(searchParamUrl) ||
+                    !_referenceDataCache.SearchParameterMappings.TryGetValue(searchParamUrl, out var searchParamId) ||
+                    searchParamId <= 0)
+                    continue;
+
+                var uri = uriValue.Uri ?? string.Empty;
+                if (string.IsNullOrEmpty(uri))
+                    continue;
+
+                var normalizedUri = uri.Length > 256 ? uri[..256] : uri;
+                var key = (surrogateId, searchParamId, normalizedUri);
+                processedKeys.Add(key);
+
+                if (!existingLookup[key].Any())
+                {
+                    var entity = new Entities.UriSearchParamEntity
+                    {
+                        ResourceTypeId = resourceTypeId,
+                        ResourceSurrogateId = surrogateId,
+                        SearchParamId = searchParamId,
+                        Uri = normalizedUri
+                    };
+                    toInsert.Add(entity);
+                }
+            }
+        }
+
+        var toDelete = existingEntries
+            .Where(e => !processedKeys.Contains((e.ResourceSurrogateId, e.SearchParamId, e.Uri)))
+            .ToList();
+
+        if (toDelete.Count > 0)
+        {
+            _context.UriSearchParams.RemoveRange(toDelete);
+        }
+
+        if (toInsert.Count > 0)
+        {
+            _context.UriSearchParams.AddRange(toInsert);
+        }
+
+        if (toDelete.Count > 0 || toInsert.Count > 0)
+        {
+            await _context.SaveChangesAsync(cancellationToken);
+            _logger.LogDebug("UriSearchParams: Deleted {Deleted}, Inserted {Inserted}", toDelete.Count, toInsert.Count);
+        }
+    }
 
     #region TVP Builders (Phase 1: Structure only, full implementation in Phase 2-3)
 

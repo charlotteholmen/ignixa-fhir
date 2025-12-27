@@ -165,7 +165,7 @@ public sealed class ConformanceState : IDisposable
             switch (evt.Data)
             {
                 case SearchParameterActivated sp:
-                    ApplySearchParameterActivated(sp, evt.Timestamp);
+                    ApplySearchParameterActivated(sp, evt);
                     break;
                 case SearchParameterReindexStarted reindex:
                     ApplyReindexStarted(reindex);
@@ -209,7 +209,7 @@ public sealed class ConformanceState : IDisposable
         }
     }
 
-    private void ApplySearchParameterActivated(SearchParameterActivated sp, DateTimeOffset timestamp)
+    private void ApplySearchParameterActivated(SearchParameterActivated sp, SourceEvent evt)
     {
         var isBaseFhir = IsBaseFhirPackage(sp.SourcePackage.Split('@')[0]);
 
@@ -227,6 +227,7 @@ public sealed class ConformanceState : IDisposable
             Components = sp.Components,
             Name = sp.Name,
             Description = sp.Description,
+            ActivationTransactionId = isBaseFhir ? 0 : evt.TransactionId,
             Status = isBaseFhir ? SearchParameterStatus.Enabled : SearchParameterStatus.Pending
         };
 

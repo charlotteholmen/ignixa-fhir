@@ -7,12 +7,14 @@ using DurableTask.SqlServer;
 using Ignixa.Application.BackgroundOperations.Export.Activities;
 using Ignixa.Application.BackgroundOperations.Export.Orchestrations;
 using Ignixa.Application.BackgroundOperations.Import.Orchestrations;
+using Ignixa.Application.BackgroundOperations.Reindex.Orchestrations;
 using Ignixa.Application.BackgroundOperations.Terminology.Orchestrations;
 using Ignixa.Application.BackgroundOperations.TransactionWatcher.Orchestrations;
 using Ignixa.Application.BackgroundOperations.TtlCleanup.Orchestrations;
 using Ignixa.DataLayer.FileSystem.DurableTask;
 using ExportCompleteJobActivity = Ignixa.Application.BackgroundOperations.Export.Activities.CompleteJobActivity;
 using ImportActivities = Ignixa.Application.BackgroundOperations.Import.Activities;
+using ReindexActivities = Ignixa.Application.BackgroundOperations.Reindex.Activities;
 using TerminologyActivities = Ignixa.Application.BackgroundOperations.Terminology.Activities;
 using TransactionWatcherActivities = Ignixa.Application.BackgroundOperations.TransactionWatcher.Activities;
 using TtlCleanupActivities = Ignixa.Application.BackgroundOperations.TtlCleanup.Activities;
@@ -53,6 +55,7 @@ public static class DurableTaskConfiguration
             // Register orchestrations (ones without DI dependencies)
             worker.AddTaskOrchestrations(typeof(ExportOrchestration));
             worker.AddTaskOrchestrations(typeof(ImportOrchestration));
+            worker.AddTaskOrchestrations(typeof(ReindexOrchestration));
             worker.AddTaskOrchestrations(typeof(TerminologyImportOrchestration));
 
             // Register orchestrations with DI dependencies
@@ -69,6 +72,11 @@ public static class DurableTaskConfiguration
             worker.AddTaskActivitiesFromInterface<ImportActivities.StreamingImportFileActivity>(sp);
             worker.AddTaskActivitiesFromInterface<ImportActivities.UpdateProgressActivity>(sp);
             worker.AddTaskActivitiesFromInterface<ImportActivities.CompleteJobActivity>(sp);
+
+            // Register Reindex activities with service provider for DI
+            worker.AddTaskActivitiesFromInterface<ReindexActivities.GetReindexRangesActivity>(sp);
+            worker.AddTaskActivitiesFromInterface<ReindexActivities.ReindexWorkerActivity>(sp);
+            worker.AddTaskActivitiesFromInterface<ReindexActivities.EmitReindexEventsActivity>(sp);
 
             // Register Terminology activities with service provider for DI
             worker.AddTaskActivitiesFromInterface<TerminologyActivities.ImportTerminologyResourceActivity>(sp);

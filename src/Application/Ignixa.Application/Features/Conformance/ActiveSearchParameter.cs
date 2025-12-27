@@ -19,6 +19,13 @@ public class ActiveSearchParameter
     public string? Name { get; init; }
     public string? Description { get; init; }
 
+    /// <summary>
+    /// Transaction ID at the time this SearchParameter was activated.
+    /// Resources with TransactionId &lt;= this value existed before activation and need reindexing.
+    /// For base FHIR parameters, this is 0 (no reindexing needed).
+    /// </summary>
+    public long ActivationTransactionId { get; set; }
+
     public SearchParameterStatus Status { get; set; }
     public string? ReindexJobId { get; set; }
 }

@@ -56,4 +56,22 @@ public interface ISearchService
         string resourceType,
         int numberOfRanges,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Streams resources within a surrogate ID range for reindexing.
+    /// Returns resources that may need reindexing (TransactionId less than or equal to maxTransactionId).
+    /// Each resource includes its TransactionId for per-SearchParameter filtering.
+    /// </summary>
+    /// <param name="resourceType">The FHIR resource type (e.g., "Patient", "Observation").</param>
+    /// <param name="startSurrogateId">Start of the surrogate ID range (inclusive).</param>
+    /// <param name="endSurrogateId">End of the surrogate ID range (inclusive).</param>
+    /// <param name="maxTransactionId">Maximum transaction ID to filter by (resources with TransactionId less than or equal to this value are returned).</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>An async stream of resources with their TransactionId for reindexing.</returns>
+    IAsyncEnumerable<ReindexResourceInfo> GetResourcesForReindexAsync(
+        string resourceType,
+        long startSurrogateId,
+        long endSurrogateId,
+        long maxTransactionId,
+        CancellationToken ct = default);
 }

@@ -1209,6 +1209,16 @@ public sealed class FileBasedFhirRepository : IFhirRepository, IDisposable
         return Task.CompletedTask;
     }
 
+    /// <inheritdoc/>
+    public Task UpsertSearchIndicesAsync(
+        IReadOnlyList<(long SurrogateId, IReadOnlyList<SearchIndexEntry> Entries)> resourceIndices,
+        CancellationToken ct = default)
+    {
+        _logger.LogWarning(
+            "UpsertSearchIndicesAsync not implemented for FileBasedFhirRepository - reindexing relies on in-memory index refresh");
+        return Task.CompletedTask;
+    }
+
     private class ResourceMetadata
     {
         public string TransactionId { get; set; } = string.Empty;
