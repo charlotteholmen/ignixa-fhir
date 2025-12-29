@@ -295,6 +295,11 @@ public class SqlEntityFrameworkRepository : IFhirRepository
         // Delete ResourceTtl entry when resource is deleted (TTL no longer applies to tombstone)
         await UpsertResourceTtlAsync(resourceTypeId, key.Id, null, transactionId?.Value, ct);
 
+        // Clean up search index entries for the current version being deleted
+        // This ensures _not-referenced searches return correct results
+        // (deleted resources should not have any references in the index)
+        await DeleteSearchIndexEntriesAsync(currentEntity.ResourceSurrogateId, ct);
+
         // Save changes immediately if not part of a transaction
         if (!transactionId.HasValue)
         {
@@ -961,6 +966,25 @@ public class SqlEntityFrameworkRepository : IFhirRepository
         return expiredResources;
     }
 
+    private static readonly string[] SearchIndexTables =
+    [
+        "ReferenceSearchParam",
+        "TokenSearchParam",
+        "TokenText",
+        "StringSearchParam",
+        "UriSearchParam",
+        "NumberSearchParam",
+        "QuantitySearchParam",
+        "DateTimeSearchParam",
+        "ReferenceTokenCompositeSearchParam",
+        "TokenTokenCompositeSearchParam",
+        "TokenDateTimeCompositeSearchParam",
+        "TokenQuantityCompositeSearchParam",
+        "TokenStringCompositeSearchParam",
+        "TokenNumberNumberCompositeSearchParam",
+        "ResourceWriteClaim"
+    ];
+
     /// <inheritdoc/>
     public async Task HardDeleteResourceAsync(
         short resourceTypeId,
@@ -972,8 +996,9 @@ public class SqlEntityFrameworkRepository : IFhirRepository
             resourceTypeId,
             resourceId);
 
-        // Delete all search parameter indexes for all versions + resource versions + TTL entry
-        // Use temp table approach for efficient deletion (same SQL as TtlCleanupActivity)
+        var deleteStatements = string.Join("\n              ", SearchIndexTables.Select(table =>
+            $"DELETE FROM dbo.{table} WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);"));
+
         await _context.Database.ExecuteSqlInterpolatedAsync(
             $@"-- Create temp table to hold surrogate IDs
               DECLARE @SurrogateIds TABLE (ResourceSurrogateId BIGINT PRIMARY KEY);
@@ -985,21 +1010,7 @@ public class SqlEntityFrameworkRepository : IFhirRepository
               WHERE ResourceTypeId = {resourceTypeId} AND ResourceId = {resourceId};
 
               -- Delete all search parameter indexes
-              DELETE FROM dbo.ReferenceSearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.TokenSearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.TokenText WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.StringSearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.UriSearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.NumberSearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.QuantitySearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.DateTimeSearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.ReferenceTokenCompositeSearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.TokenTokenCompositeSearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.TokenDateTimeCompositeSearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.TokenQuantityCompositeSearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.TokenStringCompositeSearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.TokenNumberNumberCompositeSearchParam WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
-              DELETE FROM dbo.ResourceWriteClaim WHERE ResourceSurrogateId IN (SELECT ResourceSurrogateId FROM @SurrogateIds);
+              {FormattableString.Invariant($"{deleteStatements}")}
 
               -- Delete all resource versions (current + history)
               DELETE FROM dbo.Resource WHERE ResourceTypeId = {resourceTypeId} AND ResourceId = {resourceId};
@@ -1084,5 +1095,24 @@ public class SqlEntityFrameworkRepository : IFhirRepository
                     resourceId);
             }
         }
+    }
+
+    /// <summary>
+    /// Deletes all search index entries for a specific resource version.
+    /// Used during soft delete to clean up indices for the version being superseded.
+    /// This ensures _not-referenced and other searches return correct results after deletion.
+    /// </summary>
+    /// <param name="resourceSurrogateId">The surrogate ID of the resource version whose indices should be deleted.</param>
+    /// <param name="ct">Cancellation token.</param>
+    private async Task DeleteSearchIndexEntriesAsync(long resourceSurrogateId, CancellationToken ct)
+    {
+        var deleteStatements = string.Join("\n               ", SearchIndexTables.Select(table =>
+            $"DELETE FROM dbo.{table} WHERE ResourceSurrogateId = @p0;"));
+
+        await _context.Database.ExecuteSqlRawAsync(deleteStatements, [resourceSurrogateId], ct);
+
+        _logger.LogDebug(
+            "Deleted search index entries for ResourceSurrogateId={ResourceSurrogateId}",
+            resourceSurrogateId);
     }
 }
