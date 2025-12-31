@@ -1211,16 +1211,20 @@ namespace Ignixa.DataLayer.SqlEntityFramework.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<decimal?>("HighValue")
-                        .HasColumnType("decimal(18,2)");
+                        .HasColumnType("decimal(18,2)")
+                        .HasColumnName("HighValue2");
 
                     b.Property<decimal?>("LowValue")
-                        .HasColumnType("decimal(18,2)");
+                        .HasColumnType("decimal(18,2)")
+                        .HasColumnName("LowValue2");
 
                     b.Property<int?>("QuantityCodeId")
-                        .HasColumnType("int");
+                        .HasColumnType("int")
+                        .HasColumnName("QuantityCodeId2");
 
                     b.Property<decimal?>("SingleValue")
-                        .HasColumnType("decimal(18,2)");
+                        .HasColumnType("decimal(18,2)")
+                        .HasColumnName("SingleValue2");
 
                     b.Property<int?>("SystemId1")
                         .HasColumnType("int");
@@ -1260,6 +1264,15 @@ namespace Ignixa.DataLayer.SqlEntityFramework.Migrations
                     b.Property<string>("CodeOverflow")
                         .HasColumnType("nvarchar(max)")
                         .HasColumnName("CodeOverflow");
+
+                    b.Property<string>("IdentifierTypeCode")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("IdentifierTypeCode");
+
+                    b.Property<int?>("IdentifierTypeSystemId")
+                        .HasColumnType("int")
+                        .HasColumnName("IdentifierTypeSystemId");
 
                     b.Property<int?>("SystemId")
                         .HasColumnType("int")
@@ -1503,6 +1516,16 @@ namespace Ignixa.DataLayer.SqlEntityFramework.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("nvarchar(256)")
                         .HasColumnName("Uri");
+
+                    b.Property<string>("Fragment")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("Fragment");
+
+                    b.Property<string>("Version")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("Version");
 
                     b.HasKey("ResourceTypeId", "ResourceSurrogateId", "SearchParamId", "Uri");
 

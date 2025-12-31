@@ -29,9 +29,13 @@ public class CanonicalToUriSearchValueConverter : FhirElementToSearchValueConver
          * and SHOULD support automatically detecting a |[version] portion as part of the search parameter, and interpreting that
          * portion as a search on the version"
          *
-         * Because this is a URI search parameter, not a reference, the Canonical components will be separated and ignored
+         * When separateCanonicalComponents=true, the URI is parsed to extract:
+         * - Base URI (without version/fragment) stored in Uri column
+         * - Version (after |) stored in Version column
+         * - Fragment (after #) stored in Fragment column
+         * This enables :below modifier search on canonical URIs.
          */
 
-        yield return new UriSearchValue(value.Value.ToString(), true);
+        yield return new UriSearchValue(value.Value.ToString(), separateCanonicalComponents: true);
     }
 }

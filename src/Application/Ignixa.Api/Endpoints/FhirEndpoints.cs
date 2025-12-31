@@ -605,6 +605,13 @@ public static class FhirEndpoints
         // Build SearchOptions
         var searchOptions = searchOptionsBuilder.Build(resourceType, queryParameters, schemaProvider);
 
+        // Check for unsupported parameters with handling=strict
+        var strictResult = CheckStrictHandling(context, searchOptions, resourceType, logger);
+        if (strictResult is not null)
+        {
+            return strictResult;
+        }
+
         // Send search query
         var searchQuery = new SearchResourcesQuery(resourceType, searchOptions);
         SearchResourcesResult result = await mediator.SendAsync(searchQuery, ct);
@@ -688,6 +695,13 @@ public static class FhirEndpoints
         var searchOptionsBuilder = searchOptionsBuilderFactory.Create(fhirSpec, tenantId);
         var schemaProvider = versionContext.GetSchemaProvider(fhirSpec, tenantId);
         var searchOptions = searchOptionsBuilder.Build(resourceType, queryParameters, schemaProvider);
+
+        // Check for unsupported parameters with handling=strict
+        var strictResult = CheckStrictHandling(context, searchOptions, resourceType, logger);
+        if (strictResult is not null)
+        {
+            return strictResult;
+        }
 
         // Send search query
         var searchQuery = new SearchResourcesQuery(resourceType, searchOptions);
@@ -1484,6 +1498,13 @@ public static class FhirEndpoints
         // This will search across all resource types (handled by SqlEntityFrameworkSearchService)
         var searchOptions = searchOptionsBuilder.Build(null, queryParameters, schemaProvider);
 
+        // Check for unsupported parameters with handling=strict
+        var strictResult = CheckStrictHandling(context, searchOptions, null, logger);
+        if (strictResult is not null)
+        {
+            return strictResult;
+        }
+
         // Send search query for base-level search (null resourceType means search all types)
         var searchQuery = new SearchResourcesQuery(null, searchOptions);
         SearchResourcesResult result = await mediator.SendAsync(searchQuery, ct);
@@ -1565,6 +1586,13 @@ public static class FhirEndpoints
         var searchOptionsBuilder = searchOptionsBuilderFactory.Create(fhirSpec, tenantId);
         var schemaProvider = versionContext.GetSchemaProvider(fhirSpec, tenantId);
         var searchOptions = searchOptionsBuilder.Build(null, queryParameters, schemaProvider);
+
+        // Check for unsupported parameters with handling=strict
+        var strictResult = CheckStrictHandling(context, searchOptions, null, logger);
+        if (strictResult is not null)
+        {
+            return strictResult;
+        }
 
         // Send search query for base-level search (null resourceType means search all types)
         var searchQuery = new SearchResourcesQuery(null, searchOptions);
@@ -1658,6 +1686,54 @@ public static class FhirEndpoints
             Diagnostics = message
         });
         return outcome;
+    }
+
+    /// <summary>
+    /// Checks for unsupported search parameters when strict handling is requested.
+    /// Returns a BadRequest result if strict handling is enabled and unsupported parameters exist.
+    /// </summary>
+    /// <param name="context">The HTTP context.</param>
+    /// <param name="searchOptions">The search options containing unsupported params.</param>
+    /// <param name="resourceType">Optional resource type for error message context.</param>
+    /// <param name="logger">Logger for warnings.</param>
+    /// <returns>BadRequest result if strict handling fails, null otherwise.</returns>
+    private static IResult? CheckStrictHandling(
+        HttpContext context,
+        SearchOptions searchOptions,
+        string? resourceType,
+        ILogger logger)
+    {
+        if (!PreferHeaderParser.IsStrictHandling(context.Request.Headers) ||
+            searchOptions.UnsupportedParams.Count == 0)
+        {
+            return null;
+        }
+
+        // Sanitize user input to prevent log forging (remove newlines and control characters)
+        var sanitizedParams = searchOptions.UnsupportedParams
+            .Select(p => p.Replace("\r", "", StringComparison.Ordinal)
+                          .Replace("\n", "", StringComparison.Ordinal)
+                          .Replace("\t", " ", StringComparison.Ordinal));
+        logger.LogWarning(
+            "Strict handling requested but unsupported parameters found: {UnsupportedParams}",
+            string.Join(", ", sanitizedParams));
+
+        var operationOutcome = new OperationOutcomeJsonNode();
+        foreach (var param in searchOptions.UnsupportedParams)
+        {
+            var diagnostics = resourceType is not null
+                ? $"Search parameter '{param}' is not supported for resource type '{resourceType}'"
+                : $"Search parameter '{param}' is not supported";
+
+            operationOutcome.Issue.Add(new OperationOutcomeJsonNode.IssueComponent
+            {
+                Severity = OperationOutcomeJsonNode.IssueSeverity.Error,
+                Code = OperationOutcomeJsonNode.IssueType.NotSupported,
+                Diagnostics = diagnostics
+            });
+        }
+
+        return Results.BadRequest(operationOutcome.MutableNode);
     }
 
     /// <summary>

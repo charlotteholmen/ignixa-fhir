@@ -27,5 +27,9 @@ public enum FieldName
     TokenCode,
     TokenSystem,
     TokenText,
-    Uri
+    Uri,
+    UriVersion,
+    UriFragment,
+    IdentifierTypeSystem,
+    IdentifierTypeCode
 }

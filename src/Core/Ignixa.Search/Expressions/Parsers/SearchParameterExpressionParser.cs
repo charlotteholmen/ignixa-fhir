@@ -38,6 +38,10 @@ public class SearchParameterExpressionParser : ISearchParameterExpressionParser
                 (SearchParamType.Reference, referenceSearchValueParser.Parse),
                 (SearchParamType.String, StringSearchValue.Parse),
                 (SearchParamType.Token, TokenSearchValue.Parse),
+                // separateCanonicalComponents=false stores the full URI including version and fragment
+                // in the Uri column. This ensures exact matching works correctly.
+                // Note: Canonical version/fragment search requires schema migration to add
+                // separate Version/Fragment columns. Until then, use full URI matching.
                 (SearchParamType.Uri, str => UriSearchValue.Parse(str, false, fhirSchemaProvider))
             }
             .ToDictionary(entry => entry.type, entry => CreateParserWithErrorHandling(entry.parser));
@@ -75,6 +79,19 @@ public class SearchParameterExpressionParser : ISearchParameterExpressionParser
                     string.Format(CultureInfo.InvariantCulture, Resources.ModifierNotSupported, modifier, searchParameter.Code));
 
             outputExpression = Expression.StartsWith(FieldName.TokenText, null, value, true);
+        }
+        else if (modifier?.SearchModifierCode == SearchModifierCode.OfType)
+        {
+            // The :of-type modifier is used to search identifiers by their type.
+            // Format: identifier:of-type=system|code|value
+            // Where system is the Identifier.type.coding.system
+            //       code is the Identifier.type.coding.code
+            //       value is the Identifier.value
+            if (searchParameter.Type != SearchParamType.Token)
+                throw new InvalidSearchOperationException(
+                    string.Format(CultureInfo.InvariantCulture, Resources.ModifierNotSupported, modifier, searchParameter.Code));
+
+            outputExpression = BuildOfTypeExpression(searchParameter, value);
         }
         else
         {
@@ -117,8 +134,28 @@ public class SearchParameterExpressionParser : ISearchParameterExpressionParser
 
                         string componentValue = compositeValueParts[componentIndex];
 
+                        // For composite components, infer the actual type from the value since some FHIR
+                        // search parameter definitions have mismatched component definitions (e.g., DocumentReference
+                        // "relationship" parameter has swapped definitions).
+                        var effectiveSearchParameter = componentSearchParameter;
+                        var inferredType = InferSearchParamTypeFromValue(componentValue);
+                        if (inferredType.HasValue && inferredType != componentSearchParameter.Type)
+                        {
+                            // Create a synthetic search parameter info with the inferred type
+                            effectiveSearchParameter = new SearchParameterInfo(
+                                componentSearchParameter.Name,
+                                componentSearchParameter.Code,
+                                inferredType.Value,
+                                componentSearchParameter.Url,
+                                componentSearchParameter.Component,
+                                componentSearchParameter.Expression,
+                                componentSearchParameter.TargetResourceTypes,
+                                componentSearchParameter.BaseResourceTypes,
+                                componentSearchParameter.Description);
+                        }
+
                         compositeExpressions[componentIndex] = Build(
-                            componentSearchParameter,
+                            effectiveSearchParameter,
                             null,
                             componentIndex,
                             componentValue);
@@ -281,5 +318,84 @@ public class SearchParameterExpressionParser : ISearchParameterExpressionParser
                 throw new BadSearchRequestException(e.Message);
             }
         };
+    }
+
+    /// <summary>
+    /// Infers the search parameter type from the search value string.
+    /// This is used for composite components where the component definition type
+    /// may not match the actual value type due to FHIR spec inconsistencies.
+    /// Returns null when the type cannot be confidently determined, allowing
+    /// the component definition type to be used instead.
+    /// </summary>
+
+    private Expression BuildOfTypeExpression(SearchParameterInfo searchParameter, string value)
+    {
+        IReadOnlyList<string> parts = value.SplitByOrSeparator();
+        var helper = new SearchValueExpressionBuilderHelper();
+
+        if (parts.Count == 1)
+        {
+            var searchValue = OfTypeTokenSearchValue.Parse(value);
+            return helper.Build(
+                searchParameter.Code,
+                null,
+                SearchComparator.Eq,
+                null,
+                searchValue);
+        }
+        else
+        {
+            var expressions = parts.Select(part =>
+            {
+                var searchValue = OfTypeTokenSearchValue.Parse(part);
+                return helper.Build(
+                    searchParameter.Code,
+                    null,
+                    SearchComparator.Eq,
+                    null,
+                    searchValue);
+            }).ToArray();
+
+            return Expression.Or(expressions);
+        }
+    }
+
+    private static SearchParamType? InferSearchParamTypeFromValue(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return null;
+
+        // Reference values typically contain a "/" (e.g., "Patient/123", "DocumentReference/document1")
+        // or are URLs starting with http/https
+        if (value.Contains('/', StringComparison.Ordinal) && !value.Contains('|', StringComparison.Ordinal))
+        {
+            // Check if it looks like a relative reference (ResourceType/id)
+            var parts = value.Split('/');
+            if (parts.Length >= 2)
+            {
+                var potentialResourceType = parts[0];
+                // FHIR resource types are PascalCase and start with uppercase
+                if (potentialResourceType.Length > 0 &&
+                    char.IsUpper(potentialResourceType[0]) &&
+                    potentialResourceType.All(c => char.IsLetterOrDigit(c)))
+                {
+                    return SearchParamType.Reference;
+                }
+            }
+
+        }
+
+        // Token values with explicit system|code format are definitely tokens
+        // Only infer Token for values that have a pipe (system|code format)
+        // This avoids misclassifying quantities, numbers, and strings as tokens
+        if (value.Contains('|', StringComparison.Ordinal))
+        {
+            return SearchParamType.Token;
+        }
+
+        // Unable to determine - return null to use the component definition type
+        // This is the conservative approach: let the search parameter definition
+        // determine the type rather than guessing based on value format
+        return null;
     }
 }
