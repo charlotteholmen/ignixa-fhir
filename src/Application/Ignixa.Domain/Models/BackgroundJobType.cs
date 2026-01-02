@@ -37,7 +37,7 @@ public enum BackgroundJobType
     Reindex = 4,
 
     /// <summary>
-    /// FHIR bulk patch operation.
+    /// FHIR bulk update operation.
     /// </summary>
-    BulkPatch = 5,
+    BulkUpdate = 5,
 }

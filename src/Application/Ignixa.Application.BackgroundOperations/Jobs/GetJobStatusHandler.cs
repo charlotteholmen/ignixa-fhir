@@ -5,7 +5,7 @@
 
 using System.Text.Json;
 using DurableTask.Core;
-using Ignixa.Application.BackgroundOperations.BulkPatch.Models;
+using Ignixa.Application.BackgroundOperations.BulkUpdate.Models;
 using Ignixa.Application.BackgroundOperations.Import.Models;
 using Ignixa.Domain.Abstractions;
 using Ignixa.Domain.Models;
@@ -16,25 +16,25 @@ namespace Ignixa.Application.BackgroundOperations.Jobs;
 /// <summary>
 /// Handler for retrieving job status information.
 /// Queries DurableTask orchestration state and updates job metadata accordingly.
-/// Supports Import, Export, and BulkPatch job types.
+/// Supports Import, Export, and BulkUpdate job types.
 /// </summary>
 public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStatusResult>
 {
     private readonly TaskHubClient _taskHubClient;
     private readonly IBackgroundJobRepository<ImportJobDefinition> _importRepository;
     private readonly IBackgroundJobRepository<ExportJobDefinition> _exportRepository;
-    private readonly IBackgroundJobRepository<BulkPatchJobDefinition> _bulkPatchRepository;
+    private readonly IBackgroundJobRepository<BulkUpdateJobDefinition> _bulkUpdateRepository;
 
     public GetJobStatusHandler(
         TaskHubClient taskHubClient,
         IBackgroundJobRepository<ImportJobDefinition> importRepository,
         IBackgroundJobRepository<ExportJobDefinition> exportRepository,
-        IBackgroundJobRepository<BulkPatchJobDefinition> bulkPatchRepository)
+        IBackgroundJobRepository<BulkUpdateJobDefinition> bulkUpdateRepository)
     {
         _taskHubClient = taskHubClient ?? throw new ArgumentNullException(nameof(taskHubClient));
         _importRepository = importRepository ?? throw new ArgumentNullException(nameof(importRepository));
         _exportRepository = exportRepository ?? throw new ArgumentNullException(nameof(exportRepository));
-        _bulkPatchRepository = bulkPatchRepository ?? throw new ArgumentNullException(nameof(bulkPatchRepository));
+        _bulkUpdateRepository = bulkUpdateRepository ?? throw new ArgumentNullException(nameof(bulkUpdateRepository));
     }
 
     public async Task<GetJobStatusResult> HandleAsync(
@@ -42,10 +42,10 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
         CancellationToken cancellationToken)
     {
         // Validate job type
-        if (request.JobType != "Import" && request.JobType != "Export" && request.JobType != "BulkPatch")
+        if (request.JobType != "Import" && request.JobType != "Export" && request.JobType != "BulkUpdate")
         {
             throw new ArgumentException(
-                $"Invalid jobType '{request.JobType}'. Must be 'Import', 'Export', or 'BulkPatch'.",
+                $"Invalid jobType '{request.JobType}'. Must be 'Import', 'Export', or 'BulkUpdate'.",
                 nameof(request));
         }
 
@@ -163,13 +163,13 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
                 result = null;
             }
         }
-        else // BulkPatch
+        else // BulkUpdate
         {
-            var job = await _bulkPatchRepository.GetAsync(request.JobId, request.TenantId, cancellationToken);
+            var job = await _bulkUpdateRepository.GetAsync(request.JobId, request.TenantId, cancellationToken);
             if (job == null)
             {
                 throw new InvalidOperationException(
-                    $"BulkPatch job '{request.JobId}' not found for tenant {request.TenantId}");
+                    $"BulkUpdate job '{request.JobId}' not found for tenant {request.TenantId}");
             }
 
             // Update job status from orchestration
@@ -191,7 +191,7 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
             // Parse progress if available
             if (job.Progress != null)
             {
-                var progress = JsonSerializer.Deserialize<BulkPatchJobProgress>(job.Progress.ToJsonString());
+                var progress = JsonSerializer.Deserialize<BulkUpdateJobProgress>(job.Progress.ToJsonString());
                 progressPercentage = progress?.ProgressPercentage;
                 progressDescription = progress != null
                     ? $"{progress.ProgressPercentage:F2}% ({progress.ProcessedResources} processed)"
@@ -201,16 +201,16 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
             // Parse result if available
             if (job.Result != null)
             {
-                var bulkPatchResult = JsonSerializer.Deserialize<BulkPatchJobResult>(job.Result.ToJsonString());
+                var bulkUpdateResult = JsonSerializer.Deserialize<BulkUpdateJobResult>(job.Result.ToJsonString());
                 result = new
                 {
-                    totalUpdated = bulkPatchResult?.UpdatedCounts?.Values.Sum() ?? 0,
-                    totalIgnored = bulkPatchResult?.IgnoredCounts?.Values.Sum() ?? 0,
-                    totalFailed = bulkPatchResult?.FailedCounts?.Values.Sum() ?? 0,
-                    updatedCounts = bulkPatchResult?.UpdatedCounts,
-                    ignoredCounts = bulkPatchResult?.IgnoredCounts,
-                    failedCounts = bulkPatchResult?.FailedCounts,
-                    issues = bulkPatchResult?.Issues
+                    totalUpdated = bulkUpdateResult?.UpdatedCounts?.Values.Sum() ?? 0,
+                    totalIgnored = bulkUpdateResult?.IgnoredCounts?.Values.Sum() ?? 0,
+                    totalFailed = bulkUpdateResult?.FailedCounts?.Values.Sum() ?? 0,
+                    updatedCounts = bulkUpdateResult?.UpdatedCounts,
+                    ignoredCounts = bulkUpdateResult?.IgnoredCounts,
+                    failedCounts = bulkUpdateResult?.FailedCounts,
+                    issues = bulkUpdateResult?.Issues
                 };
             }
             else
@@ -280,13 +280,13 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
                         }
                     }
 
-                    // Extract output from orchestration for bulk patch jobs
-                    if (job is BackgroundJob<BulkPatchJobDefinition> && state.Output != null)
+                    // Extract output from orchestration for bulk update jobs
+                    if (job is BackgroundJob<BulkUpdateJobDefinition> && state.Output != null)
                     {
-                        var output = JsonSerializer.Deserialize<BulkPatchOrchestrationOutput>(state.Output);
+                        var output = JsonSerializer.Deserialize<BulkUpdateOrchestrationOutput>(state.Output);
                         if (output != null)
                         {
-                            var jobResult = new BulkPatchJobResult
+                            var jobResult = new BulkUpdateJobResult
                             {
                                 UpdatedCounts = output.UpdatedCounts ?? [],
                                 IgnoredCounts = output.IgnoredCounts ?? [],
@@ -319,9 +319,9 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
             {
                 await _exportRepository.UpdateAsync(exportJob, tenantId, cancellationToken);
             }
-            else if (job is BackgroundJob<BulkPatchJobDefinition> bulkPatchJob)
+            else if (job is BackgroundJob<BulkUpdateJobDefinition> bulkUpdateJob)
             {
-                await _bulkPatchRepository.UpdateAsync(bulkPatchJob, tenantId, cancellationToken);
+                await _bulkUpdateRepository.UpdateAsync(bulkUpdateJob, tenantId, cancellationToken);
             }
         }
     }

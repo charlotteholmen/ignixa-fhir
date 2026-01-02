@@ -107,6 +107,7 @@ Content-Type: application/fhir+json
 |-----------|------|-------------|
 | `$export` | [Bulk Data](https://hl7.org/fhir/uv/bulkdata/export.html) | Async export to NDJSON or Parquet |
 | `$import` | [Bulk Data](https://hl7.org/fhir/uv/bulkdata/import.html) | Async bulk import from NDJSON |
+| `$bulk-update` | [ADR-2601](/docs/adr/ADR-2601-bulk-update-operation) | Async bulk updates using FHIR Patch |
 
 ### $export
 
@@ -164,6 +165,87 @@ Content-Type: application/fhir+json
 ```
 
 Returns `202 Accepted` with `Content-Location` header to poll job status.
+
+### $bulk-update
+
+Apply bulk updates to FHIR resources using FHIR Patch semantics. Compatible with [Azure FHIR Bulk Update](https://learn.microsoft.com/en-us/azure/healthcare-apis/fhir/fhir-bulk-update).
+
+```bash
+# System-level bulk update (all resource types)
+PATCH /$bulk-update
+Prefer: respond-async
+Content-Type: application/fhir+json
+
+{
+  "resourceType": "Parameters",
+  "parameter": [
+    {
+      "name": "operation",
+      "part": [
+        { "name": "type", "valueCode": "replace" },
+        { "name": "path", "valueString": "Patient.meta.tag" },
+        { "name": "value", "valueCoding": { "system": "http://example.org", "code": "reviewed" } }
+      ]
+    }
+  ]
+}
+
+# Type-scoped bulk update
+PATCH /Patient/$bulk-update?status=active
+Prefer: respond-async
+```
+
+#### Supported Operations
+
+| Operation | Behavior |
+|-----------|----------|
+| `replace` | Replace existing value; fails if element absent |
+| `upsert` | Add if absent, replace if present (idempotent) |
+
+Operations like `add`, `insert`, `move`, `delete` are excluded to maintain idempotency and prevent dangerous bulk deletions.
+
+#### Path Requirements
+
+All patch paths must be fully qualified with the resource type prefix:
+- Valid: `Patient.meta.tag`, `Observation.status`
+- For common properties: `Resource.meta.tag` (applies to all types)
+
+#### Poll Job Status
+
+```bash
+# Check job progress
+GET /_bulk-update/{jobId}
+
+# Cancel a running job
+DELETE /_bulk-update/{jobId}
+```
+
+#### Response
+
+In progress (202):
+```json
+{
+  "jobId": "abc123",
+  "status": "Running",
+  "progressPercentage": 45.5
+}
+```
+
+Completed (200):
+```json
+{
+  "transactionTime": "2026-01-01T12:00:00Z",
+  "result": {
+    "totalUpdated": 1500,
+    "totalIgnored": 50,
+    "totalFailed": 3,
+    "updatedCounts": { "Patient": 1000, "Observation": 500 },
+    "issues": [...]
+  }
+}
+```
+
+See [ADR-2601](/docs/adr/ADR-2601-bulk-update-operation) for architectural details.
 
 See [Bulk Operations](/docs/server/features/bulk-operations) for detailed usage, parameters, and configuration.
 
