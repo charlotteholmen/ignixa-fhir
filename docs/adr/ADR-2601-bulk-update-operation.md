@@ -43,9 +43,12 @@ Use `$bulk-update` as the operation name (compatible with Azure's `$bulk-update`
 | Operation | Behavior |
 |-----------|----------|
 | `replace` | Replace existing value; fails if element absent |
+| `add` | Add if absent, replace if present (treated as `upsert` for idempotency) |
 | `upsert` | Add if absent, replace if present (idempotent) |
 
-We explicitly exclude `add`, `insert`, `move`, `delete` to maintain idempotency and prevent dangerous bulk deletions.
+**Note:** The `add` operation is supported and is treated identically to `upsert` to maintain idempotency. Both add-if-absent and replace-if-present semantics are applied.
+
+We explicitly exclude `insert`, `move`, `delete` to maintain idempotency and prevent dangerous bulk deletions.
 
 ### Processing Model
 
@@ -53,6 +56,7 @@ We explicitly exclude `add`, `insert`, `move`, `delete` to maintain idempotency 
 2. **Batch size** - 1000 resources per transaction
 3. **Parallelism** - Partition by resource type and surrogate ID range
 4. **Partial success** - Valid patches commit; failed resources logged with reason
+5. **Default resource types** - When no resource type is specified in the endpoint URL, the operation applies to: Patient, Observation, Condition, MedicationRequest, Encounter, Procedure
 
 ### Excluded Resource Types
 

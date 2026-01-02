@@ -7,6 +7,7 @@ using DurableTask.Core;
 using Ignixa.Application.BackgroundOperations.BulkUpdate;
 using Ignixa.Application.BackgroundOperations.Jobs;
 using Ignixa.Domain.Abstractions;
+using Ignixa.Domain.Exceptions;
 using Ignixa.Domain.Models;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
@@ -185,7 +186,7 @@ public static class BulkUpdateEndpoints
         {
             return Results.BadRequest(CreateOperationOutcome(ex.Message));
         }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("already running", StringComparison.OrdinalIgnoreCase))
+        catch (BulkUpdateJobAlreadyRunningException ex)
         {
             return Results.BadRequest(CreateOperationOutcome(ex.Message));
         }
@@ -252,7 +253,7 @@ public static class BulkUpdateEndpoints
                 _ => Results.StatusCode(500)
             };
         }
-        catch (InvalidOperationException)
+        catch (JobNotFoundException)
         {
             return Results.NotFound(new { error = "Bulk update job not found" });
         }

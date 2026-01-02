@@ -59,9 +59,12 @@ Implement the `$bulk-update` operation as defined by Microsoft Azure Health Data
 | Operation | Description |
 |-----------|-------------|
 | `replace` | Replace existing value (fails if not present) |
+| `add` | Add if absent, replace if present (treated as `upsert` for idempotency) |
 | `upsert` | Add if absent, replace if present (idempotent) |
 
-**NOT Supported:** `add`, `insert`, `move`, `delete`
+**Note:** The `add` operation is supported and is treated identically to `upsert` to maintain idempotency. Both add-if-absent and replace-if-present semantics are applied.
+
+**NOT Supported:** `insert`, `move`, `delete`
 
 ### Response
 
@@ -153,6 +156,7 @@ When query parameters present:
 - **Batch size:** 1000 resources per transaction (matches ADR spec)
 - **Parallelism:** Worker count based on resource type ranges
 - **Transaction boundary:** Each batch is atomic
+- **Default resource types:** When no resource type is specified: Patient, Observation, Condition, MedicationRequest, Encounter, Procedure
 
 ### Error Handling
 

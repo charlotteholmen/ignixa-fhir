@@ -8,6 +8,7 @@ using Ignixa.Application.BackgroundOperations.BulkUpdate.Models;
 using Ignixa.Application.BackgroundOperations.BulkUpdate.Orchestrations;
 using Ignixa.Application.Features.Patch;
 using Ignixa.Domain.Abstractions;
+using Ignixa.Domain.Exceptions;
 using Ignixa.Domain.Models;
 using Ignixa.Serialization.Models;
 using Medino;
@@ -37,9 +38,7 @@ public class CreateBulkUpdateJobHandler(
 
         if (activeJobs.Count > 0)
         {
-            throw new InvalidOperationException(
-                $"A bulk update job is already running for tenant {request.TenantId}. " +
-                $"Only one bulk update job can run at a time. Job ID: {activeJobs[0].JobId}");
+            throw new BulkUpdateJobAlreadyRunningException(request.TenantId, activeJobs[0].JobId);
         }
 
         var fhirPatchOperations = patchParametersParser.Parse(request.PatchParameters);

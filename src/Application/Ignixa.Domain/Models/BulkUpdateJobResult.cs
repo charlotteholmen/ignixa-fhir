@@ -29,4 +29,22 @@ public record BulkUpdateJobResult
     /// Details about resources that failed to update.
     /// </summary>
     public required IReadOnlyList<BulkUpdateIssue> Issues { get; init; }
+
+    /// <summary>
+    /// Total count of updated resources across all types.
+    /// Pre-calculated to avoid summing dictionaries on every poll.
+    /// </summary>
+    public int TotalUpdated { get; init; }
+
+    /// <summary>
+    /// Total count of ignored resources across all types.
+    /// Pre-calculated to avoid summing dictionaries on every poll.
+    /// </summary>
+    public int TotalIgnored { get; init; }
+
+    /// <summary>
+    /// Total count of failed resources across all types.
+    /// Pre-calculated to avoid summing dictionaries on every poll.
+    /// </summary>
+    public int TotalFailed { get; init; }
 }

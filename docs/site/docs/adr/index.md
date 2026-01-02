@@ -48,6 +48,7 @@ All architectural decisions support the **F5 Developer Experience**: a developer
 | [2512](https://github.com/brendankowitz/ignixa-fhir/blob/main/docs/adr/adr-2512-member-match-operation.md) | $member-match Operation | Proposed |
 | [2512](https://github.com/brendankowitz/ignixa-fhir/blob/main/docs/adr/adr-2512-narrative-generator.md) | Narrative Generator Library | Accepted |
 | [2512](https://github.com/brendankowitz/ignixa-fhir/blob/main/docs/adr/adr-2512-patient-summary-generation.md) | Patient Summary Generation | Proposed |
+| [2601](https://github.com/brendankowitz/ignixa-fhir/blob/main/docs/adr/ADR-2601-bulk-update-operation.md) | $bulk-update Operation | Accepted |
 
 ## ADR Format
 

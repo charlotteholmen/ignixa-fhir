@@ -107,7 +107,7 @@ Content-Type: application/fhir+json
 |-----------|------|-------------|
 | `$export` | [Bulk Data](https://hl7.org/fhir/uv/bulkdata/export.html) | Async export to NDJSON or Parquet |
 | `$import` | [Bulk Data](https://hl7.org/fhir/uv/bulkdata/import.html) | Async bulk import from NDJSON |
-| `$bulk-update` | [ADR-2601](/docs/adr/ADR-2601-bulk-update-operation) | Async bulk updates using FHIR Patch |
+| `$bulk-update` | [ADR-2601](https://github.com/brendankowitz/ignixa-fhir/blob/main/docs/adr/ADR-2601-bulk-update-operation.md) | Async bulk updates using FHIR Patch |
 
 ### $export
 
@@ -245,7 +245,7 @@ Completed (200):
 }
 ```
 
-See [ADR-2601](/docs/adr/ADR-2601-bulk-update-operation) for architectural details.
+See [ADR-2601](https://github.com/brendankowitz/ignixa-fhir/blob/main/docs/adr/ADR-2601-bulk-update-operation.md) for architectural details.
 
 See [Bulk Operations](/docs/server/features/bulk-operations) for detailed usage, parameters, and configuration.
 

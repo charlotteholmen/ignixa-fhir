@@ -8,6 +8,7 @@ using DurableTask.Core;
 using Ignixa.Application.BackgroundOperations.BulkUpdate.Models;
 using Ignixa.Application.BackgroundOperations.Import.Models;
 using Ignixa.Domain.Abstractions;
+using Ignixa.Domain.Exceptions;
 using Ignixa.Domain.Models;
 using Medino;
 
@@ -65,8 +66,7 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
             var job = await _importRepository.GetAsync(request.JobId, request.TenantId, cancellationToken);
             if (job == null)
             {
-                throw new InvalidOperationException(
-                    $"Import job '{request.JobId}' not found for tenant {request.TenantId}");
+                throw new JobNotFoundException("Import", request.JobId, request.TenantId);
             }
 
             // Update job status from orchestration
@@ -117,8 +117,7 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
             var job = await _exportRepository.GetAsync(request.JobId, request.TenantId, cancellationToken);
             if (job == null)
             {
-                throw new InvalidOperationException(
-                    $"Export job '{request.JobId}' not found for tenant {request.TenantId}");
+                throw new JobNotFoundException("Export", request.JobId, request.TenantId);
             }
 
             // Update job status from orchestration
@@ -168,8 +167,7 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
             var job = await _bulkUpdateRepository.GetAsync(request.JobId, request.TenantId, cancellationToken);
             if (job == null)
             {
-                throw new InvalidOperationException(
-                    $"BulkUpdate job '{request.JobId}' not found for tenant {request.TenantId}");
+                throw new JobNotFoundException("BulkUpdate", request.JobId, request.TenantId);
             }
 
             // Update job status from orchestration
@@ -204,9 +202,9 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
                 var bulkUpdateResult = JsonSerializer.Deserialize<BulkUpdateJobResult>(job.Result.ToJsonString());
                 result = new
                 {
-                    totalUpdated = bulkUpdateResult?.UpdatedCounts?.Values.Sum() ?? 0,
-                    totalIgnored = bulkUpdateResult?.IgnoredCounts?.Values.Sum() ?? 0,
-                    totalFailed = bulkUpdateResult?.FailedCounts?.Values.Sum() ?? 0,
+                    totalUpdated = bulkUpdateResult?.TotalUpdated ?? 0,
+                    totalIgnored = bulkUpdateResult?.TotalIgnored ?? 0,
+                    totalFailed = bulkUpdateResult?.TotalFailed ?? 0,
                     updatedCounts = bulkUpdateResult?.UpdatedCounts,
                     ignoredCounts = bulkUpdateResult?.IgnoredCounts,
                     failedCounts = bulkUpdateResult?.FailedCounts,
@@ -286,12 +284,19 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
                         var output = JsonSerializer.Deserialize<BulkUpdateOrchestrationOutput>(state.Output);
                         if (output != null)
                         {
+                            var updatedCounts = output.UpdatedCounts ?? [];
+                            var ignoredCounts = output.IgnoredCounts ?? [];
+                            var failedCounts = output.FailedCounts ?? [];
+
                             var jobResult = new BulkUpdateJobResult
                             {
-                                UpdatedCounts = output.UpdatedCounts ?? [],
-                                IgnoredCounts = output.IgnoredCounts ?? [],
-                                FailedCounts = output.FailedCounts ?? [],
-                                Issues = output.Issues ?? []
+                                UpdatedCounts = updatedCounts,
+                                IgnoredCounts = ignoredCounts,
+                                FailedCounts = failedCounts,
+                                Issues = output.Issues ?? [],
+                                TotalUpdated = updatedCounts.Values.Sum(),
+                                TotalIgnored = ignoredCounts.Values.Sum(),
+                                TotalFailed = failedCounts.Values.Sum()
                             };
                             job.Result = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(jobResult));
                         }
