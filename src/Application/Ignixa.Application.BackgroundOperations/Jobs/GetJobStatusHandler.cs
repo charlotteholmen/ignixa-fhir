@@ -5,6 +5,7 @@
 
 using System.Text.Json;
 using DurableTask.Core;
+using Ignixa.Application.BackgroundOperations.BulkPatch.Models;
 using Ignixa.Application.BackgroundOperations.Import.Models;
 using Ignixa.Domain.Abstractions;
 using Ignixa.Domain.Models;
@@ -15,22 +16,25 @@ namespace Ignixa.Application.BackgroundOperations.Jobs;
 /// <summary>
 /// Handler for retrieving job status information.
 /// Queries DurableTask orchestration state and updates job metadata accordingly.
-/// Supports both Import and Export job types.
+/// Supports Import, Export, and BulkPatch job types.
 /// </summary>
 public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStatusResult>
 {
     private readonly TaskHubClient _taskHubClient;
     private readonly IBackgroundJobRepository<ImportJobDefinition> _importRepository;
     private readonly IBackgroundJobRepository<ExportJobDefinition> _exportRepository;
+    private readonly IBackgroundJobRepository<BulkPatchJobDefinition> _bulkPatchRepository;
 
     public GetJobStatusHandler(
         TaskHubClient taskHubClient,
         IBackgroundJobRepository<ImportJobDefinition> importRepository,
-        IBackgroundJobRepository<ExportJobDefinition> exportRepository)
+        IBackgroundJobRepository<ExportJobDefinition> exportRepository,
+        IBackgroundJobRepository<BulkPatchJobDefinition> bulkPatchRepository)
     {
         _taskHubClient = taskHubClient ?? throw new ArgumentNullException(nameof(taskHubClient));
         _importRepository = importRepository ?? throw new ArgumentNullException(nameof(importRepository));
         _exportRepository = exportRepository ?? throw new ArgumentNullException(nameof(exportRepository));
+        _bulkPatchRepository = bulkPatchRepository ?? throw new ArgumentNullException(nameof(bulkPatchRepository));
     }
 
     public async Task<GetJobStatusResult> HandleAsync(
@@ -38,10 +42,10 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
         CancellationToken cancellationToken)
     {
         // Validate job type
-        if (request.JobType != "Import" && request.JobType != "Export")
+        if (request.JobType != "Import" && request.JobType != "Export" && request.JobType != "BulkPatch")
         {
             throw new ArgumentException(
-                $"Invalid jobType '{request.JobType}'. Must be 'Import' or 'Export'.",
+                $"Invalid jobType '{request.JobType}'. Must be 'Import', 'Export', or 'BulkPatch'.",
                 nameof(request));
         }
 
@@ -108,7 +112,7 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
                 result = null;
             }
         }
-        else // Export
+        else if (request.JobType == "Export")
         {
             var job = await _exportRepository.GetAsync(request.JobId, request.TenantId, cancellationToken);
             if (job == null)
@@ -152,6 +156,61 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
                 {
                     outputFiles = exportResult?.ExportedFiles ?? new Dictionary<string, string>(),
                     totalResources = exportResult?.TotalResources ?? 0
+                };
+            }
+            else
+            {
+                result = null;
+            }
+        }
+        else // BulkPatch
+        {
+            var job = await _bulkPatchRepository.GetAsync(request.JobId, request.TenantId, cancellationToken);
+            if (job == null)
+            {
+                throw new InvalidOperationException(
+                    $"BulkPatch job '{request.JobId}' not found for tenant {request.TenantId}");
+            }
+
+            // Update job status from orchestration
+            await UpdateJobStatusFromOrchestrationAsync(job, request.TenantId, cancellationToken);
+
+            status = job.Status;
+            createDate = job.CreateDate;
+            startDate = job.StartDate;
+            endDate = job.EndDate;
+            errorMessage = job.ErrorMessage;
+
+            definition = new
+            {
+                resourceType = job.Definition.ResourceType,
+                searchQuery = job.Definition.SearchQuery,
+                operationCount = job.Definition.Operations.Count
+            };
+
+            // Parse progress if available
+            if (job.Progress != null)
+            {
+                var progress = JsonSerializer.Deserialize<BulkPatchJobProgress>(job.Progress.ToJsonString());
+                progressPercentage = progress?.ProgressPercentage;
+                progressDescription = progress != null
+                    ? $"{progress.ProgressPercentage:F2}% ({progress.ProcessedResources} processed)"
+                    : status;
+            }
+
+            // Parse result if available
+            if (job.Result != null)
+            {
+                var bulkPatchResult = JsonSerializer.Deserialize<BulkPatchJobResult>(job.Result.ToJsonString());
+                result = new
+                {
+                    totalUpdated = bulkPatchResult?.UpdatedCounts?.Values.Sum() ?? 0,
+                    totalIgnored = bulkPatchResult?.IgnoredCounts?.Values.Sum() ?? 0,
+                    totalFailed = bulkPatchResult?.FailedCounts?.Values.Sum() ?? 0,
+                    updatedCounts = bulkPatchResult?.UpdatedCounts,
+                    ignoredCounts = bulkPatchResult?.IgnoredCounts,
+                    failedCounts = bulkPatchResult?.FailedCounts,
+                    issues = bulkPatchResult?.Issues
                 };
             }
             else
@@ -220,6 +279,23 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
                             job.Result = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(jobResult));
                         }
                     }
+
+                    // Extract output from orchestration for bulk patch jobs
+                    if (job is BackgroundJob<BulkPatchJobDefinition> && state.Output != null)
+                    {
+                        var output = JsonSerializer.Deserialize<BulkPatchOrchestrationOutput>(state.Output);
+                        if (output != null)
+                        {
+                            var jobResult = new BulkPatchJobResult
+                            {
+                                UpdatedCounts = output.UpdatedCounts ?? [],
+                                IgnoredCounts = output.IgnoredCounts ?? [],
+                                FailedCounts = output.FailedCounts ?? [],
+                                Issues = output.Issues ?? []
+                            };
+                            job.Result = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(jobResult));
+                        }
+                    }
                     break;
 
                 case OrchestrationStatus.Failed:
@@ -242,6 +318,10 @@ public class GetJobStatusHandler : IRequestHandler<GetJobStatusQuery, GetJobStat
             else if (job is BackgroundJob<ExportJobDefinition> exportJob)
             {
                 await _exportRepository.UpdateAsync(exportJob, tenantId, cancellationToken);
+            }
+            else if (job is BackgroundJob<BulkPatchJobDefinition> bulkPatchJob)
+            {
+                await _bulkPatchRepository.UpdateAsync(bulkPatchJob, tenantId, cancellationToken);
             }
         }
     }

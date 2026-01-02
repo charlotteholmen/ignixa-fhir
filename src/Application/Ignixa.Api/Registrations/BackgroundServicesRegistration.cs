@@ -8,6 +8,7 @@ using Ignixa.Api.BackgroundServices;
 using Ignixa.Api.Configuration;
 using Ignixa.Api.Infrastructure;
 using Ignixa.Api.Services;
+using Ignixa.Application.BackgroundOperations.BulkPatch;
 using Ignixa.Application.BackgroundOperations.Export;
 using Ignixa.Application.BackgroundOperations.Jobs;
 using Medino;
@@ -72,6 +73,11 @@ public static class BackgroundServicesRegistration
         // Export job handlers
         builder.RegisterType<CreateExportJobHandler>()
             .As<IRequestHandler<CreateExportJobCommand, CreateExportJobResult>>()
+            .InstancePerDependency();
+
+        // Bulk patch job handlers
+        builder.RegisterType<CreateBulkPatchJobHandler>()
+            .As<IRequestHandler<CreateBulkPatchJobCommand, CreateBulkPatchJobResult>>()
             .InstancePerDependency();
 
         builder.RegisterType<GetJobStatusHandler>()
