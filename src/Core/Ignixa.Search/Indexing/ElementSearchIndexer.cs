@@ -24,7 +24,6 @@ public partial class ElementSearchIndexer : ISearchIndexer
 {
     private readonly IElementToSearchValueConverterManager _fhirElementTypeConverterManager;
     private readonly ILogger<ElementSearchIndexer> _logger;
-    private readonly IReferenceToElementResolver _referenceToElementResolver;
     private readonly ISupportedSearchParameterDefinitionManager _searchParameterDefinitionManager;
     private readonly ConcurrentDictionary<string, List<string>> _targetTypesLookup = new();
 
@@ -33,22 +32,18 @@ public partial class ElementSearchIndexer : ISearchIndexer
     /// </summary>
     /// <param name="searchParameterDefinitionManager">The search parameter definition manager.</param>
     /// <param name="fhirElementTypeConverterManager">The FHIR element type converter manager.</param>
-    /// <param name="referenceToElementResolver">Used for parsing reference strings</param>
     /// <param name="logger">The logger.</param>
     public ElementSearchIndexer(
         ISupportedSearchParameterDefinitionManager searchParameterDefinitionManager,
         IElementToSearchValueConverterManager fhirElementTypeConverterManager,
-        IReferenceToElementResolver referenceToElementResolver,
         ILogger<ElementSearchIndexer> logger)
     {
         EnsureArg.IsNotNull(searchParameterDefinitionManager, nameof(searchParameterDefinitionManager));
         EnsureArg.IsNotNull(fhirElementTypeConverterManager, nameof(fhirElementTypeConverterManager));
-        EnsureArg.IsNotNull(referenceToElementResolver, nameof(referenceToElementResolver));
         EnsureArg.IsNotNull(logger, nameof(logger));
 
         _searchParameterDefinitionManager = searchParameterDefinitionManager;
         _fhirElementTypeConverterManager = fhirElementTypeConverterManager;
-        _referenceToElementResolver = referenceToElementResolver;
         _logger = logger;
     }
 
@@ -59,13 +54,10 @@ public partial class ElementSearchIndexer : ISearchIndexer
 
         var entries = new List<SearchIndexEntry>();
 
-        var context = new FhirEvaluationContext();
-
-        // Our FhirEvaluationContext uses IElement directly - no need for ToPocoNode()
-        context.ElementResolver = str => _referenceToElementResolver.Resolve(str);
-
-        // This allows resolving %resource FhirPath to provided value
-        context.Resource = resource;
+        var context = new FhirEvaluationContext
+        {
+            Resource = resource
+        };
 
         IEnumerable<SearchParameterInfo> searchParameters = _searchParameterDefinitionManager.GetSearchParameters(resource.InstanceType);
 

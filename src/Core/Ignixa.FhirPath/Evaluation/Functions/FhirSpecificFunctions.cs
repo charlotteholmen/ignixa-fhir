@@ -60,56 +60,40 @@ internal static class FhirSpecificFunctions
 
     /// <summary>
     /// resolve() - Takes a Reference element and resolves it to the actual resource.
-    /// Returns empty if the reference cannot be resolved or if ElementResolver is not configured.
+    /// Returns LazyResolvedElement that parses reference for type checks without DB lookup.
     /// Per FHIR spec: resolve() returns empty on failure (does not throw).
     /// </summary>
     public static IEnumerable<IElement> Resolve(
         IEnumerable<IElement> focus,
         EvaluationContext context)
     {
-        // resolve() : collection
-        // Takes a Reference element and resolves it to the actual resource.
-        // Returns empty if the reference cannot be resolved or if ElementResolver is not configured.
-        // Per FHIR spec: resolve() returns empty on failure (does not throw).
-
         var results = new List<IElement>();
 
-        if (context is not FhirEvaluationContext fhirContext || fhirContext.ElementResolver == null)
+        Func<string, IElement?>? fullResolver = null;
+        if (context is FhirEvaluationContext fhirContext && fhirContext.ElementResolver != null)
         {
-            // No resolver available - return empty (this is expected during indexing)
-            return results;
+            fullResolver = fhirContext.ElementResolver;
         }
 
         foreach (var element in focus)
         {
-            // resolve() only works on Reference types
             if (element.InstanceType != "Reference" && element.InstanceType != "ResourceReference")
             {
-                // Not a reference - skip
                 continue;
             }
 
-            // Extract the reference string (e.g., "Patient/123" or "http://example.org/fhir/Patient/123")
             var referenceValue = element.Scalar("reference") as string;
             if (string.IsNullOrEmpty(referenceValue))
             {
-                // No reference value - skip
                 continue;
             }
 
-            // Call the ElementResolver to resolve the reference
             try
             {
-                var resolved = fhirContext.ElementResolver(referenceValue);
-                if (resolved != null)
-                {
-                    results.Add(resolved);
-                }
-                // If resolved is null, the reference couldn't be resolved - skip silently
+                results.Add(new LazyResolvedElement(referenceValue, fullResolver));
             }
             catch
             {
-                // If resolution fails, skip silently (FHIR spec: resolve() returns empty on failure)
                 continue;
             }
         }

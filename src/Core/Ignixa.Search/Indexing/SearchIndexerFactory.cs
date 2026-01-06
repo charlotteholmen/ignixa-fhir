@@ -20,27 +20,22 @@ public static class SearchIndexerFactory
         ILoggerFactory loggerProvider,
         ISearchParameterDefinitionManager searchParameterDefinitionManager = null)
     {
-        // If no manager provided, create new instance (backward compatibility)
         var definitionManager = searchParameterDefinitionManager
             ?? new SearchParameterDefinitionManager(fhirSchemaProvider, loggerProvider.CreateLogger<SearchParameterDefinitionManager>());
 
         var referenceParser = new ReferenceSearchValueParser(fhirSchemaProvider);
-        var elementResolver = new LightweightReferenceToElementResolver(referenceParser, fhirSchemaProvider);
         var codesystems = new CodeSystemResolver(fhirSchemaProvider.Version);
 
         IElementToSearchValueConverter[] converters = typeof(ElementSearchIndexer)
             .Assembly
             .ExportedTypes
             .Where(x => typeof(IElementToSearchValueConverter).IsAssignableFrom(x) && !x.IsAbstract && !x.IsGenericType)
-            .Select(x => (IElementToSearchValueConverter)CreateTypeWithArguments(x, fhirSchemaProvider, referenceParser, elementResolver, codesystems, fhirSchemaProvider.Version))
+            .Select(x => (IElementToSearchValueConverter)CreateTypeWithArguments(x, fhirSchemaProvider, referenceParser, codesystems, fhirSchemaProvider.Version))
             .ToArray();
-
-        // Manager is now initialized synchronously in constructor with pre-generated search parameters
 
         return new ElementSearchIndexer(
             new SupportedSearchParameterDefinitionManager(definitionManager),
             new FhirElementToSearchValueConverterManager(converters),
-            elementResolver,
             loggerProvider.CreateLogger<ElementSearchIndexer>());
     }
 

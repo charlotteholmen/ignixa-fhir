@@ -991,4 +991,286 @@ public class FhirPathEvaluatorTests
     }
 
     #endregion
+
+    #region Resolve() Function Tests
+
+    [Fact]
+    public void GivenReferenceElement_WhenCallingResolveWithoutResolver_ThenReturnsLazyElementForTypeCheck()
+    {
+        var encounterJson = """
+        {
+          "resourceType": "Encounter",
+          "id": "enc1",
+          "subject": {
+            "reference": "Patient/123"
+          }
+        }
+        """;
+
+        var resource = ResourceJsonNode.Parse(encounterJson);
+        var element = resource.ToElement(_r4Provider);
+
+        var result = EvaluatePath(element, "subject.resolve()");
+
+        var resultList = result.ToList();
+        Assert.Single(resultList);
+        Assert.Equal("Patient", resultList[0].InstanceType);
+    }
+
+    [Fact]
+    public void GivenReferenceElement_WhenCheckingResolvedTypeWithoutResolver_ThenTypeCheckWorks()
+    {
+        var encounterJson = """
+        {
+          "resourceType": "Encounter",
+          "id": "enc1",
+          "participant": [
+            {
+              "individual": {
+                "reference": "Practitioner/456"
+              }
+            }
+          ]
+        }
+        """;
+
+        var resource = ResourceJsonNode.Parse(encounterJson);
+        var element = resource.ToElement(_r4Provider);
+
+        var result = EvaluatePath(element, "participant.individual.where(resolve() is Practitioner)");
+
+        var resultList = result.ToList();
+        Assert.Single(resultList);
+    }
+
+    [Fact]
+    public void GivenReferenceElement_WhenAccessingIdWithoutResolver_ThenReturnsIdFromReference()
+    {
+        var encounterJson = """
+        {
+          "resourceType": "Encounter",
+          "id": "enc1",
+          "subject": {
+            "reference": "Patient/test-123"
+          }
+        }
+        """;
+
+        var resource = ResourceJsonNode.Parse(encounterJson);
+        var element = resource.ToElement(_r4Provider);
+
+        var result = EvaluatePath(element, "subject.resolve().id");
+
+        var resultList = result.ToList();
+        Assert.Single(resultList);
+        Assert.Equal("test-123", resultList[0].Value);
+    }
+
+    [Fact]
+    public void GivenReferenceElement_WhenAccessingResourceTypeWithoutResolver_ThenReturnsResourceType()
+    {
+        var encounterJson = """
+        {
+          "resourceType": "Encounter",
+          "id": "enc1",
+          "subject": {
+            "reference": "Observation/obs-789"
+          }
+        }
+        """;
+
+        var resource = ResourceJsonNode.Parse(encounterJson);
+        var element = resource.ToElement(_r4Provider);
+
+        var result = EvaluatePath(element, "subject.resolve().resourceType");
+
+        var resultList = result.ToList();
+        Assert.Single(resultList);
+        Assert.Equal("Observation", resultList[0].Value);
+    }
+
+    [Fact]
+    public void GivenReferenceElement_WhenAccessingOtherPropertyWithoutResolver_ThenReturnsEmpty()
+    {
+        var encounterJson = """
+        {
+          "resourceType": "Encounter",
+          "id": "enc1",
+          "subject": {
+            "reference": "Patient/123"
+          }
+        }
+        """;
+
+        var resource = ResourceJsonNode.Parse(encounterJson);
+        var element = resource.ToElement(_r4Provider);
+
+        var result = EvaluatePath(element, "subject.resolve().name.family");
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void GivenReferenceElement_WhenAccessingPropertyWithResolver_ThenCallsResolver()
+    {
+        var encounterJson = """
+        {
+          "resourceType": "Encounter",
+          "id": "enc1",
+          "subject": {
+            "reference": "Patient/123"
+          }
+        }
+        """;
+
+        var patientJson = """
+        {
+          "resourceType": "Patient",
+          "id": "123",
+          "name": [
+            {
+              "family": "Smith"
+            }
+          ]
+        }
+        """;
+
+        var encounter = ResourceJsonNode.Parse(encounterJson);
+        var encounterElement = encounter.ToElement(_r4Provider);
+
+        var patient = ResourceJsonNode.Parse(patientJson);
+        var patientElement = patient.ToElement(_r4Provider);
+
+        var context = new FhirEvaluationContext
+        {
+            ElementResolver = reference =>
+            {
+                if (reference == "Patient/123")
+                    return patientElement;
+                return null;
+            }
+        };
+
+        var expression = _parser.Parse("subject.resolve().name.family");
+        var result = _evaluator.Evaluate(encounterElement, expression, context);
+
+        var resultList = result.ToList();
+        Assert.Single(resultList);
+        Assert.Equal("Smith", resultList[0].Value);
+    }
+
+    [Fact]
+    public void GivenAbsoluteReference_WhenResolvingWithoutResolver_ThenParsesTypeCorrectly()
+    {
+        var encounterJson = """
+        {
+          "resourceType": "Encounter",
+          "id": "enc1",
+          "subject": {
+            "reference": "http://example.org/fhir/Patient/abc-def-123"
+          }
+        }
+        """;
+
+        var resource = ResourceJsonNode.Parse(encounterJson);
+        var element = resource.ToElement(_r4Provider);
+
+        var result = EvaluatePath(element, "subject.resolve()");
+
+        var resultList = result.ToList();
+        Assert.Single(resultList);
+        Assert.Equal("Patient", resultList[0].InstanceType);
+    }
+
+    [Fact]
+    public void GivenAbsoluteReference_WhenAccessingIdWithoutResolver_ThenReturnsId()
+    {
+        var encounterJson = """
+        {
+          "resourceType": "Encounter",
+          "id": "enc1",
+          "subject": {
+            "reference": "https://example.org/fhir/Patient/xyz-789"
+          }
+        }
+        """;
+
+        var resource = ResourceJsonNode.Parse(encounterJson);
+        var element = resource.ToElement(_r4Provider);
+
+        var result = EvaluatePath(element, "subject.resolve().id");
+
+        var resultList = result.ToList();
+        Assert.Single(resultList);
+        Assert.Equal("xyz-789", resultList[0].Value);
+    }
+
+    [Fact]
+    public void GivenChainedResolve_WhenResolvingWithoutResolver_ThenTypeChecksWork()
+    {
+        var encounterJson = """
+        {
+          "resourceType": "Encounter",
+          "id": "enc1",
+          "serviceProvider": {
+            "reference": "Organization/org-123"
+          }
+        }
+        """;
+
+        var resource = ResourceJsonNode.Parse(encounterJson);
+        var element = resource.ToElement(_r4Provider);
+
+        var result = EvaluatePath(element, "serviceProvider.resolve() is Organization");
+
+        var resultList = result.ToList();
+        Assert.Single(resultList);
+        Assert.Equal(true, resultList[0].Value);
+    }
+
+    [Fact]
+    public void GivenNonReferenceElement_WhenCallingResolve_ThenReturnsEmpty()
+    {
+        var patientJson = """
+        {
+          "resourceType": "Patient",
+          "id": "123",
+          "name": [
+            {
+              "family": "Smith"
+            }
+          ]
+        }
+        """;
+
+        var resource = ResourceJsonNode.Parse(patientJson);
+        var element = resource.ToElement(_r4Provider);
+
+        var result = EvaluatePath(element, "name.resolve()");
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void GivenEmptyReference_WhenCallingResolve_ThenReturnsEmpty()
+    {
+        var encounterJson = """
+        {
+          "resourceType": "Encounter",
+          "id": "enc1",
+          "subject": {
+            "display": "Patient without reference"
+          }
+        }
+        """;
+
+        var resource = ResourceJsonNode.Parse(encounterJson);
+        var element = resource.ToElement(_r4Provider);
+
+        var result = EvaluatePath(element, "subject.resolve()");
+
+        Assert.Empty(result);
+    }
+
+    #endregion
 }
