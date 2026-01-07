@@ -158,6 +158,102 @@ context.Environment["today"] = new[] { todayElement };
 var result = element.Select("birthDate < %today", context);
 ```
 
+### Element Resolver
+
+The `FhirEvaluationContext` supports configuring an `ElementResolver` to enable the `resolve()` function in FHIRPath expressions. This allows following references from one resource to another.
+
+```csharp
+using Ignixa.FhirPath.Evaluation;
+using Ignixa.Serialization;
+using Ignixa.Specification;
+
+// Obtain a schema provider for your FHIR version
+// Example: var schemaProvider = new R4CoreSchemaProvider();
+IFhirSchemaProvider schemaProvider = GetSchemaProvider();
+
+// Create a FHIR evaluation context
+var context = new FhirEvaluationContext();
+
+// Configure the ElementResolver to resolve references
+context.ElementResolver = (reference) =>
+{
+    // reference will be a string like "Patient/123" or "Practitioner/456"
+    
+    // Fetch from your data store (database, API, cache, etc.)
+    // This method should return the resource JSON or null if not found
+    string? resourceJson = GetResourceByReference(reference); 
+    if (resourceJson == null)
+        return null; // Return null if resource not found
+    
+    // Parse and return as IElement
+    var sourceNode = JsonSourceNodeFactory.Parse(resourceJson);
+    return sourceNode.ToElement(schemaProvider);
+};
+
+// Example implementation of GetResourceByReference:
+// string? GetResourceByReference(string reference)
+// {
+//     // Parse reference (e.g., "Patient/123" -> type="Patient", id="123")
+//     var parts = reference.Split('/', 2);
+//     if (parts.Length != 2) return null;
+//     
+//     // Fetch from database, cache, or other data source
+//     return FetchFromDatabase(parts[0], parts[1]);
+// }
+
+// Now resolve() works in FHIRPath expressions
+var encounterJson = """
+{
+  "resourceType": "Encounter",
+  "id": "enc1",
+  "participant": [
+    {
+      "individual": {
+        "reference": "Practitioner/dr-smith"
+      }
+    }
+  ]
+}
+""";
+
+var encounter = JsonSourceNodeFactory.Parse(encounterJson).ToElement(schemaProvider);
+
+// Use resolve() to follow the reference and check the practitioner type
+var practitioners = encounter.Select(
+    "participant.individual.where(resolve() is Practitioner)", 
+    context);
+
+// Access properties of resolved resources
+var practitionerNames = encounter.Select(
+    "participant.individual.resolve().name.family",
+    context);
+```
+
+**Common use cases:**
+
+```csharp
+// Check if a reference resolves to a specific resource type
+"subject.resolve() is Patient"
+
+// Access properties through references
+"performer.resolve().name.family"
+
+// Filter by resolved resource properties  
+"participant.individual.where(resolve().active = true)"
+
+// Chain multiple references
+"encounter.resolve().serviceProvider.resolve().name"
+```
+
+:::note
+The `resolve()` function returns an empty collection if:
+- No `ElementResolver` is configured
+- The reference cannot be resolved
+- An error occurs during resolution
+
+This follows FHIRPath's propagation semantics - operations on empty collections return empty rather than throwing exceptions. This allows FHIRPath expressions to continue evaluating even when references can't be resolved.
+:::
+
 ## Error Handling
 
 ### Parse Errors
