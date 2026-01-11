@@ -258,19 +258,55 @@ Start a bulk import job.
 }
 ```
 
+#### start_bulk_update_job
+
+Start a bulk update job using FHIR Patch semantics.
+
+```json
+{
+  "name": "start_bulk_update_job",
+  "arguments": {
+    "operations": [
+      {
+        "type": "replace",
+        "path": "Patient.meta.tag",
+        "value": {
+          "system": "http://example.org/tags",
+          "code": "reviewed"
+        }
+      }
+    ],
+    "resourceType": "Patient",
+    "searchQuery": "status=active"
+  }
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `operations` | Array of patch operations (required) |
+| `operations[].type` | `replace` or `upsert` |
+| `operations[].path` | FHIRPath expression (e.g., `Patient.meta.tag`) |
+| `operations[].value` | Value to set (primitive, object, or array) |
+| `operations[].name` | Optional element name for upsert operations |
+| `resourceType` | Optional resource type filter |
+| `searchQuery` | Optional FHIR search parameters |
+
 #### get_job_status
 
-Check the status of an import/export job.
+Check the status of an import/export/bulk update job.
 
 ```json
 {
   "name": "get_job_status",
   "arguments": {
     "jobId": "abc123",
-    "jobType": "Export"
+    "jobType": "BulkUpdate"
   }
 }
 ```
+
+Job types: `Import`, `Export`, `BulkUpdate`
 
 #### list_jobs
 
