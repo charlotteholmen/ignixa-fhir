@@ -3,19 +3,40 @@
  *
  * FhirPath expression evaluator.
  * Executes parsed FhirPath AST against IElement trees.
+ * Uses immutable EvaluationContext for pure functional evaluation.
  */
 
 using Ignixa.FhirPath.Expressions;
 using Ignixa.Abstractions;
 using Ignixa.FhirPath.Evaluation.Functions;
+using Ignixa.FhirPath.Visitors;
 
 namespace Ignixa.FhirPath.Evaluation;
 
 /// <summary>
 /// Evaluates FhirPath expressions against FHIR resources represented as IElement trees.
 /// </summary>
-public class FhirPathEvaluator
+/// <remarks>
+/// <para>
+/// This class is partial - the <see cref="DispatchFunctionCall"/> method is auto-generated
+/// by <c>FhirPathFunctionGenerator</c> based on <c>[FhirPathFunction]</c> attributes.
+/// </para>
+/// <para>
+/// <b>Immutable Context Pattern:</b>
+/// All visitor methods are pure functions with respect to context. The <see cref="EvaluationContext"/>
+/// is immutable, and each method creates new context instances as needed via fluent methods
+/// like <see cref="EvaluationContext.WithFocus"/> and <see cref="EvaluationContext.PushThis"/>.
+/// </para>
+/// </remarks>
+public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationContext, IEnumerable<IElement>>
 {
+    /// <summary>
+    /// Creates a new FhirPath evaluator.
+    /// </summary>
+    public FhirPathEvaluator()
+    {
+    }
+
     /// <summary>
     /// Evaluates a FhirPath expression against an input element and returns matching elements.
     /// </summary>
@@ -23,217 +44,110 @@ public class FhirPathEvaluator
     /// <param name="expression">The parsed FhirPath expression</param>
     /// <param name="context">Optional evaluation context</param>
     /// <returns>Collection of elements that match the expression</returns>
+    /// <remarks>
+    /// For best performance, use a <see cref="Parser.FhirPathParser"/> with <see cref="Parsing.CompilationOptions.Optimize"/>
+    /// set to true to optimize expressions at parse-time rather than evaluation-time.
+    /// </remarks>
     public IEnumerable<IElement> Evaluate(IElement input, Expression expression, EvaluationContext? context = null)
     {
         context ??= new EvaluationContext();
-
         return EvaluateExpression([input], expression, context);
     }
 
     private IEnumerable<IElement> EvaluateExpression(IEnumerable<IElement> focus, Expression expr, EvaluationContext context)
     {
-        return expr switch
+        // Optimization: Skip context creation if focus hasn't changed
+        // This is common in indexer/child/binary expressions where we evaluate sub-expressions with the same focus
+        if (ReferenceEquals(focus, context.Focus))
         {
-            // Check specific types before base types (ChildExpression/BinaryExpression/UnaryExpression/IndexerExpression inherit from FunctionCallExpression)
-            Expressions.ChildExpression child => EvaluateChildExpression(focus, child, context),
-            Expressions.BinaryExpression binary => EvaluateBinaryExpression(focus, binary, context),
-            Expressions.UnaryExpression unary => EvaluateUnary(focus, unary, context),
-            Expressions.IndexerExpression indexer => EvaluateIndexer(focus, indexer, context),
-            FunctionCallExpression func => EvaluateFunctionCall(focus, func, context),
-            ConstantExpression constant => EvaluateConstant(constant),
-            AxisExpression axis => EvaluateAxis(focus, axis, context),
-            IdentifierExpression id => EvaluateIdentifier(focus, id),
-            VariableRefExpression var => EvaluateVariable(var, context),
-            ParenthesizedExpression paren => EvaluateExpression(focus, paren.InnerExpression, context),
-            EmptyExpression => [],
-            QuantityExpression quantityExpr => QuantityEvaluator.EvaluateQuantity(quantityExpr),
-            _ => throw new NotSupportedException($"Expression type {expr.GetType().Name} is not yet supported")
-        };
+            return expr.AcceptVisitor(this, context);
+        }
+
+        var newContext = context.WithFocus(focus);
+        return expr.AcceptVisitor(this, newContext);
     }
 
-    private IEnumerable<IElement> EvaluateChildExpression(IEnumerable<IElement> focus, Expressions.ChildExpression child, EvaluationContext context)
+    public IEnumerable<IElement> VisitChild(ChildExpression expression, EvaluationContext context)
     {
-        // First evaluate the focus expression if present
-        var focusElements = child.Focus != null
-            ? EvaluateExpression(focus, child.Focus, context)
-            : focus;
+        var focusElements = expression.Focus != null
+            ? EvaluateExpression(context.Focus, expression.Focus, context)
+            : context.Focus;
 
-        // Then navigate to children with the specified name
         foreach (var element in focusElements)
         {
-            foreach (var childElement in element.Children(child.ChildName))
+            foreach (var childElement in element.Children(expression.ChildName))
             {
                 yield return childElement;
             }
         }
     }
 
-    private IEnumerable<IElement> EvaluateFunctionCall(IEnumerable<IElement> focus, FunctionCallExpression func, EvaluationContext context)
+    public IEnumerable<IElement> VisitFunctionCall(FunctionCallExpression expression, EvaluationContext context)
     {
-        // Evaluate focus first
-        var focusElements = func.Focus != null
-            ? EvaluateExpression(focus, func.Focus, context)
-            : focus;
+        var focusElements = expression.Focus != null
+            ? EvaluateExpression(context.Focus, expression.Focus, context)
+            : context.Focus;
 
-        // Handle built-in functions
-        // FhirPath function names are case-insensitive, ToLowerInvariant is intentional
-#pragma warning disable CA1308 // Normalize strings to uppercase
-        return func.FunctionName.ToLowerInvariant() switch
-#pragma warning restore CA1308 // Normalize strings to uppercase
-        {
-            // Collection functions
-            "exists" => CollectionFunctions.Exists(focusElements, func.Arguments, context, EvaluateExpression),
-            "empty" => CollectionFunctions.Empty(focusElements),
-            "count" => CollectionFunctions.Count(focusElements),
-            "distinct" => focusElements.Distinct(),
-            "isdistinct" => CollectionFunctions.IsDistinct(focusElements),
-            "first" => CollectionFunctions.First(focusElements),
-            "last" => CollectionFunctions.Last(focusElements),
-            "single" => CollectionFunctions.Single(focusElements),
-            "tail" => CollectionFunctions.Tail(focusElements),
-            "skip" => CollectionFunctions.Skip(focusElements, func.Arguments, context, EvaluateExpression),
-            "take" => CollectionFunctions.Take(focusElements, func.Arguments, context, EvaluateExpression),
-            "where" => CollectionFunctions.Where(focusElements, func.Arguments, context, EvaluateExpression),
-            "select" => CollectionFunctions.Select(focusElements, func.Arguments, context, EvaluateExpression),
-            "all" => CollectionFunctions.All(focusElements, func.Arguments, context, EvaluateExpression),
-            "any" => CollectionFunctions.Any(focusElements, func.Arguments, context, EvaluateExpression),
-            "repeat" => CollectionFunctions.Repeat(focusElements, func.Arguments, context, EvaluateExpression),
-            "oftype" => CollectionFunctions.OfType(focusElements, func.Arguments, context, EvaluateExpression),
-            "as" => CollectionFunctions.As(focusElements, func.Arguments),
-            "intersect" => CollectionFunctions.Intersect(focusElements, func.Arguments, context, EvaluateExpression),
-            "exclude" => CollectionFunctions.Exclude(focusElements, func.Arguments, context, EvaluateExpression),
-            "union" => CollectionFunctions.Union(focusElements, func.Arguments, context, EvaluateExpression),
-            "combine" => CollectionFunctions.Combine(focusElements, func.Arguments, context, EvaluateExpression),
-            "subsetof" => CollectionFunctions.SubsetOf(focusElements, func.Arguments, context, EvaluateExpression),
-            "supersetof" => CollectionFunctions.SupersetOf(focusElements, func.Arguments, context, EvaluateExpression),
-
-            // Aggregate functions (Phase 23)
-            "sum" => AggregateFunctions.Sum(focusElements),
-            "min" => AggregateFunctions.Min(focusElements),
-            "max" => AggregateFunctions.Max(focusElements),
-            "avg" => AggregateFunctions.Avg(focusElements),
-
-            // Boolean functions
-            "alltrue" => BooleanFunctions.AllTrue(focusElements),
-            "anytrue" => BooleanFunctions.AnyTrue(focusElements),
-            "allfalse" => BooleanFunctions.AllFalse(focusElements),
-            "anyfalse" => BooleanFunctions.AnyFalse(focusElements),
-            "not" => BooleanFunctions.Not(focusElements),
-
-            // Type conversion functions
-            "tointeger" => TypeConversionFunctions.ToInteger(focusElements),
-            "todecimal" => TypeConversionFunctions.ToDecimal(focusElements),
-            "tostring" => TypeConversionFunctions.ToString(focusElements),
-            "toboolean" => TypeConversionFunctions.ToBoolean(focusElements),
-            "todate" => TypeConversionFunctions.ToDate(focusElements),
-            "todatetime" => TypeConversionFunctions.ToDateTime(focusElements),
-            "totime" => TypeConversionFunctions.ToTime(focusElements),
-            "toquantity" => TypeConversionFunctions.ToQuantity(focusElements, func.Arguments),
-            "convertstointeger" => TypeConversionFunctions.ConvertsToInteger(focusElements),
-            "convertstodecimal" => TypeConversionFunctions.ConvertsToDecimal(focusElements),
-            "convertstostring" => TypeConversionFunctions.ConvertsToString(focusElements),
-            "convertstoboolean" => TypeConversionFunctions.ConvertsToBoolean(focusElements),
-            "convertstodate" => TypeConversionFunctions.ConvertsToDate(focusElements),
-            "convertstodatetime" => TypeConversionFunctions.ConvertsToDateTime(focusElements),
-            "convertstotime" => TypeConversionFunctions.ConvertsToTime(focusElements),
-            "convertstoquantity" => TypeConversionFunctions.ConvertsToQuantity(focusElements, func.Arguments),
-
-            // Conditional function
-            "iif" => ConditionalFunctions.Iif(focusElements, func.Arguments, context, EvaluateExpression),
-
-            // String manipulation functions
-            "indexof" => StringFunctions.IndexOf(focusElements, func.Arguments, context, EvaluateExpression),
-            "substring" => StringFunctions.Substring(focusElements, func.Arguments, context, EvaluateExpression),
-            "startswith" => StringFunctions.StartsWith(focusElements, func.Arguments, context, EvaluateExpression),
-            "endswith" => StringFunctions.EndsWith(focusElements, func.Arguments, context, EvaluateExpression),
-            "upper" => StringFunctions.Upper(focusElements),
-            "lower" => StringFunctions.Lower(focusElements),
-            "length" => StringFunctions.Length(focusElements),
-            "replace" => StringFunctions.Replace(focusElements, func.Arguments, context, EvaluateExpression),
-            "matches" => StringFunctions.Matches(focusElements, func.Arguments, context, EvaluateExpression),
-            "replacematches" => StringFunctions.ReplaceMatches(focusElements, func.Arguments, context, EvaluateExpression),
-            "tochars" => StringFunctions.ToChars(focusElements),
-            "join" => StringFunctions.Join(focusElements, func.Arguments, context, EvaluateExpression),
-
-            // Boundary functions
-            "lowboundary" => BoundaryFunctions.LowBoundary(focusElements),
-            "highboundary" => BoundaryFunctions.HighBoundary(focusElements),
-
-            // Tree navigation functions
-            "children" => TreeNavigationFunctions.Children(focusElements),
-            "descendants" => TreeNavigationFunctions.Descendants(focusElements),
-
-            // FHIR-specific functions
-            "extension" => FhirSpecificFunctions.Extension(focusElements, func.Arguments, context, EvaluateExpression),
-            "resolve" => FhirSpecificFunctions.Resolve(focusElements, context),
-            "getresourcekey" => FhirSpecificFunctions.GetResourceKey(context),
-            "getreferencekey" => FhirSpecificFunctions.GetReferenceKey(focusElements, func.Arguments, context, EvaluateExpression),
-
-            // Utility functions
-            "trace" => UtilityFunctions.Trace(focusElements, func.Arguments, context),
-            "now" => UtilityFunctions.Now(focusElements),
-            "today" => UtilityFunctions.Today(focusElements),
-            "timeofday" => UtilityFunctions.TimeOfDay(focusElements),
-
-            // Date/Time component extraction functions (Phase 23)
-            "year" => DateTimeFunctions.Year(focusElements),
-            "month" => DateTimeFunctions.Month(focusElements),
-            "day" => DateTimeFunctions.Day(focusElements),
-            "hour" => DateTimeFunctions.Hour(focusElements),
-            "minute" => DateTimeFunctions.Minute(focusElements),
-            "second" => DateTimeFunctions.Second(focusElements),
-            "millisecond" => DateTimeFunctions.Millisecond(focusElements),
-            "timezone" => DateTimeFunctions.Timezone(focusElements),
-
-            // For bare identifiers (e.g., "Patient"), treat as child navigation
-            _ when func.Arguments.Count == 0 && func.Focus == AxisExpression.That
-                => EvaluateIdentifier(focus, new IdentifierExpression(func.FunctionName)),
-
-            _ => throw new NotSupportedException($"Function '{func.FunctionName}' is not yet implemented")
-        };
+        return DispatchFunctionCall(expression.FunctionName, focusElements, expression.Arguments, context);
     }
 
-    private IEnumerable<IElement> EvaluateIdentifier(IEnumerable<IElement> focus, IdentifierExpression id)
+    public IEnumerable<IElement> VisitPropertyAccess(PropertyAccessExpression expression, EvaluationContext context)
     {
-        // Identifiers navigate to child elements, with special handling for resource type names
-        foreach (var element in focus)
+        var focusElements = expression.Focus != null
+            ? EvaluateExpression(context.Focus, expression.Focus, context)
+            : context.Focus;
+
+        foreach (var element in focusElements)
         {
-            // Check if identifier starts with uppercase (resource/type names are capitalized)
-            if (id.Name.Length > 0 && char.IsUpper(id.Name[0]))
+            if (expression.PropertyName.Length > 0 && char.IsUpper(expression.PropertyName[0]))
             {
-                // If we are at a resource, we should match a path that is possibly not rooted in the resource
-                // (e.g. doing "name.family" on a Patient is equivalent to "Patient.name.family")
-                // Also we do some poor polymorphism here: Resource.meta.lastUpdated is also allowed.
                 string[] baseClasses = ["Resource", "DomainResource"];
-                if (element.InstanceType == id.Name || baseClasses.Contains(id.Name))
+                if (element.InstanceType == expression.PropertyName || baseClasses.Contains(expression.PropertyName))
                 {
                     yield return element;
                     continue;
                 }
             }
 
-            // Navigate to child elements with this name
-            foreach (var child in element.Children(id.Name))
+            foreach (var child in element.Children(expression.PropertyName))
             {
                 yield return child;
             }
         }
     }
 
-    private IEnumerable<IElement> EvaluateBinaryExpression(IEnumerable<IElement> focus, Expressions.BinaryExpression binary, EvaluationContext context)
+    public IEnumerable<IElement> VisitIdentifier(IdentifierExpression expression, EvaluationContext context)
     {
-        var left = EvaluateExpression(focus, binary.Left, context).ToList();
-        var right = EvaluateExpression(focus, binary.Right, context).ToList();
+        foreach (var element in context.Focus)
+        {
+            if (expression.Name.Length > 0 && char.IsUpper(expression.Name[0]))
+            {
+                string[] baseClasses = ["Resource", "DomainResource"];
+                if (element.InstanceType == expression.Name || baseClasses.Contains(expression.Name))
+                {
+                    yield return element;
+                    continue;
+                }
+            }
 
-        // FhirPath operators are case-insensitive, ToLowerInvariant is intentional
+            foreach (var child in element.Children(expression.Name))
+            {
+                yield return child;
+            }
+        }
+    }
+
+    public IEnumerable<IElement> VisitBinary(BinaryExpression expression, EvaluationContext context)
+    {
+        var left = EvaluateExpression(context.Focus, expression.Left, context).ToList();
+        var right = EvaluateExpression(context.Focus, expression.Right, context).ToList();
+
 #pragma warning disable CA1308 // Normalize strings to uppercase
-        return binary.Operator.ToLowerInvariant() switch
+        return expression.Operator.ToLowerInvariant() switch
 #pragma warning restore CA1308 // Normalize strings to uppercase
         {
-            // Collection operators (return collections)
             "|" => EvaluateUnion(left, right),
 
-            // Math operators (return numeric values)
             "+" => EvaluateAddition(left, right),
             "-" => EvaluateSubtraction(left, right),
             "*" => EvaluateMultiplication(left, right),
@@ -241,18 +155,14 @@ public class FhirPathEvaluator
             "div" => EvaluateIntegerDivision(left, right),
             "mod" => EvaluateModulo(left, right),
 
-            // String concatenation (returns string)
             "&" => EvaluateStringConcatenation(left, right),
 
-            // Type operators (special handling for identifiers)
-            "is" => EvaluateTypeIs(left, binary.Right),
-            "as" => EvaluateTypeAs(left, binary.Right),
+            "is" => EvaluateTypeIs(left, expression.Right),
+            "as" => EvaluateTypeAs(left, expression.Right),
 
-            // Membership operators (return boolean)
             "in" => FunctionHelpers.ReturnBoolean(EvaluateMembership(left, right, isIn: true)),
             "contains" => FunctionHelpers.ReturnBoolean(EvaluateMembership(left, right, isIn: false)),
 
-            // Comparison operators (return boolean)
             "=" => FunctionHelpers.ReturnBoolean(CompareEquality(left, right, equals: true)),
             "!=" => FunctionHelpers.ReturnBoolean(CompareEquality(left, right, equals: false)),
             "~" => FunctionHelpers.ReturnBoolean(CompareEquivalence(left, right, equivalent: true)),
@@ -262,24 +172,21 @@ public class FhirPathEvaluator
             "<" => FunctionHelpers.ReturnBoolean(CompareOrder(left, right, greater: false, orEqual: false)),
             "<=" => FunctionHelpers.ReturnBoolean(CompareOrder(left, right, greater: false, orEqual: true)),
 
-            // Logical operators (return boolean)
             "and" => FunctionHelpers.ReturnBoolean(FunctionHelpers.IsTrue(left) && FunctionHelpers.IsTrue(right)),
             "or" => FunctionHelpers.ReturnBoolean(FunctionHelpers.IsTrue(left) || FunctionHelpers.IsTrue(right)),
             "xor" => FunctionHelpers.ReturnBoolean(FunctionHelpers.IsTrue(left) ^ FunctionHelpers.IsTrue(right)),
             "implies" => FunctionHelpers.ReturnBoolean(!FunctionHelpers.IsTrue(left) || FunctionHelpers.IsTrue(right)),
 
-            _ => throw new NotSupportedException($"Binary operator '{binary.Operator}' is not yet implemented")
+            _ => throw new NotSupportedException($"Binary operator '{expression.Operator}' is not yet implemented")
         };
     }
 
 
-    // Union operator: Merge collections, eliminate duplicates
     private IEnumerable<IElement> EvaluateUnion(List<IElement> left, List<IElement> right)
     {
         return FunctionHelpers.EvaluateUnion(left, right);
     }
 
-    // Math operators
     private IEnumerable<IElement> EvaluateAddition(List<IElement> left, List<IElement> right)
     {
         if (left.Count != 1 || right.Count != 1)
@@ -288,17 +195,14 @@ public class FhirPathEvaluator
         var leftValue = left[0].Value;
         var rightValue = right[0].Value;
 
-        // Try quantity arithmetic first
         if (leftValue is Types.Quantity || rightValue is Types.Quantity)
         {
             return QuantityEvaluator.EvaluateArithmetic(left, "+", right);
         }
 
-        // Try numeric addition with implicit Integer->Decimal conversion
         if (FunctionHelpers.TryConvertToDecimal(leftValue, out var leftDecimal) && FunctionHelpers.TryConvertToDecimal(rightValue, out var rightDecimal))
         {
             var result = leftDecimal + rightDecimal;
-            // Return Integer if both were Integer, otherwise Decimal
             return leftValue is int && rightValue is int && result == Math.Floor(result)
                 ? [CreateInteger((int)result)]
                 : [CreateDecimal(result)];
@@ -315,7 +219,6 @@ public class FhirPathEvaluator
         var leftValue = left[0].Value;
         var rightValue = right[0].Value;
 
-        // Try quantity arithmetic first
         if (leftValue is Types.Quantity || rightValue is Types.Quantity)
         {
             return QuantityEvaluator.EvaluateArithmetic(left, "-", right);
@@ -340,7 +243,6 @@ public class FhirPathEvaluator
         var leftValue = left[0].Value;
         var rightValue = right[0].Value;
 
-        // Try quantity arithmetic first
         if (leftValue is Types.Quantity || rightValue is Types.Quantity)
         {
             return QuantityEvaluator.EvaluateArithmetic(left, "*", right);
@@ -365,7 +267,6 @@ public class FhirPathEvaluator
         var leftValue = left[0].Value;
         var rightValue = right[0].Value;
 
-        // Try quantity arithmetic first
         if (leftValue is Types.Quantity || rightValue is Types.Quantity)
         {
             return QuantityEvaluator.EvaluateArithmetic(left, "/", right);
@@ -374,7 +275,7 @@ public class FhirPathEvaluator
         if (FunctionHelpers.TryConvertToDecimal(leftValue, out var leftDecimal) && FunctionHelpers.TryConvertToDecimal(rightValue, out var rightDecimal))
         {
             if (rightDecimal == 0)
-                return []; // Division by zero returns empty
+                return [];
 
             return [CreateDecimal(leftDecimal / rightDecimal)];
         }
@@ -414,7 +315,6 @@ public class FhirPathEvaluator
         return [];
     }
 
-    // String concatenation
     private IEnumerable<IElement> EvaluateStringConcatenation(List<IElement> left, List<IElement> right)
     {
         if (left.Count != 1 || right.Count != 1)
@@ -426,34 +326,27 @@ public class FhirPathEvaluator
         return [new PrimitiveElement(leftStr + rightStr, "string")];
     }
 
-    // Type operators
     private IEnumerable<IElement> EvaluateTypeIs(List<IElement> left, Expression typeExpr)
     {
         if (left.Count != 1)
             return [];
 
-        // Extract type name from identifier or function call expression
-        // NOTE: Parser treats bare identifiers as function calls (e.g., "integer" = "integer()")
-        string? typeName = null;
-        if (typeExpr is IdentifierExpression idExpr)
+        string? typeName = typeExpr switch
         {
-            typeName = idExpr.Name;
-        }
-        else if (typeExpr is FunctionCallExpression funcExpr)
-        {
-            typeName = funcExpr.FunctionName;
-        }
+            IdentifierExpression idExpr => idExpr.Name,
+            PropertyAccessExpression propExpr => propExpr.PropertyName,
+            FunctionCallExpression funcExpr => funcExpr.FunctionName,
+            _ => null
+        };
 
         if (typeName == null)
             return [];
 
-        // FhirPath type names are lowercase, ToLowerInvariant is intentional
 #pragma warning disable CA1308 // Normalize strings to uppercase
         typeName = typeName.ToLowerInvariant();
         var elementType = left[0].InstanceType?.ToLowerInvariant() ?? string.Empty;
 #pragma warning restore CA1308 // Normalize strings to uppercase
 
-        // Simple type checking (can be enhanced for inheritance)
         return FunctionHelpers.ReturnBoolean(elementType == typeName);
     }
 
@@ -462,71 +355,57 @@ public class FhirPathEvaluator
         if (left.Count != 1)
             return [];
 
-        // Extract type name from identifier or function call expression
-        // NOTE: Parser treats bare identifiers as function calls (e.g., "integer" = "integer()")
-        string? typeName = null;
-        if (typeExpr is IdentifierExpression idExpr)
+        string? typeName = typeExpr switch
         {
-            typeName = idExpr.Name;
-        }
-        else if (typeExpr is FunctionCallExpression funcExpr)
-        {
-            typeName = funcExpr.FunctionName;
-        }
+            IdentifierExpression idExpr => idExpr.Name,
+            PropertyAccessExpression propExpr => propExpr.PropertyName,
+            FunctionCallExpression funcExpr => funcExpr.FunctionName,
+            _ => null
+        };
 
         if (typeName == null)
             return [];
 
-        // FhirPath type names are lowercase, ToLowerInvariant is intentional
 #pragma warning disable CA1308 // Normalize strings to uppercase
         typeName = typeName.ToLowerInvariant();
         var elementType = left[0].InstanceType?.ToLowerInvariant() ?? string.Empty;
 #pragma warning restore CA1308 // Normalize strings to uppercase
 
-        // Return element if type matches, empty otherwise
         return elementType == typeName ? [left[0]] : [];
     }
 
-    // Membership operators
     private bool? EvaluateMembership(List<IElement> left, List<IElement> right, bool isIn)
     {
-        // 'in' operator: left operand must be single item
-        // 'contains' operator: right operand must be single item
         var singleItem = isIn ? left : right;
         var collection = isIn ? right : left;
 
         if (singleItem.Count == 0)
-            return null; // Empty -> empty result
+            return null;
 
         if (singleItem.Count != 1)
-            return null; // More than one item -> error (return null for now, should signal error)
+            return null;
 
         if (collection.Count == 0)
-            return false; // Item not in empty collection
+            return false;
 
         var itemValue = singleItem[0].Value;
         return collection.Any(c => FunctionHelpers.AreEqual(c.Value, itemValue));
     }
 
-    // Equivalence comparison
     private bool? CompareEquivalence(List<IElement> left, List<IElement> right, bool equivalent)
     {
-        // Empty collections are equivalent
         if (left.Count == 0 && right.Count == 0)
             return equivalent;
 
-        // Different counts are not equivalent
         if (left.Count != right.Count)
             return !equivalent;
 
-        // For single items, compare with normalization
         if (left.Count == 1 && right.Count == 1)
         {
             var isEquiv = AreEquivalent(left[0].Value, right[0].Value);
             return isEquiv == equivalent;
         }
 
-        // For multiple items, order-independent comparison
         var leftSorted = left.OrderBy(e => e.Value?.ToString() ?? string.Empty).ToList();
         var rightSorted = right.OrderBy(e => e.Value?.ToString() ?? string.Empty).ToList();
 
@@ -544,7 +423,6 @@ public class FhirPathEvaluator
         if (left == null && right == null) return true;
         if (left == null || right == null) return false;
 
-        // String equivalence: case-insensitive, whitespace-normalized
         if (left is string leftStr && right is string rightStr)
         {
             return string.Equals(
@@ -553,7 +431,6 @@ public class FhirPathEvaluator
                 StringComparison.OrdinalIgnoreCase);
         }
 
-        // Numeric equivalence with rounding to least precise
         if (left is decimal || right is decimal || left is int || right is int)
         {
             if (FunctionHelpers.TryConvertToDecimal(left, out var leftDec) && FunctionHelpers.TryConvertToDecimal(right, out var rightDec))
@@ -565,34 +442,30 @@ public class FhirPathEvaluator
 
     private string NormalizeWhitespace(string str)
     {
-        // Normalize all whitespace characters to single space
         return System.Text.RegularExpressions.Regex.Replace(str.Trim(), @"\s+", " ");
     }
 
 
-    private IEnumerable<IElement> EvaluateAxis(IEnumerable<IElement> focus, AxisExpression axis, EvaluationContext context)
+    public IEnumerable<IElement> VisitScope(ScopeExpression expression, EvaluationContext context)
     {
-        // FhirPath axis names are case-insensitive, ToLowerInvariant is intentional
 #pragma warning disable CA1308 // Normalize strings to uppercase
-        return axis.AxisName.ToLowerInvariant() switch
+        return expression.ScopeName.ToLowerInvariant() switch
 #pragma warning restore CA1308 // Normalize strings to uppercase
         {
-            "this" => context.GetEnvironmentVariable("this") is IElement thisElement
+            "this" => context.GetThis() is IElement thisElement
                 ? [thisElement]
-                : focus,
-            "that" => focus,
-            _ => throw new NotSupportedException($"Axis '${axis.AxisName}' is not yet implemented")
+                : context.Focus,
+            "that" => context.Focus,
+            _ => throw new NotSupportedException($"Scope '${expression.ScopeName}' is not yet implemented")
         };
     }
 
-    private IEnumerable<IElement> EvaluateVariable(VariableRefExpression var, EvaluationContext context)
+    public IEnumerable<IElement> VisitVariable(VariableRefExpression expression, EvaluationContext context)
     {
-        var value = context.GetEnvironmentVariable(var.Name);
+        var value = context.GetEnvironmentVariable(expression.Name);
 
-        // Special handling for predefined variables that may not exist
-        if (var.Name is "this" or "index")
+        if (expression.Name is "this" or "index")
         {
-            // These variables are optional and may not be defined
             if (value == null)
                 return [];
             if (value is IElement element)
@@ -602,32 +475,28 @@ public class FhirPathEvaluator
             return [];
         }
 
-        // Per FHIRPath specification, accessing undefined variables returns empty collection
-        // (not an error) - allows for defensive expressions like %resource.where(...)
         if (value == null)
         {
             return [];
         }
 
-        // Handle both single element and collection returns
         if (value is IElement element2)
             return [element2];
         if (value is IEnumerable<IElement> elements2)
             return elements2;
 
-        // If it's neither, return empty
         return [];
     }
 
-    private IEnumerable<IElement> EvaluateConstant(ConstantExpression constant)
+    public IEnumerable<IElement> VisitConstant(ConstantExpression expression, EvaluationContext context)
     {
-        return constant.Value switch
+        return expression.Value switch
         {
             int i => [CreateInteger(i)],
             decimal d => [CreateDecimal(d)],
             bool b => [CreateBoolean(b)],
             string s => [CreateDateTimeOrString(s)],
-            _ => [CreateConstant(constant.Value)]
+            _ => [CreateConstant(expression.Value)]
         };
     }
 
@@ -641,55 +510,64 @@ public class FhirPathEvaluator
         if (string.IsNullOrEmpty(value))
             return CreateString(value);
 
-        // Check for date/time literal prefix
         if (!value.StartsWith("@", StringComparison.Ordinal))
             return CreateString(value);
 
-        // Remove @ prefix for type detection
         var dateTimeValue = value.Substring(1);
 
-        // Time literal: @THH:MM:SS
         if (dateTimeValue.StartsWith("T", StringComparison.Ordinal))
         {
             return new PrimitiveElement(value, "time");
         }
 
-        // DateTime literal: @YYYY-MM-DDTHH:MM:SS
         if (dateTimeValue.Contains('T', StringComparison.Ordinal))
         {
             return new PrimitiveElement(value, "dateTime");
         }
 
-        // Date literal: @YYYY, @YYYY-MM, @YYYY-MM-DD
         return new PrimitiveElement(value, "date");
     }
 
-    private IEnumerable<IElement> EvaluateIndexer(IEnumerable<IElement> focus, Expressions.IndexerExpression indexer, EvaluationContext context)
+    public IEnumerable<IElement> VisitIndexer(IndexerExpression expression, EvaluationContext context)
     {
-        var collection = EvaluateExpression(focus, indexer.Collection, context).ToList();
-        var indexResults = EvaluateExpression(focus, indexer.Index, context).ToList();
+        // Optimization: Fast path for constant integer indexes
+        // Avoids creating IElement wrapper and context allocation for index evaluation
+        if (expression.Index is ConstantExpression { Value: int constantIndex })
+        {
+            var collection = EvaluateExpression(context.Focus, expression.Collection, context).ToList();
+
+            if (constantIndex >= 0 && constantIndex < collection.Count)
+            {
+                return [collection[constantIndex]];
+            }
+
+            return [];
+        }
+
+        // General case: evaluate index expression dynamically
+        var collection2 = EvaluateExpression(context.Focus, expression.Collection, context).ToList();
+        var indexResults = EvaluateExpression(context.Focus, expression.Index, context).ToList();
 
         if (indexResults.Count == 1 && indexResults[0].Value is int index)
         {
-            if (index >= 0 && index < collection.Count)
+            if (index >= 0 && index < collection2.Count)
             {
-                return [collection[index]];
+                return [collection2[index]];
             }
         }
 
         return [];
     }
 
-    private IEnumerable<IElement> EvaluateUnary(IEnumerable<IElement> focus, Expressions.UnaryExpression unary, EvaluationContext context)
+    public IEnumerable<IElement> VisitUnary(UnaryExpression expression, EvaluationContext context)
     {
-        var operand = EvaluateExpression(focus, unary.Operand, context).ToList();
+        var operand = EvaluateExpression(context.Focus, expression.Operand, context).ToList();
 
-        if (unary.Operator == "-" && operand.Count == 1)
+        if (expression.Operator == "-" && operand.Count == 1)
         {
             var value = operand[0].Value;
             try
             {
-                // Preserve integer type if possible
                 if (value is int i)
                 {
                     return [CreateInteger(-i)];
@@ -706,7 +584,6 @@ public class FhirPathEvaluator
             }
             catch
             {
-                // Ignore conversion errors
             }
         }
 
@@ -716,14 +593,12 @@ public class FhirPathEvaluator
 
     private bool? CompareEquality(List<IElement> left, List<IElement> right, bool equals)
     {
-        // Empty collections: return empty (null means empty result)
         if (left.Count == 0 || right.Count == 0)
             return null;
 
         if (left.Count != right.Count)
             return !equals;
 
-        // Special handling for Quantity comparisons with unit conversion
         if (left.Count == 1 && right.Count == 1 &&
             (left[0].Value is Types.Quantity || right[0].Value is Types.Quantity))
         {
@@ -742,17 +617,15 @@ public class FhirPathEvaluator
 
     private bool? CompareOrder(List<IElement> left, List<IElement> right, bool greater, bool orEqual)
     {
-        // Empty collections: return empty (null means empty result)
         if (left.Count == 0 || right.Count == 0)
             return null;
 
         if (left.Count != 1 || right.Count != 1)
-            return null; // Multiple items: undefined
+            return null;
 
         var leftValue = left[0].Value;
         var rightValue = right[0].Value;
 
-        // Special handling for Quantity comparisons with unit conversion
         if (leftValue is Types.Quantity || rightValue is Types.Quantity)
         {
             var op = (greater, orEqual) switch
@@ -784,7 +657,21 @@ public class FhirPathEvaluator
     }
 
 
-    // Factory methods for creating primitive IElement instances
+    public IEnumerable<IElement> VisitParenthesized(ParenthesizedExpression expression, EvaluationContext context)
+    {
+        return EvaluateExpression(context.Focus, expression.InnerExpression, context);
+    }
+
+    public IEnumerable<IElement> VisitQuantity(QuantityExpression expression, EvaluationContext context)
+    {
+        return QuantityEvaluator.EvaluateQuantity(expression);
+    }
+
+    public IEnumerable<IElement> VisitEmpty(EmptyExpression expression, EvaluationContext context)
+    {
+        return [];
+    }
+
     private IElement CreateBoolean(bool value) => new PrimitiveElement(value, "boolean");
     private IElement CreateInteger(int value) => new PrimitiveElement(value, "integer");
     private IElement CreateDecimal(decimal value) => new PrimitiveElement(value, "decimal");
@@ -804,7 +691,7 @@ public class FhirPathEvaluator
             decimal => "decimal",
             bool => "boolean",
             DateTime or DateTimeOffset => "dateTime",
-            _ => "string" // Default fallback
+            _ => "string"
         };
     }
 
