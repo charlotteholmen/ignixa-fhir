@@ -1,6 +1,13 @@
 {
-  "latestRun": "dev-perf-test-pipeline-2ff690d7",
+  "latestRun": "main-5ab640a",
   "runs": [
+    {
+      "directory": "main-5ab640a",
+      "branch": "main",
+      "commit": "5ab640a4d45c727a2e4595b13ce4d05a80e3a3bf",
+      "timestamp": "2026-01-16T15:04:43Z",
+      "run_number": "9"
+    },
     {
       "directory": "baseline-release-0.0.137-benchmarks-98f3a8a",
       "branch": "baseline/release-0.0.137-benchmarks",
