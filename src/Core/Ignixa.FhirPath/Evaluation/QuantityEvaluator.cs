@@ -59,31 +59,32 @@ internal static class QuantityEvaluator
         var leftValue = left[0].Value;
         var rightValue = right[0].Value;
 
-        // Handle quantity + quantity, quantity - quantity, quantity / quantity
+        // Handle quantity + quantity, quantity - quantity, quantity * quantity, quantity / quantity
         if (leftValue is Quantity leftQty && rightValue is Quantity rightQty)
         {
             return op switch
             {
                 "+" => EvaluateQuantityAddition(leftQty, rightQty),
                 "-" => EvaluateQuantitySubtraction(leftQty, rightQty),
+                "*" => EvaluateQuantityMultiplication(leftQty, rightQty),
                 "/" => EvaluateQuantityDivision(leftQty, rightQty),
                 _ => []
             };
         }
 
         // Handle quantity * scalar, scalar * quantity
-        if (leftValue is Quantity qty1 && IsScalar(rightValue) && rightValue != null)
+        if (leftValue is Quantity leftQuantity && IsScalar(rightValue) && rightValue != null)
         {
             if (op == "*")
-                return EvaluateQuantityScalarMultiply(qty1, ToDecimal(rightValue));
+                return EvaluateQuantityScalarMultiply(leftQuantity, ToDecimal(rightValue));
             if (op == "/")
-                return EvaluateQuantityScalarDivide(qty1, ToDecimal(rightValue));
+                return EvaluateQuantityScalarDivide(leftQuantity, ToDecimal(rightValue));
         }
 
-        if (IsScalar(leftValue) && leftValue != null && rightValue is Quantity qty2)
+        if (IsScalar(leftValue) && leftValue != null && rightValue is Quantity rightQuantity)
         {
             if (op == "*")
-                return EvaluateQuantityScalarMultiply(qty2, ToDecimal(leftValue));
+                return EvaluateQuantityScalarMultiply(rightQuantity, ToDecimal(leftValue));
         }
 
         return [];
@@ -105,11 +106,12 @@ internal static class QuantityEvaluator
         if (left.Count != 1 || right.Count != 1)
             return null;
 
-        var leftValue = left[0].Value;
-        var rightValue = right[0].Value;
+        // Try to extract Quantity from elements (handles both FhirPath literals and FHIR Quantity elements)
+        var leftQty = ExtractQuantity(left[0]);
+        var rightQty = ExtractQuantity(right[0]);
 
         // Both must be quantities
-        if (leftValue is not Quantity leftQty || rightValue is not Quantity rightQty)
+        if (leftQty == null || rightQty == null)
             return null;
 
         // Check if units are compatible (can be converted)
@@ -134,6 +136,74 @@ internal static class QuantityEvaluator
         };
     }
 
+    /// <summary>
+    /// Extracts a Quantity from an IElement, handling both FhirPath Quantity literals
+    /// and FHIR Quantity elements (which have value/unit/code children).
+    /// </summary>
+    private static Quantity? ExtractQuantity(IElement element)
+    {
+        // If the value is already a Quantity (FhirPath literal), return it directly
+        if (element.Value is Quantity qty)
+            return qty;
+
+        // If it's a FHIR Quantity element, extract value and unit from children
+#pragma warning disable CA1308 // Normalize strings to uppercase - FHIR type names are case-insensitive
+        var instanceType = element.InstanceType?.ToLowerInvariant();
+#pragma warning restore CA1308 // Normalize strings to uppercase
+        if (instanceType == "quantity" || instanceType == "age" || instanceType == "distance" || 
+            instanceType == "duration" || instanceType == "count" || instanceType == "simplequantity" ||
+            instanceType == "moneyquantity")
+        {
+            return ExtractQuantityFromFhirElement(element);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Extracts value and unit from a FHIR Quantity element's children.
+    /// </summary>
+    private static Quantity? ExtractQuantityFromFhirElement(IElement element)
+    {
+        decimal? value = null;
+        string? unit = null;
+
+        var children = element.Children();
+        foreach (var child in children)
+        {
+            if (child.Name == "value" && child.Value != null)
+            {
+                if (child.Value is decimal d)
+                    value = d;
+                else if (child.Value is int i)
+                    value = i;
+                else if (child.Value is long l)
+                    value = l;
+                else if (child.Value is double dbl)
+                    value = (decimal)dbl;
+                else if (child.Value is string s && decimal.TryParse(s, out var parsed))
+                    value = parsed;
+            }
+            else if (child.Name == "code" && child.Value is string code)
+            {
+                // Prefer 'code' over 'unit' as it's the UCUM code
+                unit = code;
+            }
+            else if (child.Name == "unit" && unit == null && child.Value is string unitStr)
+            {
+                // Fall back to 'unit' if 'code' is not present
+                unit = unitStr;
+            }
+        }
+
+        if (value.HasValue && !string.IsNullOrEmpty(unit))
+        {
+            return new Quantity(value.Value, unit);
+        }
+
+        return null;
+    }
+
     #region Private Helpers
 
     private static IEnumerable<IElement> EvaluateQuantityAddition(Quantity left, Quantity right)
@@ -147,6 +217,14 @@ internal static class QuantityEvaluator
     private static IEnumerable<IElement> EvaluateQuantitySubtraction(Quantity left, Quantity right)
     {
         var result = left.Subtract(right, UnitConverter);
+        return result != null
+            ? [new QuantityElement(result)]
+            : [];
+    }
+
+    private static IEnumerable<IElement> EvaluateQuantityMultiplication(Quantity left, Quantity right)
+    {
+        var result = UnitConverter.Multiply(left, right);
         return result != null
             ? [new QuantityElement(result)]
             : [];
@@ -168,9 +246,9 @@ internal static class QuantityEvaluator
 
     private static IEnumerable<IElement> EvaluateQuantityDivision(Quantity left, Quantity right)
     {
-        var result = left.DivideBy(right, UnitConverter);
+        var result = UnitConverter.Divide(left, right);
         return result != null
-            ? [CreateDecimal(result.Value)]
+            ? [new QuantityElement(result)]
             : [];
     }
 

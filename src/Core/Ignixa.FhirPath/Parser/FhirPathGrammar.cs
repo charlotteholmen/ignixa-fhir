@@ -94,6 +94,7 @@ public static class FhirPathGrammar
 
     // Calendar Duration: number followed by calendar keyword (e.g., 1 year, 4 days, 1 hour)
     // FHIRPath spec allows both singular and plural forms
+    // Store the original keyword form (not UCUM) so toString() preserves it
     private static readonly TokenListParser<FhirPathTokenKind, QuantityExpression> CalendarDuration =
         from valueToken in Token.EqualTo(FhirPathTokenKind.DecimalLiteral)
             .Or(Token.EqualTo(FhirPathTokenKind.IntegerLiteral))
@@ -105,7 +106,7 @@ public static class FhirPathGrammar
             })
         select new QuantityExpression(
             decimal.Parse(valueToken.ToStringValue()),
-            Types.CalendarDuration.GetUcumUnit(keywordToken.ToStringValue())!,
+            keywordToken.ToStringValue(),  // Preserve keyword form (year, week, etc.)
             CreatePosition(valueToken, keywordToken));
 
     // Literal: any constant value
@@ -132,12 +133,18 @@ public static class FhirPathGrammar
                 return new ScopeExpression(scopeName, CreatePosition(t));
             });
 
-    // External constant: %identifier
+    // External constant: %identifier or %`delimited-identifier`
     private static readonly TokenListParser<FhirPathTokenKind, Expression> ExternalConstant =
         Token.EqualTo(FhirPathTokenKind.ExternalConstant)
-            .Select(t => (Expression)new VariableRefExpression(
-                t.ToStringValue().Substring(1), // Remove '%'
-                CreatePosition(t)));
+            .Select(t =>
+            {
+                var raw = t.ToStringValue().Substring(1); // Remove '%'
+                // Check if delimited with backticks and remove them
+                var varName = (raw.Length >= 2 && raw[0] == '`' && raw[raw.Length - 1] == '`')
+                    ? raw.Substring(1, raw.Length - 2)
+                    : raw;
+                return (Expression)new VariableRefExpression(varName, CreatePosition(t));
+            });
 
     // Parenthesized expression: (expression)
     private static readonly TokenListParser<FhirPathTokenKind, Expression> ParenthesizedExpression =
@@ -382,13 +389,87 @@ public static class FhirPathGrammar
     // Helper methods
     private static string UnescapeString(string str)
     {
-        // Remove quotes and unescape
-        if (str.StartsWith('\'') && str.EndsWith('\''))
+        // Remove quotes if present
+        if (str.StartsWith('\'') && str.EndsWith('\'') && str.Length >= 2)
         {
             str = str.Substring(1, str.Length - 2);
-            str = str.Replace("''", "'", StringComparison.Ordinal); // SQL-style escaping
         }
-        return str;
+
+        // Handle SQL-style escaping first (for backward compatibility)
+        str = str.Replace("''", "'", StringComparison.Ordinal);
+
+        // Handle backslash escapes
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < str.Length; )
+        {
+            if (str[i] == '\\' && i + 1 < str.Length)
+            {
+                char next = str[i + 1];
+                switch (next)
+                {
+                    case '\'':
+                        sb.Append('\'');
+                        i += 2; // Skip both \ and '
+                        break;
+                    case '"':
+                        sb.Append('"');
+                        i += 2; // Skip both \ and "
+                        break;
+                    case '\\':
+                        sb.Append('\\');
+                        i += 2; // Skip both backslashes
+                        break;
+                    case 'r':
+                        sb.Append('\r');
+                        i += 2; // Skip \ and r
+                        break;
+                    case 'n':
+                        sb.Append('\n');
+                        i += 2; // Skip \ and n
+                        break;
+                    case 't':
+                        sb.Append('\t');
+                        i += 2; // Skip \ and t
+                        break;
+                    case 'f':
+                        sb.Append('\f');
+                        i += 2; // Skip \ and f
+                        break;
+                    case 'u':
+                        if (i + 5 < str.Length)
+                        {
+                            var hex = str.Substring(i + 2, 4);
+                            if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int codePoint))
+                            {
+                                sb.Append(char.ConvertFromUtf32(codePoint));
+                                i += 6; // Skip \, u, and 4 hex digits
+                            }
+                            else
+                            {
+                                sb.Append(str[i]); // Invalid hex, keep backslash
+                                i++;
+                            }
+                        }
+                        else
+                        {
+                            sb.Append(str[i]); // Incomplete escape, keep backslash
+                            i++;
+                        }
+                        break;
+                    default:
+                        sb.Append(str[i]); // Unknown escape, keep backslash
+                        i++;
+                        break;
+                }
+            }
+            else
+            {
+                sb.Append(str[i]);
+                i++;
+            }
+        }
+
+        return sb.ToString();
     }
 
     private static string UnescapeIdentifier(string id)

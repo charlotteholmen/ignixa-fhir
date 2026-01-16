@@ -183,7 +183,7 @@ internal class SchemaAwareElement : IElement
                 "boolean" => bool.TryParse(text, out var b) ? b : text,
                 "integer" or "unsignedInt" or "positiveInt" => int.TryParse(text, out var i) ? i : text,
                 "decimal" => decimal.TryParse(text, out var d) ? d : text,
-                // All other types remain as strings (string, date, dateTime, code, id, uri, etc.)
+                // FHIRPath engine handles type checking via InstanceType, no prefix needed here
                 _ => text
             };
         }

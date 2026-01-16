@@ -48,21 +48,29 @@ public static class FhirPathTokenizer
                 .Match(Span.Regex(@"\btrue\b"), FhirPathTokenKind.BooleanLiteral, requireDelimiters: false)
                 .Match(Span.Regex(@"\bfalse\b"), FhirPathTokenKind.BooleanLiteral, requireDelimiters: false)
 
-                // DateTime literals (must have 'T' time component to distinguish from Date)
-                // DateTime: @YYYY-MM-DDTHH:MM:SS.FFF(Z|±HH:MM)?
+                // DateTime literals (must have 'T' to distinguish from Date)
+                // Full DateTime: @YYYY-MM-DDTHH:MM:SS.FFF(Z|±HH:MM)?
                 .Match(Span.Regex(@"@[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})?"),
                        FhirPathTokenKind.DateTimeLiteral, requireDelimiters: false)
+                // Partial DateTime with time: @YYYY-MM-DDTHH, @YYYY-MM-DDTHH:MM (hour/minute without seconds)
+                .Match(Span.Regex(@"@[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}(:[0-9]{2})?"),
+                       FhirPathTokenKind.DateTimeLiteral, requireDelimiters: false)
+                // Partial DateTime date-only: @YYYY-MM-DDT, @YYYY-MMT, @YYYYT (trailing T indicates DateTime precision)
+                .Match(Span.Regex(@"@[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?T"),
+                       FhirPathTokenKind.DateTimeLiteral, requireDelimiters: false)
 
-                // Time literals: @THH:MM:SS.FFF (no timezone per spec)
-                .Match(Span.Regex(@"@T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?"),
+                // Time literals: @THH, @THH:MM, @THH:MM:SS, @THH:MM:SS.FFF (no timezone per spec)
+                // Partial times allowed - hour is required, minutes/seconds optional
+                .Match(Span.Regex(@"@T[0-9]{2}(:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?)?"),
                        FhirPathTokenKind.TimeLiteral, requireDelimiters: false)
 
                 // Date literals: @YYYY, @YYYY-MM, @YYYY-MM-DD (partial precision, no time component)
                 .Match(Span.Regex(@"@[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?"),
                        FhirPathTokenKind.DateLiteral, requireDelimiters: false)
 
-                // String literals (single-quoted, SQL-style escaping: '' for ')
-                .Match(QuotedString.SqlStyle, FhirPathTokenKind.StringLiteral)
+                // String literals (single-quoted, SQL-style '' or backslash escapes)
+                .Match(Span.Regex(@"'([^'\\]|''|\\['""\\rnft/`]|\\u[0-9a-fA-F]{4})*'"),
+                       FhirPathTokenKind.StringLiteral)
 
                 // Delimited identifiers (backtick or legacy double-quote style)
                 .Match(Span.Regex("`[^`]*`"),
@@ -70,9 +78,9 @@ public static class FhirPathTokenizer
                 .Match(Span.Regex("\"([^\"\\\\]|\\\\.)*\""),
                        FhirPathTokenKind.DelimitedIdentifier, requireDelimiters: false) // double-quote (legacy)
 
-                // External constants: %identifier
-                .Match(Character.EqualTo('%').IgnoreThen(Identifier.CStyle),
-                       FhirPathTokenKind.ExternalConstant)
+                // External constants: %identifier or %`delimited-identifier`
+                .Match(Span.Regex(@"%(`[^`]*`|[a-zA-Z_][a-zA-Z0-9_]*)"),
+                       FhirPathTokenKind.ExternalConstant, requireDelimiters: false)
 
                 // Axis references: $this, $index, $total
                 .Match(Span.Regex(@"\$(this|index|total)\b"),
@@ -122,6 +130,10 @@ public static class FhirPathTokenizer
         {
             // Build tokenizer without trivia tokens for performance
             return new TokenizerBuilder<FhirPathTokenKind>()
+                // Comments (must come before operators to avoid capturing // as division + division)
+                .Ignore(Comment.CStyle)
+                .Ignore(Comment.CPlusPlusStyle)
+
                 // Keywords (must come before identifiers, case-sensitive per FHIRPath N1.0 spec, require word boundary)
                 // Use regex with \b word boundaries to prevent matching within identifiers (e.g., "is" in "issued")
                 .Match(Span.Regex(@"\band\b"), FhirPathTokenKind.And, requireDelimiters: false)
@@ -139,21 +151,29 @@ public static class FhirPathTokenizer
                 .Match(Span.Regex(@"\btrue\b"), FhirPathTokenKind.BooleanLiteral, requireDelimiters: false)
                 .Match(Span.Regex(@"\bfalse\b"), FhirPathTokenKind.BooleanLiteral, requireDelimiters: false)
 
-                // DateTime literals (must have 'T' time component to distinguish from Date)
-                // DateTime: @YYYY-MM-DDTHH:MM:SS.FFF(Z|±HH:MM)?
+                // DateTime literals (must have 'T' to distinguish from Date)
+                // Full DateTime: @YYYY-MM-DDTHH:MM:SS.FFF(Z|±HH:MM)?
                 .Match(Span.Regex(@"@[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})?"),
                        FhirPathTokenKind.DateTimeLiteral, requireDelimiters: false)
+                // Partial DateTime with time: @YYYY-MM-DDTHH, @YYYY-MM-DDTHH:MM (hour/minute without seconds)
+                .Match(Span.Regex(@"@[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}(:[0-9]{2})?"),
+                       FhirPathTokenKind.DateTimeLiteral, requireDelimiters: false)
+                // Partial DateTime date-only: @YYYY-MM-DDT, @YYYY-MMT, @YYYYT (trailing T indicates DateTime precision)
+                .Match(Span.Regex(@"@[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?T"),
+                       FhirPathTokenKind.DateTimeLiteral, requireDelimiters: false)
 
-                // Time literals: @THH:MM:SS.FFF (no timezone per spec)
-                .Match(Span.Regex(@"@T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?"),
+                // Time literals: @THH, @THH:MM, @THH:MM:SS, @THH:MM:SS.FFF (no timezone per spec)
+                // Partial times allowed - hour is required, minutes/seconds optional
+                .Match(Span.Regex(@"@T[0-9]{2}(:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?)?"),
                        FhirPathTokenKind.TimeLiteral, requireDelimiters: false)
 
                 // Date literals: @YYYY, @YYYY-MM, @YYYY-MM-DD (partial precision, no time component)
                 .Match(Span.Regex(@"@[0-9]{4}(-[0-9]{2}(-[0-9]{2})?)?"),
                        FhirPathTokenKind.DateLiteral, requireDelimiters: false)
 
-                // String literals (single-quoted, SQL-style escaping: '' for ')
-                .Match(QuotedString.SqlStyle, FhirPathTokenKind.StringLiteral)
+                // String literals (single-quoted, SQL-style '' or backslash escapes)
+                .Match(Span.Regex(@"'([^'\\]|''|\\['""\\rnft/`]|\\u[0-9a-fA-F]{4})*'"),
+                       FhirPathTokenKind.StringLiteral)
 
                 // Delimited identifiers (backtick or legacy double-quote style)
                 .Match(Span.Regex("`[^`]*`"),
@@ -161,9 +181,9 @@ public static class FhirPathTokenizer
                 .Match(Span.Regex("\"([^\"\\\\]|\\\\.)*\""),
                        FhirPathTokenKind.DelimitedIdentifier, requireDelimiters: false) // double-quote (legacy)
 
-                // External constants: %identifier
-                .Match(Character.EqualTo('%').IgnoreThen(Identifier.CStyle),
-                       FhirPathTokenKind.ExternalConstant)
+                // External constants: %identifier or %`delimited-identifier`
+                .Match(Span.Regex(@"%(`[^`]*`|[a-zA-Z_][a-zA-Z0-9_]*)"),
+                       FhirPathTokenKind.ExternalConstant, requireDelimiters: false)
 
                 // Axis references: $this, $index, $total
                 .Match(Span.Regex(@"\$(this|index|total)\b"),

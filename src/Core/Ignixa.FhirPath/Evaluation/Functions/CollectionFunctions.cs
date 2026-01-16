@@ -318,10 +318,14 @@ internal static class CollectionFunctions
             throw new ArgumentException("select() requires a projection argument");
 
         var projection = arguments[0];
+        var focusList = focus.ToList();
 
-        foreach (var element in focus)
+        for (int i = 0; i < focusList.Count; i++)
         {
-            var innerContext = context.PushThis(element);
+            var element = focusList[i];
+            var innerContext = context
+                .PushThis(element)
+                .PushIndex(i);
             foreach (var result in evaluateExpression([element], projection, innerContext))
             {
                 yield return result;
@@ -351,14 +355,29 @@ internal static class CollectionFunctions
             throw new ArgumentException("all() requires a criteria argument");
 
         var criteria = arguments[0];
-        var allMatch = focus.All(element =>
+        var foundEmpty = false;
+
+        foreach (var element in focus)
         {
             var innerContext = context.PushThis(element);
             var result = evaluateExpression([element], criteria, innerContext);
-            return result.Any() && FunctionHelpers.IsTrue(result);
-        });
 
-        return [(IElement)FunctionHelpers.CreateBoolean(allMatch)];
+            if (!result.Any())
+            {
+                foundEmpty = true;
+                continue;
+            }
+
+            if (!FunctionHelpers.IsTrue(result))
+            {
+                return [(IElement)FunctionHelpers.CreateBoolean(false)];
+            }
+        }
+
+        if (foundEmpty)
+            return [];
+
+        return [(IElement)FunctionHelpers.CreateBoolean(true)];
     }
 
     /// <summary>
@@ -384,18 +403,34 @@ internal static class CollectionFunctions
         }
 
         var criteria = arguments[0];
-        var anyMatch = focus.Any(element =>
+        var foundEmpty = false;
+
+        foreach (var element in focus)
         {
             var innerContext = context.PushThis(element);
             var result = evaluateExpression([element], criteria, innerContext);
-            return result.Any() && FunctionHelpers.IsTrue(result);
-        });
 
-        return [(IElement)FunctionHelpers.CreateBoolean(anyMatch)];
+            if (!result.Any())
+            {
+                foundEmpty = true;
+                continue;
+            }
+
+            if (FunctionHelpers.IsTrue(result))
+            {
+                return [(IElement)FunctionHelpers.CreateBoolean(true)];
+            }
+        }
+
+        if (foundEmpty)
+            return [];
+
+        return [(IElement)FunctionHelpers.CreateBoolean(false)];
     }
 
     /// <summary>
     /// repeat() - Recursively applies a projection expression until no new elements are found.
+    /// Per FHIRPath spec: Returns only the results of the projection, not the original focus items.
     /// </summary>
     [FhirPathFunction("repeat",
         SupportedContexts = "any-any",
@@ -417,18 +452,23 @@ internal static class CollectionFunctions
 
         var projection = arguments[0];
         var result = new HashSet<IElement>(new FunctionHelpers.ElementEqualityComparer());
+        var processed = new HashSet<IElement>(new FunctionHelpers.ElementEqualityComparer());
         var queue = new Queue<IElement>(focus);
 
         while (queue.Count > 0)
         {
             var current = queue.Dequeue();
-            if (result.Add(current))
+            if (processed.Add(current))
             {
                 var innerContext = context.PushThis(current);
                 var projected = evaluateExpression([current], projection, innerContext);
                 foreach (var item in projected)
                 {
-                    if (!result.Contains(item))
+                    // Add projection results to the output result set
+                    result.Add(item);
+                    
+                    // If this is a new item, add it to queue for further processing
+                    if (!processed.Contains(item))
                     {
                         queue.Enqueue(item);
                     }
@@ -477,6 +517,16 @@ internal static class CollectionFunctions
         if (string.IsNullOrEmpty(typeName))
             return [];
 
+        // Handle qualified type names (e.g. FHIR.Patient -> Patient, System.String -> String)
+        if (typeName.Contains('.', StringComparison.Ordinal))
+        {
+            var parts = typeName.Split('.');
+            if (parts.Length == 2 && (parts[0].Equals("FHIR", StringComparison.OrdinalIgnoreCase) || parts[0].Equals("System", StringComparison.OrdinalIgnoreCase)))
+            {
+                typeName = parts[1];
+            }
+        }
+
         return focus.Where(e => !string.IsNullOrEmpty(e.InstanceType) &&
                                e.InstanceType.Equals(typeName, StringComparison.OrdinalIgnoreCase));
     }
@@ -502,8 +552,20 @@ internal static class CollectionFunctions
         if (arguments[0] is not IdentifierExpression idExpr)
             return [];
 
+        var typeName = idExpr.Name;
+
+        // Handle qualified type names
+        if (typeName.Contains('.', StringComparison.Ordinal))
+        {
+            var parts = typeName.Split('.');
+            if (parts.Length == 2 && (parts[0].Equals("FHIR", StringComparison.OrdinalIgnoreCase) || parts[0].Equals("System", StringComparison.OrdinalIgnoreCase)))
+            {
+                typeName = parts[1];
+            }
+        }
+
 #pragma warning disable CA1308 // Normalize strings to uppercase
-        var typeName = idExpr.Name.ToLowerInvariant();
+        typeName = typeName.ToLowerInvariant();
         return focus.Where(e => e.InstanceType?.ToLowerInvariant() == typeName);
 #pragma warning restore CA1308 // Normalize strings to uppercase
     }
@@ -596,7 +658,11 @@ internal static class CollectionFunctions
         if (arguments.Count == 0)
             throw new ArgumentException("union() requires an other argument");
 
-        var other = evaluateExpression(focus, arguments[0], context).ToList();
+        // Evaluate the argument from $this context if available (e.g., inside select())
+        // Otherwise fall back to focus
+        var thisElement = context.GetThis();
+        var argFocus = thisElement != null ? [thisElement] : focus;
+        var other = evaluateExpression(argFocus, arguments[0], context).ToList();
         return FunctionHelpers.EvaluateUnion(focus.ToList(), other);
     }
 
@@ -620,8 +686,54 @@ internal static class CollectionFunctions
         if (arguments.Count == 0)
             throw new ArgumentException("combine() requires an other argument");
 
-        var other = evaluateExpression(focus, arguments[0], context);
+        // Evaluate the argument from the root resource context (not current focus)
+        // This allows expressions like combine(name.family) to navigate from the root
+        var rootFocus = context.Resource != null ? [context.Resource] : context.Focus.AsEnumerable();
+        var other = evaluateExpression(rootFocus, arguments[0], context);
         return focus.Concat(other);
+    }
+
+    /// <summary>
+    /// aggregate() - Aggregates elements using an accumulator expression.
+    /// </summary>
+    [FhirPathFunction("aggregate",
+        SupportedContexts = "any-any",
+        ReturnType = "fromArgument",
+        SupportsCollections = true,
+        MinArguments = 1,
+        MaxArguments = 2,
+        TakesExpressionArguments = true,
+        Category = "Collection",
+        Description = "Aggregates elements using an accumulator expression")]
+    public static IEnumerable<IElement> Aggregate(
+        IEnumerable<IElement> focus,
+        IReadOnlyList<Expression> arguments,
+        EvaluationContext context,
+        Func<IEnumerable<IElement>, Expression, EvaluationContext, IEnumerable<IElement>> evaluateExpression)
+    {
+        if (arguments.Count == 0)
+            throw new ArgumentException("aggregate() requires an aggregator expression");
+
+        // Initialize $total: initial-value if provided, otherwise empty
+        List<IElement> total =
+            arguments.Count > 1
+                ? evaluateExpression(focus, arguments[1], context).ToList()
+                : [];
+
+        foreach (var element in focus)
+        {
+            var innerContext = context
+                .PushThis(element)
+                .WithEnvironmentVariable("total", total);
+
+            total = evaluateExpression(
+                [element],
+                arguments[0],
+                innerContext
+            ).ToList();
+        }
+
+        return total;
     }
 
     /// <summary>
@@ -650,7 +762,8 @@ internal static class CollectionFunctions
         if (focusList.Count == 0)
             return [(IElement)FunctionHelpers.CreateBoolean(true)];
 
-        var isSubset = focusList.All(f => other.Any(o => FunctionHelpers.AreEqual(o.Value, f.Value)));
+        // Check if every element in focus exists in other (using structural comparison for complex types)
+        var isSubset = focusList.All(f => other.Any(o => AreElementsEqual(o, f)));
         return [(IElement)FunctionHelpers.CreateBoolean(isSubset)];
     }
 
@@ -680,7 +793,306 @@ internal static class CollectionFunctions
         if (other.Count == 0)
             return [(IElement)FunctionHelpers.CreateBoolean(true)];
 
-        var isSuperset = other.All(o => focusList.Any(f => FunctionHelpers.AreEqual(f.Value, o.Value)));
+        // For complex types (where Value is null), use reference equality
+        // For primitive types, use value equality
+        var isSuperset = other.All(o => focusList.Any(f => AreElementsEqual(f, o)));
         return [(IElement)FunctionHelpers.CreateBoolean(isSuperset)];
+    }
+
+    /// <summary>
+    /// type() - Returns the type information of each element in the collection.
+    /// Returns a ClassInfo or SimpleTypeInfo with name and namespace properties.
+    /// </summary>
+    [FhirPathFunction("type",
+        SupportedContexts = "any-any",
+        ReturnType = "ClassInfo",
+        SupportsCollections = true,
+        MinArguments = 0,
+        MaxArguments = 0,
+        Category = "Collection",
+        Description = "Returns the type information of each element")]
+    public static IEnumerable<IElement> Type(IEnumerable<IElement> focus)
+    {
+        foreach (var element in focus)
+        {
+            var typeName = element.InstanceType ?? "unknown";
+            string ns = "FHIR";
+            string name = typeName;
+
+            // Distinguish between System literals (PrimitiveElement) and FHIR elements (e.g. ElementNode, PocoElement)
+            // This is a heuristic based on the implementing class name.
+            var implType = element.GetType().Name;
+            bool isSystemLiteral = implType.Contains("Primitive", StringComparison.OrdinalIgnoreCase);
+
+            if (isSystemLiteral)
+            {
+                // Map primitives to System namespace and PascalCase
+#pragma warning disable CA1308 // Normalize strings to uppercase
+                switch (typeName.ToLowerInvariant())
+#pragma warning restore CA1308 // Normalize strings to uppercase
+                {
+                    case "boolean":
+                        ns = "System";
+                        name = "Boolean";
+                        break;
+                    case "string":
+                        ns = "System";
+                        name = "String";
+                        break;
+                    case "integer":
+                        ns = "System";
+                        name = "Integer";
+                        break;
+                    case "decimal":
+                        ns = "System";
+                        name = "Decimal";
+                        break;
+                    case "date":
+                        ns = "System";
+                        name = "Date";
+                        break;
+                    case "datetime":
+                        ns = "System";
+                        name = "DateTime";
+                        break;
+                    case "time":
+                        ns = "System";
+                        name = "Time";
+                        break;
+                    case "quantity":
+                        ns = "FHIR";
+                        name = "Quantity";
+                        break;
+                    default:
+                        if (typeName.Length > 0 && char.IsLower(typeName[0]))
+                        {
+                            name = char.ToUpperInvariant(typeName[0]) + typeName.Substring(1);
+                            ns = "System";
+                        }
+                        break;
+                }
+            }
+
+            yield return new TypeInfoElement(name, ns);
+        }
+    }
+
+    /// <summary>
+    /// sort() - Sorts the collection in ascending order.
+    /// Can optionally take an expression to determine sort key.
+    /// </summary>
+    [FhirPathFunction("sort",
+        SupportedContexts = "any-any",
+        ReturnType = "context",
+        SupportsCollections = true,
+        MinArguments = 0,
+        MaxArguments = int.MaxValue, // Support multiple sort keys
+        TakesExpressionArguments = true,
+        Category = "Collection",
+        Description = "Sorts the collection in ascending order")]
+    public static IEnumerable<IElement> Sort(
+        IEnumerable<IElement> focus,
+        IReadOnlyList<Expression> arguments,
+        EvaluationContext context,
+        Func<IEnumerable<IElement>, Expression, EvaluationContext, IEnumerable<IElement>> evaluateExpression)
+    {
+        var list = focus.ToList();
+
+        if (arguments.Count == 0)
+        {
+            return list.OrderBy(e => e.Value, new ObjectComparer());
+        }
+
+        // Extract sort key info (expression and direction) for all arguments
+        var sortKeys = arguments.Select(arg =>
+        {
+            var isDescending = arg is UnaryExpression { Operator: "-" };
+            var effectiveExpression = isDescending && arg is UnaryExpression u ? u.Operand : arg;
+            return (Expression: effectiveExpression, IsDescending: isDescending);
+        }).ToList();
+
+        // Build key selectors
+        Func<IElement, object?> createKeySelector(Expression expr) => element =>
+        {
+            var innerContext = context.PushThis(element);
+            var result = evaluateExpression([element], expr, innerContext);
+            return result.FirstOrDefault()?.Value;
+        };
+
+        // Apply first sort key
+        var firstKey = sortKeys[0];
+        IComparer<object?> firstComparer = firstKey.IsDescending ? new ObjectComparerNullsFirst() : new ObjectComparer();
+        IOrderedEnumerable<IElement> orderedList = firstKey.IsDescending
+            ? list.OrderByDescending(createKeySelector(firstKey.Expression), firstComparer)
+            : list.OrderBy(createKeySelector(firstKey.Expression), firstComparer);
+
+        // Apply subsequent sort keys with ThenBy/ThenByDescending
+        for (int i = 1; i < sortKeys.Count; i++)
+        {
+            var key = sortKeys[i];
+            var keySelector = createKeySelector(key.Expression);
+            IComparer<object?> keyComparer = key.IsDescending ? new ObjectComparerNullsFirst() : new ObjectComparer();
+            orderedList = key.IsDescending
+                ? orderedList.ThenByDescending(keySelector, keyComparer)
+                : orderedList.ThenBy(keySelector, keyComparer);
+        }
+
+        return orderedList;
+    }
+
+    /// <summary>
+    /// Standard comparer where null is less than any value (nulls last in descending).
+    /// </summary>
+    private class ObjectComparer : IComparer<object?>
+    {
+        public int Compare(object? x, object? y)
+        {
+            if (x is null && y is null) return 0;
+            if (x is null) return -1;
+            if (y is null) return 1;
+
+            if (x is IComparable comparableX && y is IComparable)
+            {
+                try
+                {
+                    return comparableX.CompareTo(y);
+                }
+                catch
+                {
+                    return 0;
+                }
+            }
+
+            return string.Compare(x.ToString(), y.ToString(), StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// Comparer where null is greater than any value (nulls first in descending).
+    /// Used for prototype descending sort with - prefix.
+    /// </summary>
+    private class ObjectComparerNullsFirst : IComparer<object?>
+    {
+        public int Compare(object? x, object? y)
+        {
+            if (x is null && y is null) return 0;
+            if (x is null) return 1;  // null > any value
+            if (y is null) return -1; // any value < null
+
+            if (x is IComparable comparableX && y is IComparable)
+            {
+                try
+                {
+                    return comparableX.CompareTo(y);
+                }
+                catch
+                {
+                    return 0;
+                }
+            }
+
+            return string.Compare(x.ToString(), y.ToString(), StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// Implementation of TypeInfo/ClassInfo for the type() function.
+    /// </summary>
+    private class TypeInfoElement : IElement
+    {
+        private readonly string _name;
+        private readonly string _namespace;
+
+        public TypeInfoElement(string name, string ns)
+        {
+            _name = name;
+            _namespace = ns;
+            // Value is not strictly defined, but useful for debugging
+            Value = $"{ns}.{name}";
+            InstanceType = "ClassInfo";
+        }
+
+        public string Name => string.Empty;
+        public string InstanceType { get; }
+        public object Value { get; }
+        public string Location => string.Empty;
+        public IType? Type => null;
+
+        public T? Meta<T>() where T : class => null;
+
+        public IReadOnlyList<IElement> Children(string? name = null)
+        {
+            if (string.Equals(name, "name", StringComparison.OrdinalIgnoreCase))
+                return [FunctionHelpers.CreateString(_name)];
+            
+            if (string.Equals(name, "namespace", StringComparison.OrdinalIgnoreCase))
+                return [FunctionHelpers.CreateString(_namespace)];
+            
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// Compares two IElement instances for equality using structural comparison.
+    /// For primitive types, uses value equality.
+    /// For complex types, performs deep structural comparison of children.
+    /// </summary>
+    private static bool AreElementsEqual(IElement left, IElement right)
+    {
+        // If they're the same reference, they're equal
+        if (ReferenceEquals(left, right))
+            return true;
+
+        // Check instance type match first - different types can't be equal
+        if (left.InstanceType != right.InstanceType)
+            return false;
+
+        // For complex types (both Values are null), use structural comparison
+        if (left.Value == null && right.Value == null)
+        {
+            return AreElementsStructurallyEqual(left, right);
+        }
+
+        // For primitive types, use value comparison
+        return FunctionHelpers.AreEqual(left.Value, right.Value);
+    }
+
+    /// <summary>
+    /// Performs deep structural comparison of two complex elements by recursively comparing all children.
+    /// </summary>
+    private static bool AreElementsStructurallyEqual(IElement left, IElement right)
+    {
+        // Get all named children
+        var leftChildren = left.Children().Where(c => !string.IsNullOrEmpty(c.Name)).ToList();
+        var rightChildren = right.Children().Where(c => !string.IsNullOrEmpty(c.Name)).ToList();
+
+        // Group by name
+        var leftByName = leftChildren.GroupBy(c => c.Name).ToDictionary(g => g.Key, g => g.ToList());
+        var rightByName = rightChildren.GroupBy(c => c.Name).ToDictionary(g => g.Key, g => g.ToList());
+
+        // Must have same set of child names
+        if (leftByName.Count != rightByName.Count)
+            return false;
+
+        foreach (var kvp in leftByName)
+        {
+            if (!rightByName.TryGetValue(kvp.Key, out var rightList))
+                return false;
+
+            var leftList = kvp.Value;
+
+            // Must have same number of children with this name
+            if (leftList.Count != rightList.Count)
+                return false;
+
+            // Order matters for repeating elements - compare positionally
+            for (var i = 0; i < leftList.Count; i++)
+            {
+                if (!AreElementsEqual(leftList[i], rightList[i]))
+                    return false;
+            }
+        }
+
+        return true;
     }
 }

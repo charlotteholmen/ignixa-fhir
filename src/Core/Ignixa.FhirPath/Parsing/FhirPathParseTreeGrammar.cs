@@ -69,7 +69,7 @@ internal static class FhirPathParseTreeGrammar
             .Where(t => Types.CalendarDuration.IsCalendarKeyword(t.ToStringValue()))
         select new QuantityParseNode(
             decimal.Parse(valueToken.ToStringValue()),
-            Types.CalendarDuration.GetUcumUnit(keywordToken.ToStringValue())!,
+            keywordToken.ToStringValue(),  // Preserve keyword form (week, year, etc.) for toString()
             Loc(valueToken, keywordToken));
 
     private static readonly TokenListParser<FhirPathTokenKind, ParseNode> Literal =
@@ -89,7 +89,15 @@ internal static class FhirPathParseTreeGrammar
 
     private static readonly TokenListParser<FhirPathTokenKind, ParseNode> ExternalConstant =
         Token.EqualTo(FhirPathTokenKind.ExternalConstant)
-            .Select(t => (ParseNode)new VariableRefParseNode(t.ToStringValue().Substring(1), Loc(t)));
+            .Select(t =>
+            {
+                var raw = t.ToStringValue().Substring(1); // Remove '%'
+                // Check if delimited with backticks and remove them
+                var varName = (raw.Length >= 2 && raw[0] == '`' && raw[raw.Length - 1] == '`')
+                    ? raw.Substring(1, raw.Length - 2)
+                    : raw;
+                return (ParseNode)new VariableRefParseNode(varName, Loc(t));
+            });
 
     private static readonly TokenListParser<FhirPathTokenKind, ParseNode> ParenthesizedExpression =
         from lparen in Token.EqualTo(FhirPathTokenKind.LeftParen)
@@ -102,10 +110,16 @@ internal static class FhirPathParseTreeGrammar
         from rbrace in Token.EqualTo(FhirPathTokenKind.RightBrace)
         select (ParseNode)new EmptyParseNode(Loc(lbrace, rbrace));
 
-    private static readonly TokenListParser<FhirPathTokenKind, ParseNode> TypeSpecifierArgument =
-        Token.EqualTo(FhirPathTokenKind.Identifier)
+    private static readonly TokenListParser<FhirPathTokenKind, ParseNode> QualifiedIdentifier =
+        from parts in Token.EqualTo(FhirPathTokenKind.Identifier)
             .Or(Token.EqualTo(FhirPathTokenKind.DelimitedIdentifier))
-            .Select(t => (ParseNode)new IdentifierParseNode(UnescapeIdentifier(t.ToStringValue()), Loc(t)));
+            .ManyDelimitedBy(Token.EqualTo(FhirPathTokenKind.Dot))
+        select (ParseNode)new IdentifierParseNode(
+            string.Join(".", parts.Select(t => UnescapeIdentifier(t.ToStringValue()))),
+            Loc(parts.First(), parts.Last()));
+
+    private static readonly TokenListParser<FhirPathTokenKind, ParseNode> TypeSpecifierArgument =
+        QualifiedIdentifier;
 
     private static bool IsTypeSpecifierFunction(string functionName)
     {
@@ -281,12 +295,95 @@ internal static class FhirPathParseTreeGrammar
 
     private static string UnescapeString(string str)
     {
-        if (str.StartsWith('\'') && str.EndsWith('\''))
+        // Remove quotes if present
+        if (str.StartsWith('\'') && str.EndsWith('\'') && str.Length >= 2)
         {
             str = str.Substring(1, str.Length - 2);
-            str = str.Replace("''", "'", StringComparison.Ordinal);
         }
-        return str;
+
+        // Handle SQL-style escaping first (for backward compatibility)
+        str = str.Replace("''", "'", StringComparison.Ordinal);
+
+        // Handle backslash escapes
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < str.Length; )
+        {
+            if (str[i] == '\\' && i + 1 < str.Length)
+            {
+                char next = str[i + 1];
+                switch (next)
+                {
+                    case '\'':
+                        sb.Append('\'');
+                        i += 2; // Skip both \ and '
+                        break;
+                    case '"':
+                        sb.Append('"');
+                        i += 2; // Skip both \ and "
+                        break;
+                    case '`':
+                        sb.Append('`');
+                        i += 2; // Skip both \ and `
+                        break;
+                    case '/':
+                        sb.Append('/');
+                        i += 2; // Skip both \ and /
+                        break;
+                    case '\\':
+                        sb.Append('\\');
+                        i += 2; // Skip both backslashes
+                        break;
+                    case 'r':
+                        sb.Append('\r');
+                        i += 2; // Skip \ and r
+                        break;
+                    case 'n':
+                        sb.Append('\n');
+                        i += 2; // Skip \ and n
+                        break;
+                    case 't':
+                        sb.Append('\t');
+                        i += 2; // Skip \ and t
+                        break;
+                    case 'f':
+                        sb.Append('\f');
+                        i += 2; // Skip \ and f
+                        break;
+                    case 'u':
+                        if (i + 5 < str.Length)
+                        {
+                            var hex = str.Substring(i + 2, 4);
+                            if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int codePoint))
+                            {
+                                sb.Append(char.ConvertFromUtf32(codePoint));
+                                i += 6; // Skip \, u, and 4 hex digits
+                            }
+                            else
+                            {
+                                sb.Append(str[i]); // Invalid hex, keep backslash
+                                i++;
+                            }
+                        }
+                        else
+                        {
+                            sb.Append(str[i]); // Incomplete escape, keep backslash
+                            i++;
+                        }
+                        break;
+                    default:
+                        sb.Append(str[i]); // Unknown escape, keep backslash
+                        i++;
+                        break;
+                }
+            }
+            else
+            {
+                sb.Append(str[i]);
+                i++;
+            }
+        }
+
+        return sb.ToString();
     }
 
     private static string UnescapeIdentifier(string id)

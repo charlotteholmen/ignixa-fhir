@@ -38,22 +38,44 @@ internal static class ConditionalFunctions
         if (arguments.Count < 2)
             throw new ArgumentException("iif() requires at least criterion and true-result arguments");
 
-        var criterion = evaluateExpression(focus, arguments[0], context).ToList();
+        // For iif(), $this should refer to the focus collection
+        // If focus is a single element, $this resolves to that element
+        var focusList = focus.ToList();
+        var innerContext = focusList.Count == 1
+            ? context.PushThis(focusList[0])
+            : context;
 
-        // Empty condition returns empty
+        var criterion = evaluateExpression(focus, arguments[0], innerContext).ToList();
+
+        // Evaluate condition using FHIRPath boolean semantics
+        // Per FHIRPath spec: If criterion is false OR an empty collection, return otherwise-result
+        bool? condition;
+
         if (criterion.Count == 0)
-            return [];
-
-        // True condition returns true branch
-        if (FunctionHelpers.IsTrue(criterion))
         {
-            return evaluateExpression(focus, arguments[1], context);
+            // Empty collection is treated as false for iif
+            condition = false;
+        }
+        else if (criterion.Count == 1 && criterion[0].Value is bool b)
+        {
+            condition = b;
+        }
+        else
+        {
+            // Non-empty collection (including non-boolean values) is truthy per FHIRPath
+            condition = true;
         }
 
-        // False condition returns false branch (if provided)
+        // True condition returns true branch
+        if (condition == true)
+        {
+            return evaluateExpression(focus, arguments[1], innerContext);
+        }
+
+        // False condition (or empty) returns false branch (if provided)
         if (arguments.Count > 2)
         {
-            return evaluateExpression(focus, arguments[2], context);
+            return evaluateExpression(focus, arguments[2], innerContext);
         }
 
         return [];

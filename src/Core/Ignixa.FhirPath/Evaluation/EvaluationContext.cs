@@ -66,7 +66,8 @@ public record EvaluationContext
         ImmutableStack<IElement> indexStack,
         ImmutableDictionary<string, ImmutableList<IElement>> environment,
         IElement? resource,
-        IElement? rootResource)
+        IElement? rootResource,
+        Dictionary<string, ImmutableList<IElement>>? definedVariables = null)
     {
         Focus = focus;
         ThisStack = thisStack;
@@ -74,6 +75,7 @@ public record EvaluationContext
         Environment = environment;
         Resource = resource;
         RootResource = rootResource;
+        DefinedVariables = definedVariables ?? new Dictionary<string, ImmutableList<IElement>>(StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -84,6 +86,7 @@ public record EvaluationContext
         ImmutableStack<IElement>.Empty,
         ImmutableStack<IElement>.Empty,
         ImmutableDictionary<string, ImmutableList<IElement>>.Empty.WithComparers(StringComparer.OrdinalIgnoreCase),
+        null,
         null,
         null)
     {
@@ -122,6 +125,13 @@ public record EvaluationContext
     /// The data represented by %rootResource variable.
     /// </summary>
     public IElement? RootResource { get; init; }
+
+    /// <summary>
+    /// Mutable dictionary for user-defined variables created by defineVariable().
+    /// This is shared across immutable context copies to allow defineVariable side effects.
+    /// Single-threaded: FHIRPath evaluation runs in a single thread, so no concurrent access needed.
+    /// </summary>
+    public Dictionary<string, ImmutableList<IElement>> DefinedVariables { get; init; }
 
     /// <summary>
     /// Creates a new context with the specified focus.
@@ -245,6 +255,7 @@ public record EvaluationContext
     /// <summary>
     /// Gets an environment variable value.
     /// Returns the single element if collection has one item, otherwise returns the list.
+    /// Checks standard FHIRPath constants, user-defined variables (from defineVariable), then environment variables.
     /// </summary>
     public object? GetEnvironmentVariable(string name)
     {
@@ -259,6 +270,28 @@ public record EvaluationContext
             return idx.HasValue ? new IndexElement(idx.Value) : null;
         }
 
+        // Standard FHIRPath external constants per http://hl7.org/fhirpath/#environment-variables
+        var standardValue = GetStandardConstant(name);
+        if (standardValue != null)
+        {
+            return new StringElement(standardValue);
+        }
+
+        if (name == "resource")
+        {
+            return Resource;
+        }
+
+        if (name == "rootResource")
+        {
+            return RootResource;
+        }
+
+        if (DefinedVariables.TryGetValue(name, out var definedValue))
+        {
+            return definedValue.Count == 1 ? definedValue[0] : definedValue;
+        }
+
         if (Environment.TryGetValue(name, out var value))
         {
             return value.Count == 1 ? value[0] : value;
@@ -268,12 +301,45 @@ public record EvaluationContext
     }
 
     /// <summary>
+    /// Gets the value for a standard FHIRPath external constant.
+    /// These are defined by the FHIRPath specification and have fixed values.
+    /// </summary>
+    private static string? GetStandardConstant(string name)
+    {
+        return name switch
+        {
+            "sct" => "http://snomed.info/sct",
+            "loinc" => "http://loinc.org",
+            "ucum" => "http://unitsofmeasure.org",
+            "vs-administrative-gender" => "http://hl7.org/fhir/ValueSet/administrative-gender",
+            "ext-patient-birthTime" => "http://hl7.org/fhir/StructureDefinition/patient-birthTime",
+            _ => null
+        };
+    }
+
+    /// <summary>
     /// Simple implementation of IElement for index values.
     /// </summary>
     private sealed class IndexElement(int value) : IElement
     {
         public string Name => string.Empty;
         public string InstanceType => "integer";
+        public object Value { get; } = value;
+        public string Location => string.Empty;
+        public IType? Type => null;
+
+        public IReadOnlyList<IElement> Children(string? name = null) => [];
+
+        public T? Meta<T>() where T : class => null;
+    }
+
+    /// <summary>
+    /// Simple implementation of IElement for string constant values.
+    /// </summary>
+    private sealed class StringElement(string value) : IElement
+    {
+        public string Name => string.Empty;
+        public string InstanceType => "string";
         public object Value { get; } = value;
         public string Location => string.Empty;
         public IType? Type => null;
