@@ -451,24 +451,32 @@ internal static class CollectionFunctions
             throw new ArgumentException("repeat() requires a projection argument");
 
         var projection = arguments[0];
-        var result = new HashSet<IElement>(new FunctionHelpers.ElementEqualityComparer());
-        var processed = new HashSet<IElement>(new FunctionHelpers.ElementEqualityComparer());
+        var result = new List<IElement>();
+        var processed = new List<IElement>();
         var queue = new Queue<IElement>(focus);
 
         while (queue.Count > 0)
         {
             var current = queue.Dequeue();
-            if (processed.Add(current))
+            
+            // Check if we've already processed this element using deep equality comparison
+            if (!processed.Any(p => FunctionHelpers.AreElementsEqual(p, current)))
             {
+                processed.Add(current);
+                
                 var innerContext = context.PushThis(current);
                 var projected = evaluateExpression([current], projection, innerContext);
+                
                 foreach (var item in projected)
                 {
-                    // Add projection results to the output result set
-                    result.Add(item);
-                    
+                    // Add projection results to the output result set (avoiding duplicates)
+                    if (!result.Any(r => FunctionHelpers.AreElementsEqual(r, item)))
+                    {
+                        result.Add(item);
+                    }
+
                     // If this is a new item, add it to queue for further processing
-                    if (!processed.Contains(item))
+                    if (!processed.Any(p => FunctionHelpers.AreElementsEqual(p, item)))
                     {
                         queue.Enqueue(item);
                     }
@@ -517,18 +525,7 @@ internal static class CollectionFunctions
         if (string.IsNullOrEmpty(typeName))
             return [];
 
-        // Handle qualified type names (e.g. FHIR.Patient -> Patient, System.String -> String)
-        if (typeName.Contains('.', StringComparison.Ordinal))
-        {
-            var parts = typeName.Split('.');
-            if (parts.Length == 2 && (parts[0].Equals("FHIR", StringComparison.OrdinalIgnoreCase) || parts[0].Equals("System", StringComparison.OrdinalIgnoreCase)))
-            {
-                typeName = parts[1];
-            }
-        }
-
-        return focus.Where(e => !string.IsNullOrEmpty(e.InstanceType) &&
-                               e.InstanceType.Equals(typeName, StringComparison.OrdinalIgnoreCase));
+        return TypeMatcher.FilterByType(focus, typeName, useInheritance: false);
     }
 
     /// <summary>
@@ -549,25 +546,11 @@ internal static class CollectionFunctions
         if (arguments.Count == 0)
             throw new ArgumentException("as() requires a type argument");
 
-        if (arguments[0] is not IdentifierExpression idExpr)
+        var typeName = TypeMatcher.ExtractTypeName(arguments[0]);
+        if (string.IsNullOrEmpty(typeName))
             return [];
 
-        var typeName = idExpr.Name;
-
-        // Handle qualified type names
-        if (typeName.Contains('.', StringComparison.Ordinal))
-        {
-            var parts = typeName.Split('.');
-            if (parts.Length == 2 && (parts[0].Equals("FHIR", StringComparison.OrdinalIgnoreCase) || parts[0].Equals("System", StringComparison.OrdinalIgnoreCase)))
-            {
-                typeName = parts[1];
-            }
-        }
-
-#pragma warning disable CA1308 // Normalize strings to uppercase
-        typeName = typeName.ToLowerInvariant();
-        return focus.Where(e => e.InstanceType?.ToLowerInvariant() == typeName);
-#pragma warning restore CA1308 // Normalize strings to uppercase
+        return TypeMatcher.FilterByType(focus, typeName, useInheritance: false);
     }
 
     /// <summary>
