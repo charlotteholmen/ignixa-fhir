@@ -4,6 +4,7 @@
 // -------------------------------------------------------------------------------------------------
 
 using DurableTask.Core;
+using Ignixa.Api.Filters;
 using Ignixa.Application.BackgroundOperations.BulkUpdate;
 using Ignixa.Application.BackgroundOperations.Jobs;
 using Ignixa.Domain.Abstractions;
@@ -24,42 +25,66 @@ namespace Ignixa.Api.Endpoints;
 public static class BulkUpdateEndpoints
 {
     /// <summary>
+    /// Resource types that are excluded from bulk update operations.
+    /// Modifying these could break search indexes or schema validation.
+    /// </summary>
+    private static readonly HashSet<string> ExcludedResourceTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "SearchParameter",
+        "StructureDefinition"
+    };
+
+    /// <summary>
     /// Registers bulk-update endpoints with the application.
     /// </summary>
     public static void MapBulkUpdateEndpoints(this WebApplication app)
     {
+        // Create tenant-scoped group with authorization, audit, and metrics filters
+        var tenantGroup = app
+            .MapGroup("/tenant/{tenantId:int}")
+            .AddEndpointFilter<FhirAuthorizationFilter>()
+            .AddEndpointFilter<FhirAuditFilter>()
+            .AddEndpointFilter<FhirMetricsFilter>();
+
+        // Create system-level group with authorization, audit, and metrics filters
+        var systemGroup = app
+            .MapGroup(string.Empty)
+            .AddEndpointFilter<FhirAuthorizationFilter>()
+            .AddEndpointFilter<FhirAuditFilter>()
+            .AddEndpointFilter<FhirMetricsFilter>();
+
         // PATCH /$bulk-update - System-level bulk update (auto-detect tenant)
-        app.MapMethods("/$bulk-update", ["PATCH"], StartBulkUpdateSystemLevelAsync)
+        systemGroup.MapMethods("/$bulk-update", ["PATCH"], StartBulkUpdateSystemLevelAsync)
             .WithName("StartBulkUpdateSystemLevel")
             .WithOpenApi();
 
         // PATCH /tenant/{tenantId}/$bulk-update - Tenant-scoped bulk update
-        app.MapMethods("/tenant/{tenantId:int}/$bulk-update", ["PATCH"], StartBulkUpdateAsync)
+        tenantGroup.MapMethods("/$bulk-update", ["PATCH"], StartBulkUpdateAsync)
             .WithName("StartBulkUpdate")
             .WithOpenApi();
 
         // PATCH /{resourceType}/$bulk-update - Resource type scoped bulk update (auto-detect tenant)
-        app.MapMethods("/{resourceType}/$bulk-update", ["PATCH"], StartBulkUpdateByTypeAsync)
+        systemGroup.MapMethods("/{resourceType}/$bulk-update", ["PATCH"], StartBulkUpdateByTypeAsync)
             .WithName("StartBulkUpdateByType")
             .WithOpenApi();
 
         // PATCH /tenant/{tenantId}/{resourceType}/$bulk-update - Tenant + type scoped
-        app.MapMethods("/tenant/{tenantId:int}/{resourceType}/$bulk-update", ["PATCH"], StartBulkUpdateByTypeTenantAsync)
+        tenantGroup.MapMethods("/{resourceType}/$bulk-update", ["PATCH"], StartBulkUpdateByTypeTenantAsync)
             .WithName("StartBulkUpdateByTypeTenant")
             .WithOpenApi();
 
         // GET /_bulk-update/{jobId} - Poll job status (auto-detect tenant)
-        app.MapGet("/_bulk-update/{jobId}", GetBulkUpdateStatusSystemLevelAsync)
+        systemGroup.MapGet("/_bulk-update/{jobId}", GetBulkUpdateStatusSystemLevelAsync)
             .WithName("GetBulkUpdateStatusSystemLevel")
             .WithOpenApi();
 
         // GET /tenant/{tenantId}/_bulk-update/{jobId} - Poll job status
-        app.MapGet("/tenant/{tenantId:int}/_bulk-update/{jobId}", GetBulkUpdateStatusAsync)
+        tenantGroup.MapGet("/_bulk-update/{jobId}", GetBulkUpdateStatusAsync)
             .WithName("GetBulkUpdateStatus")
             .WithOpenApi();
 
         // DELETE /tenant/{tenantId}/_bulk-update/{jobId} - Cancel job
-        app.MapDelete("/tenant/{tenantId:int}/_bulk-update/{jobId}", CancelBulkUpdateAsync)
+        tenantGroup.MapDelete("/_bulk-update/{jobId}", CancelBulkUpdateAsync)
             .WithName("CancelBulkUpdate")
             .WithOpenApi();
     }
@@ -108,6 +133,14 @@ public static class BulkUpdateEndpoints
                 "Unable to determine tenant from request context"));
         }
 
+        // Validate resource type is not excluded
+        if (ExcludedResourceTypes.Contains(resourceType))
+        {
+            return Results.BadRequest(CreateOperationOutcome(
+                $"Resource type '{resourceType}' is excluded from bulk update operations. " +
+                "SearchParameter and StructureDefinition cannot be bulk updated."));
+        }
+
         return await StartBulkUpdateCoreAsync(tenantId, resourceType, httpContext.Request.QueryString.Value?.TrimStart('?'), mediator, httpContext);
     }
 
@@ -121,6 +154,14 @@ public static class BulkUpdateEndpoints
         [FromServices] IMediator mediator,
         HttpContext httpContext)
     {
+        // Validate resource type is not excluded
+        if (ExcludedResourceTypes.Contains(resourceType))
+        {
+            return Results.BadRequest(CreateOperationOutcome(
+                $"Resource type '{resourceType}' is excluded from bulk update operations. " +
+                "SearchParameter and StructureDefinition cannot be bulk updated."));
+        }
+
         return await StartBulkUpdateCoreAsync(tenantId, resourceType, httpContext.Request.QueryString.Value?.TrimStart('?'), mediator, httpContext);
     }
 
@@ -153,10 +194,10 @@ public static class BulkUpdateEndpoints
         {
             resource = JsonSourceNodeFactory.Parse(requestBody);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             return Results.BadRequest(CreateOperationOutcome(
-                "Invalid request body. Expected FHIR Parameters resource: " + ex.Message));
+                "Invalid request body. Expected valid FHIR Parameters resource in JSON format."));
         }
 
         if (resource.ResourceType != "Parameters")
@@ -246,10 +287,10 @@ public static class BulkUpdateEndpoints
 
             return jobStatus.Status switch
             {
-                "Queued" or "Running" => BuildProgressResponse(jobStatus, httpContext),
-                "Completed" => BuildCompletedResponse(jobStatus, tenantId),
-                "Failed" => BuildFailedResponse(jobStatus, tenantId),
-                "Cancelled" => BuildCancelledResponse(jobStatus, tenantId),
+                JobStatus.Queued or JobStatus.Running => BuildProgressResponse(jobStatus, httpContext),
+                JobStatus.Completed => BuildCompletedResponse(jobStatus, tenantId),
+                JobStatus.Failed => BuildFailedResponse(jobStatus, tenantId),
+                JobStatus.Cancelled => BuildCancelledResponse(jobStatus, tenantId),
                 _ => Results.StatusCode(500)
             };
         }
@@ -361,7 +402,7 @@ public static class BulkUpdateEndpoints
         var instance = new OrchestrationInstance { InstanceId = jobId };
         await taskHubClient.TerminateInstanceAsync(instance, "Cancelled by user");
 
-        job.Status = "Cancelled";
+        job.Status = JobStatus.Cancelled;
         job.EndDate = DateTimeOffset.UtcNow;
         await jobRepository.UpdateAsync(job, tenantId, cancellationToken);
 

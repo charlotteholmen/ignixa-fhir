@@ -22,6 +22,8 @@ public class GetBulkUpdateRangesActivity(
         TaskContext context,
         GetBulkUpdateRangesInput input)
     {
+        // Note: DurableTask activities cannot access CancellationToken from TaskContext.
+        // Cancellation is handled at the orchestration level by terminating the instance.
         logger.LogInformation("Getting bulk update ranges for job {JobId}", input.JobId);
 
         var searchService = await searchServiceFactory.GetSearchServiceAsync(

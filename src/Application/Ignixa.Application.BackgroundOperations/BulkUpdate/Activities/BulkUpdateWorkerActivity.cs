@@ -34,6 +34,8 @@ public class BulkUpdateWorkerActivity(
         TaskContext context,
         BulkUpdateWorkerInput input)
     {
+        // Note: DurableTask activities cannot access CancellationToken from TaskContext.
+        // Cancellation is handled at the orchestration level by terminating the instance.
         var startTime = DateTimeOffset.UtcNow;
 
         logger.LogInformation(
@@ -165,8 +167,19 @@ public class BulkUpdateWorkerActivity(
 
         if (batch.Count > 0)
         {
-            var keys = await repository.BatchWriteAsync(transactionId, batch, CancellationToken.None);
-            updatedCount += keys.Count;
+            try
+            {
+                var keys = await repository.BatchWriteAsync(transactionId, batch, CancellationToken.None);
+                updatedCount += keys.Count;
+            }
+            catch (Exception ex)
+            {
+                failedCount += batch.Count;
+                foreach (var item in batch.Take(MaxIssuesPerWorker - issues.Count))
+                {
+                    issues.Add(new BulkUpdateIssue(item.resourceType, item.resourceId, $"Final batch write failed: {ex.Message}"));
+                }
+            }
         }
 
         await repository.CommitTransactionAsync(transactionId, CancellationToken.None);
