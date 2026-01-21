@@ -4,7 +4,7 @@
  * FhirPath collection function implementations.
  * Implements exists(), empty(), count(), distinct(), isDistinct(),
  * first(), last(), single(), tail(), skip(), take(),
- * where(), select(), all(), any(), repeat(), ofType(), as(),
+ * where(), select(), all(), any(), repeat(), repeatAll(), coalesce(), ofType(), as(),
  * intersect(), exclude(), union(), combine(), subsetOf(), supersetOf().
  *
  * Uses immutable EvaluationContext pattern - no save/restore needed for $this binding.
@@ -45,9 +45,10 @@ internal static class CollectionFunctions
 
         if (hasCriteria)
         {
+            var index = 0;
             exists = focus.Any(element =>
             {
-                var innerContext = context.PushThis(element);
+                var innerContext = context.PushThis(element).PushIndex(index++);
                 var result = evaluateExpression([element], arguments[0], innerContext);
                 return result.Any() && FunctionHelpers.IsTrue(result);
             });
@@ -284,10 +285,11 @@ internal static class CollectionFunctions
             throw new ArgumentException("where() requires a criteria argument");
 
         var criteria = arguments[0];
+        var index = 0;
 
         foreach (var element in focus)
         {
-            var innerContext = context.PushThis(element);
+            var innerContext = context.PushThis(element).PushIndex(index++);
             var result = evaluateExpression([element], criteria, innerContext);
             if (result.Any() && FunctionHelpers.IsTrue(result))
             {
@@ -356,10 +358,11 @@ internal static class CollectionFunctions
 
         var criteria = arguments[0];
         var foundEmpty = false;
+        var index = 0;
 
         foreach (var element in focus)
         {
-            var innerContext = context.PushThis(element);
+            var innerContext = context.PushThis(element).PushIndex(index++);
             var result = evaluateExpression([element], criteria, innerContext);
 
             if (!result.Any())
@@ -404,10 +407,11 @@ internal static class CollectionFunctions
 
         var criteria = arguments[0];
         var foundEmpty = false;
+        var index = 0;
 
         foreach (var element in focus)
         {
-            var innerContext = context.PushThis(element);
+            var innerContext = context.PushThis(element).PushIndex(index++);
             var result = evaluateExpression([element], criteria, innerContext);
 
             if (!result.Any())
@@ -485,6 +489,89 @@ internal static class CollectionFunctions
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// repeatAll() - Recursively applies a projection expression, allowing duplicates in output.
+    /// Unlike repeat(), does NOT check for duplicates before adding - better performance but allows duplicates.
+    /// Per FHIRPath spec: $this is set for each item but $index is undefined.
+    /// </summary>
+    [FhirPathFunction("repeatAll",
+        SupportedContexts = "any-any",
+        ReturnType = "context",
+        SupportsCollections = true,
+        MinArguments = 1,
+        MaxArguments = 1,
+        TakesExpressionArguments = true,
+        Category = "Collection",
+        Description = "Recursively applies a projection expression, allowing duplicates in output")]
+    public static IEnumerable<IElement> RepeatAll(
+        IEnumerable<IElement> focus,
+        IReadOnlyList<Expression> arguments,
+        EvaluationContext context,
+        Func<IEnumerable<IElement>, Expression, EvaluationContext, IEnumerable<IElement>> evaluateExpression)
+    {
+        if (arguments.Count == 0)
+            throw new ArgumentException("repeatAll() requires a projection argument");
+
+        var projection = arguments[0];
+        var result = new List<IElement>();
+        var queue = new Queue<IElement>(focus);
+
+        const int maxIterations = 100_000;
+        var iterations = 0;
+
+        while (queue.Count > 0)
+        {
+            if (++iterations > maxIterations)
+                throw new InvalidOperationException($"repeatAll() exceeded maximum iteration limit ({maxIterations}) - possible infinite loop detected");
+
+            var current = queue.Dequeue();
+
+            var innerContext = context.PushThis(current);
+            var projected = evaluateExpression([current], projection, innerContext);
+
+            foreach (var item in projected)
+            {
+                result.Add(item);
+                queue.Enqueue(item);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// coalesce() - Returns the first non-empty collection from the arguments.
+    /// Uses short-circuit evaluation: arguments after the first non-empty are NOT evaluated.
+    /// </summary>
+    [FhirPathFunction("coalesce",
+        SupportedContexts = "any-any",
+        ReturnType = "fromArgument",
+        SupportsCollections = true,
+        SupportedAtRoot = true,
+        MinArguments = 1,
+        MaxArguments = int.MaxValue,
+        TakesExpressionArguments = true,
+        Category = "Collection",
+        Description = "Returns the first non-empty collection from the arguments (short-circuit evaluation)")]
+    public static IEnumerable<IElement> Coalesce(
+        IEnumerable<IElement> focus,
+        IReadOnlyList<Expression> arguments,
+        EvaluationContext context,
+        Func<IEnumerable<IElement>, Expression, EvaluationContext, IEnumerable<IElement>> evaluateExpression)
+    {
+        if (arguments.Count == 0)
+            throw new ArgumentException("coalesce() requires at least one argument");
+
+        foreach (var arg in arguments)
+        {
+            var result = evaluateExpression(focus, arg, context).ToList();
+            if (result.Count > 0)
+                return result;
+        }
+
+        return [];
     }
 
     /// <summary>
@@ -704,10 +791,12 @@ internal static class CollectionFunctions
                 ? evaluateExpression(focus, arguments[1], context).ToList()
                 : [];
 
+        var index = 0;
         foreach (var element in focus)
         {
             var innerContext = context
                 .PushThis(element)
+                .PushIndex(index++)
                 .WithEnvironmentVariable("total", total);
 
             total = evaluateExpression(
