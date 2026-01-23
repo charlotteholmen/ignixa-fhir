@@ -32,17 +32,14 @@ internal static class MathFunctions
         EvaluationContext context,
         Func<IEnumerable<IElement>, Expression, EvaluationContext, IEnumerable<IElement>> evaluateExpression)
     {
-        var list = focus.ToList();
-        if (list.Count != 1)
-            return [];
-
-        if (!FunctionHelpers.TryConvertToDecimal(list[0].Value, out var value))
+        if (!FunctionHelpers.TryGetSingleNumber(focus, "round", out var value))
             return [];
 
         int precision = 0;
         if (arguments.Count > 0)
         {
-            var precisionResult = evaluateExpression(focus, arguments[0], context).SingleOrDefault();
+            // Non-scoped function: evaluate argument in outer context (don't change $this)
+            var precisionResult = evaluateExpression(context.Focus, arguments[0], context).SingleOrDefault();
             if (precisionResult?.Value is int p)
                 precision = p;
             else
@@ -51,7 +48,8 @@ internal static class MathFunctions
 
         var rounded = Math.Round(value, precision, MidpointRounding.AwayFromZero);
 
-        if (precision == 0 && list[0].Value is int)
+        var firstElement = focus.First();
+        if (precision == 0 && firstElement.Value is int)
             return [FunctionHelpers.CreateInteger((int)rounded)];
 
         return [FunctionHelpers.CreateDecimal(rounded)];
@@ -76,14 +74,11 @@ internal static class MathFunctions
         if (arguments.Count == 0)
             throw new ArgumentException("power() requires an exponent argument");
 
-        var list = focus.ToList();
-        if (list.Count != 1)
+        if (!FunctionHelpers.TryGetSingleNumber(focus, "power", out var baseValue))
             return [];
 
-        if (!FunctionHelpers.TryConvertToDecimal(list[0].Value, out var baseValue))
-            return [];
-
-        var exponentResult = evaluateExpression(focus, arguments[0], context).SingleOrDefault();
+        // Non-scoped function: evaluate argument in outer context (don't change $this)
+        var exponentResult = evaluateExpression(context.Focus, arguments[0], context).SingleOrDefault();
         if (!FunctionHelpers.TryConvertToDecimal(exponentResult?.Value, out var exponent))
             return [];
 
@@ -106,11 +101,7 @@ internal static class MathFunctions
         Description = "Rounds down to the nearest integer")]
     public static IEnumerable<IElement> Floor(IEnumerable<IElement> focus)
     {
-        var list = focus.ToList();
-        if (list.Count != 1)
-            return [];
-
-        if (!FunctionHelpers.TryConvertToDecimal(list[0].Value, out var value))
+        if (!FunctionHelpers.TryGetSingleNumber(focus, "floor", out var value))
             return [];
 
         var result = Math.Floor(value);
@@ -131,11 +122,7 @@ internal static class MathFunctions
         Description = "Rounds up to the nearest integer")]
     public static IEnumerable<IElement> Ceiling(IEnumerable<IElement> focus)
     {
-        var list = focus.ToList();
-        if (list.Count != 1)
-            return [];
-
-        if (!FunctionHelpers.TryConvertToDecimal(list[0].Value, out var value))
+        if (!FunctionHelpers.TryGetSingleNumber(focus, "ceiling", out var value))
             return [];
 
         var result = Math.Ceiling(value);
@@ -156,11 +143,7 @@ internal static class MathFunctions
         Description = "Removes the decimal part of a number")]
     public static IEnumerable<IElement> Truncate(IEnumerable<IElement> focus)
     {
-        var list = focus.ToList();
-        if (list.Count != 1)
-            return [];
-
-        if (!FunctionHelpers.TryConvertToDecimal(list[0].Value, out var value))
+        if (!FunctionHelpers.TryGetSingleNumber(focus, "truncate", out var value))
             return [];
 
         var result = Math.Truncate(value);
@@ -182,23 +165,27 @@ internal static class MathFunctions
     public static IEnumerable<IElement> Abs(IEnumerable<IElement> focus)
     {
         var list = focus.ToList();
-        if (list.Count != 1)
+        if (list.Count == 0)
             return [];
+
+        if (list.Count > 1)
+            throw new InvalidOperationException("abs() requires a single input value");
 
         // Handle Quantity types
         if (list[0].Value is Types.Quantity qty)
         {
             var absQty = new Types.Quantity(Math.Abs(qty.Value), qty.Unit);
-            return [new QuantityElement(absQty)];
+            return [FunctionHelpers.CreateQuantity(absQty)];
         }
 
         if (list[0].Value is int intValue)
             return [FunctionHelpers.CreateInteger(Math.Abs(intValue))];
 
-        if (!FunctionHelpers.TryConvertToDecimal(list[0].Value, out var value))
-            return [];
+        if (FunctionHelpers.TryConvertToDecimal(list[0].Value, out var value))
+            return [FunctionHelpers.CreateDecimal(Math.Abs(value))];
 
-        return [FunctionHelpers.CreateDecimal(Math.Abs(value))];
+        var typeName = list[0].InstanceType ?? list[0].Value?.GetType().Name ?? "unknown";
+        throw new InvalidOperationException($"Function 'abs' is not supported on context type '{typeName}'");
     }
 
     /// <summary>
@@ -213,11 +200,7 @@ internal static class MathFunctions
         Description = "Returns the square root of a number")]
     public static IEnumerable<IElement> Sqrt(IEnumerable<IElement> focus)
     {
-        var list = focus.ToList();
-        if (list.Count != 1)
-            return [];
-
-        if (!FunctionHelpers.TryConvertToDecimal(list[0].Value, out var value))
+        if (!FunctionHelpers.TryGetSingleNumber(focus, "sqrt", out var value))
             return [];
 
         if (value < 0)
@@ -239,11 +222,7 @@ internal static class MathFunctions
         Description = "Returns e raised to the specified power")]
     public static IEnumerable<IElement> Exp(IEnumerable<IElement> focus)
     {
-        var list = focus.ToList();
-        if (list.Count != 1)
-            return [];
-
-        if (!FunctionHelpers.TryConvertToDecimal(list[0].Value, out var value))
+        if (!FunctionHelpers.TryGetSingleNumber(focus, "exp", out var value))
             return [];
 
         var result = (decimal)Math.Exp((double)value);
@@ -262,11 +241,7 @@ internal static class MathFunctions
         Description = "Returns the natural logarithm of a number")]
     public static IEnumerable<IElement> Ln(IEnumerable<IElement> focus)
     {
-        var list = focus.ToList();
-        if (list.Count != 1)
-            return [];
-
-        if (!FunctionHelpers.TryConvertToDecimal(list[0].Value, out var value))
+        if (!FunctionHelpers.TryGetSingleNumber(focus, "ln", out var value))
             return [];
 
         if (value <= 0)
@@ -295,14 +270,11 @@ internal static class MathFunctions
         if (arguments.Count == 0)
             throw new ArgumentException("log() requires a base argument");
 
-        var list = focus.ToList();
-        if (list.Count != 1)
+        if (!FunctionHelpers.TryGetSingleNumber(focus, "log", out var value))
             return [];
 
-        if (!FunctionHelpers.TryConvertToDecimal(list[0].Value, out var value))
-            return [];
-
-        var baseResult = evaluateExpression(focus, arguments[0], context).SingleOrDefault();
+        // Non-scoped function: evaluate argument in outer context (don't change $this)
+        var baseResult = evaluateExpression(context.Focus, arguments[0], context).SingleOrDefault();
         if (!FunctionHelpers.TryConvertToDecimal(baseResult?.Value, out var baseValue))
             return [];
 
@@ -311,27 +283,5 @@ internal static class MathFunctions
 
         var result = (decimal)Math.Log((double)value, (double)baseValue);
         return [FunctionHelpers.CreateDecimal(result)];
-    }
-
-    /// <summary>
-    /// Simple IElement wrapper for Quantity values.
-    /// </summary>
-    private class QuantityElement : IElement
-    {
-        private readonly Types.Quantity _quantity;
-
-        public QuantityElement(Types.Quantity quantity)
-        {
-            ArgumentNullException.ThrowIfNull(quantity);
-            _quantity = quantity;
-        }
-
-        public string Name => string.Empty;
-        public string InstanceType => "Quantity";
-        public object Value => _quantity;
-        public string Location => string.Empty;
-        public IType? Type => null;
-        public IReadOnlyList<IElement> Children(string? name = null) => [];
-        public T? Meta<T>() where T : class => null;
     }
 }

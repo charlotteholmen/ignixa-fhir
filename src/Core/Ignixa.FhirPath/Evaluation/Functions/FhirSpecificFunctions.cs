@@ -2,12 +2,13 @@
  * Copyright (c) 2025, Ignixa Contributors
  *
  * FHIR-specific FhirPath function implementations.
- * Implements extension(), resolve(), getResourceKey(), getReferenceKey().
+ * Implements extension(), resolve(), getResourceKey(), getReferenceKey(), comparable().
  */
 
 using Ignixa.Abstractions;
 using Ignixa.FhirPath.Attributes;
 using Ignixa.FhirPath.Expressions;
+using Ignixa.FhirPath.Types;
 
 namespace Ignixa.FhirPath.Evaluation.Functions;
 
@@ -41,9 +42,9 @@ internal static class FhirSpecificFunctions
         if (arguments.Count == 0)
             throw new ArgumentException("extension() requires a url argument");
 
-        // Evaluate the url argument to get the string value
+        // Non-scoped function: evaluate argument in outer context (don't change $this)
         var urlArgument = arguments[0];
-        var urlResult = evaluateExpression(focus, urlArgument, context).FirstOrDefault();
+        var urlResult = evaluateExpression(context.Focus, urlArgument, context).FirstOrDefault();
 
         if (urlResult == null)
             yield break;
@@ -98,15 +99,31 @@ internal static class FhirSpecificFunctions
 
         foreach (var element in focus)
         {
-            // resolve() only works on Reference types
-            if (element.InstanceType != "Reference" && element.InstanceType != "ResourceReference")
+            string? referenceValue = null;
+
+            // resolve() works on Reference types
+            if (element.InstanceType == "Reference" || element.InstanceType == "ResourceReference")
+            {
+                // Try to extract the reference string from the "reference" child element
+                referenceValue = element.Scalar("reference") as string;
+
+                // If no nested child, check if Value is the reference string directly
+                // This happens when navigating to .reference which returns the Reference with its value
+                if (string.IsNullOrEmpty(referenceValue) && element.Value is string valueStr)
+                {
+                    referenceValue = valueStr;
+                }
+            }
+            // Also handle string values directly (common in FHIRPath expressions like entry.reference.where(resolve() is ...))
+            else if (element.InstanceType is "string" or "uri" or "canonical" or "url" && element.Value is string strValue)
+            {
+                referenceValue = strValue;
+            }
+            else
             {
                 // Not a reference - skip
                 continue;
             }
-
-            // Extract the reference string (e.g., "Patient/123" or "http://example.org/fhir/Patient/123")
-            var referenceValue = element.Scalar("reference") as string;
             if (string.IsNullOrEmpty(referenceValue))
             {
                 // No reference value - skip
@@ -226,8 +243,8 @@ internal static class FhirSpecificFunctions
             }
             else
             {
-                // Fallback: evaluate the expression to get the type name
-                var result = evaluateExpression(focus, arguments[0], context).ToList();
+                // Non-scoped function: evaluate argument in outer context (don't change $this)
+                var result = evaluateExpression(context.Focus, arguments[0], context).ToList();
                 if (result.Count > 0)
                 {
                     filterType = result[0].Value?.ToString();
@@ -275,4 +292,203 @@ internal static class FhirSpecificFunctions
             yield return FunctionHelpers.CreateString(reference);
         }
     }
+
+    /// <summary>
+    /// comparable() - Returns true if the input quantity can be compared to the argument quantity.
+    /// Two quantities are comparable if their units have the same UCUM dimension (e.g., cm and [in_i] are both lengths).
+    /// Per FHIRPath spec: Returns true if the quantities have compatible units per UCUM.
+    /// </summary>
+    [FhirPathFunction("comparable",
+        SupportedContexts = "Quantity-Quantity",
+        ReturnType = "boolean",
+        MinArguments = 1,
+        MaxArguments = 1,
+        TakesExpressionArguments = true,
+        Category = "FHIR",
+        Description = "Returns true if two quantities have comparable units")]
+    public static IEnumerable<IElement> Comparable(
+        IEnumerable<IElement> focus,
+        IReadOnlyList<Expression> arguments,
+        EvaluationContext context,
+        Func<IEnumerable<IElement>, Expression, EvaluationContext, IEnumerable<IElement>> evaluateExpression)
+    {
+        // comparable(other : Quantity) : Boolean
+        // Returns true if the input quantity can be compared to the argument quantity.
+        
+        var focusList = focus.ToList();
+        if (focusList.Count != 1)
+        {
+            // Per FHIRPath: If input is not a single quantity, return empty
+            yield break;
+        }
+
+        var inputElement = focusList[0];
+        
+        // Evaluate the argument
+        if (arguments.Count == 0)
+        {
+            yield break;
+        }
+        
+        var argResults = evaluateExpression(context.Focus, arguments[0], context).ToList();
+        if (argResults.Count != 1)
+        {
+            // Per FHIRPath: If argument is not a single quantity, return empty
+            yield break;
+        }
+
+        var argElement = argResults[0];
+        
+        // Extract units from both quantities
+        var inputUnit = ExtractUnitFromQuantity(inputElement);
+        var argUnit = ExtractUnitFromQuantity(argElement);
+        
+        if (inputUnit == null || argUnit == null)
+        {
+            // Cannot determine units - return empty
+            yield break;
+        }
+
+        // Check compatibility using the UCUM converter
+        var converter = QuantityUnitConverter.Instance;
+        var areCompatible = converter.IsCompatible(inputUnit, argUnit);
+        
+        yield return FunctionHelpers.CreateBoolean(areCompatible);
+    }
+
+    /// <summary>
+    /// Extracts the unit from a Quantity element.
+    /// </summary>
+    private static string? ExtractUnitFromQuantity(IElement element)
+    {
+        // Handle Quantity type from our Types namespace
+        if (element.Value is Quantity qty)
+        {
+            return qty.Unit;
+        }
+
+        // Handle FHIR Quantity element with children
+        if (element.InstanceType == "Quantity")
+        {
+            // Try 'code' first (UCUM code)
+            var codeChildren = element.Children("code");
+            if (codeChildren.Count > 0 && codeChildren[0].Value is string code && !string.IsNullOrEmpty(code))
+            {
+                return code;
+            }
+            
+            // Fall back to 'unit' (display name, but might also be a UCUM code)
+            var unitChildren = element.Children("unit");
+            if (unitChildren.Count > 0 && unitChildren[0].Value is string unit && !string.IsNullOrEmpty(unit))
+            {
+                return unit;
+            }
+        }
+
+        return null;
+    }
+
+    #region Not Supported Functions
+
+    /// <summary>
+    /// conformsTo() - Tests whether a resource conforms to a StructureDefinition.
+    /// NOT SUPPORTED: Requires profile validation infrastructure.
+    /// </summary>
+    [FhirPathFunction("conformsTo",
+        SupportedContexts = "Resource-Resource",
+        ReturnType = "boolean",
+        MinArguments = 1,
+        MaxArguments = 1,
+        Category = "FHIR",
+        Description = "Tests whether a resource conforms to a StructureDefinition (NOT SUPPORTED)")]
+    public static IEnumerable<IElement> ConformsTo(
+        IEnumerable<IElement> focus,
+        IReadOnlyList<Expression> arguments,
+        EvaluationContext context,
+        Func<IEnumerable<IElement>, Expression, EvaluationContext, IEnumerable<IElement>> evaluateExpression)
+    {
+        throw new NotSupportedException("Function 'conformsTo' is not supported. It requires profile validation infrastructure.");
+    }
+
+    /// <summary>
+    /// memberOf() - Tests whether a code is in a value set.
+    /// NOT SUPPORTED: Requires terminology service.
+    /// </summary>
+    [FhirPathFunction("memberOf",
+        SupportedContexts = "code-Coding-CodeableConcept",
+        ReturnType = "boolean",
+        MinArguments = 1,
+        MaxArguments = 1,
+        Category = "FHIR",
+        Description = "Tests whether a code is in a value set (NOT SUPPORTED)")]
+    public static IEnumerable<IElement> MemberOf(
+        IEnumerable<IElement> focus,
+        IReadOnlyList<Expression> arguments,
+        EvaluationContext context,
+        Func<IEnumerable<IElement>, Expression, EvaluationContext, IEnumerable<IElement>> evaluateExpression)
+    {
+        throw new NotSupportedException("Function 'memberOf' is not supported. It requires terminology service integration.");
+    }
+
+    /// <summary>
+    /// validateVS() - Validates a code against a value set.
+    /// NOT SUPPORTED: Requires terminology service.
+    /// </summary>
+    [FhirPathFunction("validateVS",
+        SupportedContexts = "code-Coding-CodeableConcept",
+        ReturnType = "boolean",
+        MinArguments = 1,
+        MaxArguments = 2,
+        Category = "FHIR",
+        Description = "Validates a code against a value set (NOT SUPPORTED)")]
+    public static IEnumerable<IElement> ValidateVS(
+        IEnumerable<IElement> focus,
+        IReadOnlyList<Expression> arguments,
+        EvaluationContext context,
+        Func<IEnumerable<IElement>, Expression, EvaluationContext, IEnumerable<IElement>> evaluateExpression)
+    {
+        throw new NotSupportedException("Function 'validateVS' is not supported. It requires terminology service integration.");
+    }
+
+    /// <summary>
+    /// translate() - Translates a code from one value set to another using a ConceptMap.
+    /// NOT SUPPORTED: Requires terminology service.
+    /// </summary>
+    [FhirPathFunction("translate",
+        SupportedContexts = "code-Coding-CodeableConcept",
+        ReturnType = "Coding",
+        MinArguments = 2,
+        MaxArguments = 3,
+        Category = "FHIR",
+        Description = "Translates a code using a ConceptMap (NOT SUPPORTED)")]
+    public static IEnumerable<IElement> Translate(
+        IEnumerable<IElement> focus,
+        IReadOnlyList<Expression> arguments,
+        EvaluationContext context,
+        Func<IEnumerable<IElement>, Expression, EvaluationContext, IEnumerable<IElement>> evaluateExpression)
+    {
+        throw new NotSupportedException("Function 'translate' is not supported. It requires terminology service integration.");
+    }
+
+    /// <summary>
+    /// hasTemplateIdOf() - CDA-specific function to check template IDs.
+    /// NOT SUPPORTED: CDA support is out of scope.
+    /// </summary>
+    [FhirPathFunction("hasTemplateIdOf",
+        SupportedContexts = "any-any",
+        ReturnType = "boolean",
+        MinArguments = 1,
+        MaxArguments = 1,
+        Category = "CDA",
+        Description = "CDA-specific template ID check (NOT SUPPORTED)")]
+    public static IEnumerable<IElement> HasTemplateIdOf(
+        IEnumerable<IElement> focus,
+        IReadOnlyList<Expression> arguments,
+        EvaluationContext context,
+        Func<IEnumerable<IElement>, Expression, EvaluationContext, IEnumerable<IElement>> evaluateExpression)
+    {
+        throw new NotSupportedException("Function 'hasTemplateIdOf' is not supported. CDA support is out of scope.");
+    }
+
+    #endregion
 }

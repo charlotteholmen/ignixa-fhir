@@ -153,13 +153,12 @@ public class IndexScopedFunctionTests
     public void GivenDefineVariableWithNestedWhere_WhenOuterThisNeeded_ThenVariablePreservesIt()
     {
         // Use defineVariable to preserve outer $this when inner scope shadows it
-        // defineVariable returns focus unchanged, then we chain to the inner expression
-        var expr = _parser.Parse("(0 | 1 | 2).select(defineVariable('outer', $this).where(false) | (10 | 20 | 30).where($index = %outer).first())");
+        // Chain via select: defineVariable -> select to access variable in inner where
+        var expr = _parser.Parse("(0 | 1 | 2).select(defineVariable('outer', $this).select((10 | 20 | 30).where($index = %outer).first()).first())");
         var root = new TestIntegerElement(0);
 
         var result = _evaluator.Evaluate(root, expr).ToList();
 
-        // defineVariable returns focus, but .where(false) filters it out
         // For outer $this=0: %outer=0, where($index=0) -> 10
         // For outer $this=1: %outer=1, where($index=1) -> 20
         // For outer $this=2: %outer=2, where($index=2) -> 30
@@ -223,4 +222,63 @@ public class IndexScopedFunctionTests
         Assert.Equal(10, result[2].Value);
         Assert.Equal(31, result[3].Value);
     }
+
+    #region Non-Scoped Function Context Tests
+
+    [Fact]
+    public void GivenNonScopedFunction_WhenTraceInArgument_ThenUsesOuterContext()
+    {
+        // Per FHIRPath spec: Non-scoped functions (like contains) should NOT change $this
+        // In: 'abc'.contains(trace('t').length().toString())
+        // - trace('t') returns $this which should be the outer context (integer root), not 'abc'
+        // - Since our root is an integer, trace returns the integer, and length() on integer throws
+        
+        var expr = _parser.Parse("'abc'.contains(trace('t').length().toString())");
+        var root = new TestIntegerElement(42);
+
+        // Should throw because trace() returns $this (integer 42), 
+        // and length() is not valid on integers
+        var ex = Assert.Throws<InvalidOperationException>(() => 
+            _evaluator.Evaluate(root, expr).ToList());
+        
+        Assert.Contains("length", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("integer", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void GivenNonScopedFunction_WhenThisInArgument_ThenUsesOuterContext()
+    {
+        // $this inside non-scoped function argument should be outer context
+        // In: 'hello'.contains($this.toString())
+        // $this should be the integer root (42), not 'hello'
+        
+        var expr = _parser.Parse("'hello42'.contains($this.toString())");
+        var root = new TestIntegerElement(42);
+
+        var result = _evaluator.Evaluate(root, expr).ToList();
+
+        // $this is 42, '42'.toString() = '42'
+        // 'hello42'.contains('42') = true
+        Assert.Single(result);
+        Assert.Equal(true, result[0].Value);
+    }
+
+    [Fact]
+    public void GivenScopedFunction_WhenThisInCriteria_ThenUsesCurrentItem()
+    {
+        // Contrast: scoped function SHOULD change $this
+        // In: ('abc' | 'xyz').where($this = 'abc')
+        // $this should be each item being tested
+        
+        var expr = _parser.Parse("('abc' | 'xyz').where($this = 'abc')");
+        var root = new TestIntegerElement(42);
+
+        var result = _evaluator.Evaluate(root, expr).ToList();
+
+        // where() is scoped - $this is each item
+        Assert.Single(result);
+        Assert.Equal("abc", result[0].Value);
+    }
+
+    #endregion
 }

@@ -286,7 +286,13 @@ public static class DateTimeFunctions
 
         var parsed = new ParsedDateTime();
 
-        // Check for time-only literal (@T...)
+        // Check for time-only value by InstanceType (time values no longer have T prefix)
+        if (element.InstanceType == "time")
+        {
+            return ParseTime(value);
+        }
+
+        // Legacy: Also check for T prefix for backwards compatibility
         if (value.StartsWith("T", StringComparison.Ordinal))
         {
             return ParseTime(value.Substring(1));
@@ -530,25 +536,22 @@ public static class DateTimeFunctions
         var element = list[0];
         var value = element.Value;
 
-        // Handle date/time literals (stored as strings with @ prefix)
-        if (value is string str && str.StartsWith("@", StringComparison.Ordinal))
+        // Handle date/time literals - check InstanceType instead of @ prefix
+        // (values no longer include @ prefix after parsing)
+        if (value is string str && (element.InstanceType == "date" || element.InstanceType == "dateTime" || element.InstanceType == "time"))
         {
-            // Remove @ prefix and count digits only
-            var dateTimeStr = str.Substring(1);
-            var digitCount = dateTimeStr.Count(c => char.IsDigit(c));
+            // Count digits only (no @ prefix in stored values)
+            var digitCount = str.Count(c => char.IsDigit(c));
             return [CreateInteger(digitCount)];
         }
 
-        // Handle decimal values - count significant figures
+        // Handle decimal values - return number of decimal places (scale)
         if (value is decimal decValue)
         {
-            // Convert to string to preserve trailing zeros
-            var decStr = decValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
-
-            // Remove decimal point and count digits
-            var digits = decStr.Replace(".", "", StringComparison.Ordinal)
-                              .Replace("-", "", StringComparison.Ordinal);
-            return [CreateInteger(digits.Length)];
+            // Use decimal.GetBits to extract the scale (number of decimal places)
+            var bits = decimal.GetBits(decValue);
+            var scale = (bits[3] >> 16) & 0x7F;
+            return [CreateInteger(scale)];
         }
 
         // Handle integer values
@@ -838,43 +841,7 @@ public static class DateTimeFunctions
     /// </summary>
     private static IElement CreateQuantityElement(decimal value, string unit)
     {
-        return new QuantityElement(new Quantity(value, unit));
-    }
-
-    /// <summary>
-    /// IElement wrapper for Quantity values used by duration/difference functions.
-    /// </summary>
-    private sealed class QuantityElement : IElement
-    {
-        private readonly Quantity _quantity;
-
-        public QuantityElement(Quantity quantity)
-        {
-            _quantity = quantity;
-        }
-
-        public string Name => string.Empty;
-        public string InstanceType => "Quantity";
-        public object Value => _quantity;
-        public string Location => string.Empty;
-        public IType? Type => null;
-
-        public IReadOnlyList<IElement> Children(string? name = null)
-        {
-            if (name == null || name == "value")
-            {
-                return [new PrimitiveElement(_quantity.Value, "decimal")];
-            }
-
-            if (name == "unit")
-            {
-                return [new PrimitiveElement(_quantity.Unit, "string")];
-            }
-
-            return [];
-        }
-
-        public T? Meta<T>() where T : class => null;
+        return FunctionHelpers.CreateQuantity(new Quantity(value, unit));
     }
 
     #endregion

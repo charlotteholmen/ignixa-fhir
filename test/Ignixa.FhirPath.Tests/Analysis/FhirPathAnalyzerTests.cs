@@ -501,4 +501,85 @@ public class FhirPathAnalyzerTests
     }
 
     #endregion
+
+    #region Scoped vs Non-Scoped Function Context Tests
+
+    [Fact]
+    public void GivenScopedFunction_WhenThisInCriteria_ThenThisIsCurrentItem()
+    {
+        // Scoped function (where) should set $this to the current item type
+        // Patient.name.where($this.family = 'Smith')
+        // Inside where(), $this should be HumanName (the item being tested)
+        var result = _analyzer.Analyze("Patient.name.where($this.family = 'Smith')", "Patient");
+
+        Assert.True(result.IsValid);
+        Assert.Contains("HumanName", result.TypeNames);
+    }
+
+    [Fact]
+    public void GivenNonScopedFunction_WhenThisInArgument_ThenThisIsOuterContext()
+    {
+        // Non-scoped function (contains) should NOT change $this
+        // Patient.name.family.first().contains($this.id)
+        // Inside contains(), $this should still be Patient (outer context), not string
+        // So $this.id should resolve to Patient.id (string)
+        var result = _analyzer.Analyze("Patient.name.family.first().contains($this.id)", "Patient");
+
+        // This should be valid because $this.id resolves to Patient.id (string)
+        // and contains() takes a string argument
+        Assert.True(result.IsValid);
+        Assert.Contains("boolean", result.TypeNames);
+    }
+
+    [Fact]
+    public void GivenNonScopedFunction_WhenThisUsedIncorrectly_ThenReportsError()
+    {
+        // If $this in non-scoped function argument incorrectly resolved to the string focus,
+        // then $this.name would fail because string doesn't have 'name'
+        // But with correct scoping, $this is Patient, and Patient.name is valid
+        var result = _analyzer.Analyze("Patient.id.contains($this.name.first().family)", "Patient");
+
+        // Should be valid: $this is Patient, $this.name.first().family is string
+        Assert.True(result.IsValid);
+    }
+
+    [Fact]
+    public void GivenNestedScopedInNonScoped_WhenAnalyzing_ThenScopesCorrectly()
+    {
+        // Non-scoped (startsWith) contains scoped (where)
+        // The where() should create its own scope, but startsWith shouldn't
+        var result = _analyzer.Analyze(
+            "Patient.name.family.first().startsWith(Patient.identifier.where($this.system = 'http://example.org').value.first())",
+            "Patient");
+
+        Assert.True(result.IsValid);
+        Assert.Contains("boolean", result.TypeNames);
+    }
+
+    [Fact]
+    public void GivenLengthOnPatient_WhenAnalyzing_ThenReportsError()
+    {
+        // The exact Firely test case: '123456789'.contains(trace('t').length().toString())
+        // trace('t') returns $this which is Patient (outer context), not string
+        // length() on Patient should report an error
+        var result = _analyzer.Analyze("'123456789'.contains($this.length().toString())", "Patient");
+
+        // Should report error: length() is not supported on Patient
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Issues, i =>
+            i.Message.Contains("length", StringComparison.OrdinalIgnoreCase) &&
+            i.Message.Contains("Patient", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void GivenLengthOnString_WhenAnalyzing_ThenIsValid()
+    {
+        // Contrast: length() on a string should be valid
+        var result = _analyzer.Analyze("Patient.name.family.first().length()", "Patient");
+
+        Assert.True(result.IsValid);
+        Assert.Contains("integer", result.TypeNames);
+    }
+
+    #endregion
 }

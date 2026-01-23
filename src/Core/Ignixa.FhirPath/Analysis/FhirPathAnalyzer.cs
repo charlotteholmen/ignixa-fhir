@@ -41,6 +41,22 @@ namespace Ignixa.FhirPath.Analysis;
 /// </remarks>
 public sealed class FhirPathAnalyzer : DefaultFhirPathExpressionVisitor<AnalysisContext, FhirPathTypeSet>
 {
+    /// <summary>
+    /// FHIR primitive types that are string-based and compatible with 'string' type.
+    /// </summary>
+    private static readonly HashSet<string> StringSubtypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "string", "id", "code", "uri", "url", "canonical", "oid", "uuid", "markdown"
+    };
+
+    /// <summary>
+    /// Numeric types compatible with numeric operations.
+    /// </summary>
+    private static readonly HashSet<string> NumericTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "integer", "decimal", "long"
+    };
+
     private readonly IFhirSchemaProvider _schema;
     private readonly SymbolTable _symbolTable;
     private readonly FhirPathParser _parser;
@@ -371,14 +387,21 @@ public sealed class FhirPathAnalyzer : DefaultFhirPathExpressionVisitor<Analysis
             return HandleIsFunction(expression, focusTypes, innerContext, result);
         }
 
+        // For scoped functions (TakesExpressionArguments=true), analyze arguments with innerContext
+        // which has $this set to focus items. For non-scoped functions, analyze arguments with
+        // the original context so $this remains the outer context (per FHIRPath spec).
+        var argContext = funcDef?.TakesExpressionArguments == true ? innerContext : context;
         var argTypes = new List<FhirPathTypeSet>();
         foreach (var arg in expression.Arguments)
         {
-            argTypes.Add(arg.AcceptVisitor(visitor, innerContext));
+            argTypes.Add(arg.AcceptVisitor(visitor, argContext));
         }
         if (funcDef != null)
         {
             var issues = new List<ValidationIssue>();
+
+            // Validate that focus type is supported by this function
+            ValidateFocusType(expression, funcDef, focusTypes, issues);
 
             try
             {
@@ -436,8 +459,13 @@ public sealed class FhirPathAnalyzer : DefaultFhirPathExpressionVisitor<Analysis
     {
         var result = new FhirPathTypeSet();
         var visitor = _childVisitor ?? this;
-        var leftResult = expression.Left?.AcceptVisitor(visitor, context) ?? new FhirPathTypeSet();
-        var rightResult = expression.Right?.AcceptVisitor(visitor, context) ?? new FhirPathTypeSet();
+
+        // For union operator, fork context so defineVariable in one branch doesn't leak to sibling
+        var leftContext = expression.Operator == "|" ? context.ForkForBranch() : context;
+        var rightContext = expression.Operator == "|" ? context.ForkForBranch() : context;
+
+        var leftResult = expression.Left?.AcceptVisitor(visitor, leftContext) ?? new FhirPathTypeSet();
+        var rightResult = expression.Right?.AcceptVisitor(visitor, rightContext) ?? new FhirPathTypeSet();
 
         switch (expression.Operator)
         {
@@ -1002,6 +1030,71 @@ public sealed class FhirPathAnalyzer : DefaultFhirPathExpressionVisitor<Analysis
         };
     }
 
+    /// <summary>
+    /// Validates that the focus type is supported by the function.
+    /// Reports an error if the function doesn't support the given context type.
+    /// </summary>
+    private static void ValidateFocusType(
+        FunctionCallExpression expression,
+        FunctionDefinition funcDef,
+        FhirPathTypeSet focusTypes,
+        ICollection<ValidationIssue> issues)
+    {
+        // Skip validation if function accepts any type
+        if (funcDef.SupportedContexts.Count == 0 ||
+            funcDef.SupportedContexts.Any(c => c.ContextType.Equals("any", StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        // Check each focus type against supported contexts
+        foreach (var focusType in focusTypes.Types)
+        {
+            var typeName = focusType.TypeName;
+            if (string.IsNullOrEmpty(typeName))
+            {
+                continue;
+            }
+
+            // Check if this type or a compatible type is supported
+            var isSupported = funcDef.SupportedContexts.Any(c =>
+                c.ContextType.Equals(typeName, StringComparison.OrdinalIgnoreCase) ||
+                IsCompatibleType(typeName, c.ContextType));
+
+            if (!isSupported)
+            {
+                var supportedTypes = string.Join(", ", funcDef.SupportedContexts.Select(c => c.ContextType));
+                issues.Add(new ValidationIssue
+                {
+                    Severity = ValidationIssueSeverity.Error,
+                    Message = $"Function '{funcDef.Name}' is not supported on context type '{typeName}'. Supported types: {supportedTypes}",
+                    Location = expression.Location?.ToString(),
+                    Expression = expression.ToString()
+                });
+            }
+        }
+    }
+
+    /// <summary>
+    /// Checks if a type is compatible with a supported context type.
+    /// Handles type hierarchies and aliases (e.g., "number" matches "integer" and "decimal").
+    /// </summary>
+    private static bool IsCompatibleType(string actualType, string supportedType)
+    {
+        // Handle "number" which includes integer, decimal, and long
+        if (supportedType.Equals("number", StringComparison.OrdinalIgnoreCase))
+        {
+            return NumericTypes.Contains(actualType);
+        }
+
+        // Handle primitive type aliases
+        if (supportedType.Equals("string", StringComparison.OrdinalIgnoreCase))
+        {
+            return StringSubtypes.Contains(actualType);
+        }
+
+        return false;
+    }
 
     private static FhirPathTypeSet CreateBooleanTypeSet()
     {

@@ -198,43 +198,57 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
 
     public IEnumerable<IElement> VisitBinary(BinaryExpression expression, EvaluationContext context)
     {
-        var left = EvaluateExpression(context.Focus, expression.Left, context).ToList();
-        var right = EvaluateExpression(context.Focus, expression.Right, context).ToList();
+        // For union operator, each branch should have isolated variable scope
+        // Variables defined in left branch should NOT be visible in right branch
+        if (expression.Operator == "|")
+        {
+            // For union operator, each branch should have isolated variable scope
+            // Variables defined in one branch should NOT be visible in sibling branches
+            // Use ForkForBranch() to give each branch its own copy of DefinedVariables
+            var leftContext = context.ForkForBranch();
+            var rightContext = context.ForkForBranch();
+
+            var left = EvaluateExpression(context.Focus, expression.Left, leftContext).ToList();
+            var right = EvaluateExpression(context.Focus, expression.Right, rightContext).ToList();
+
+            return EvaluateUnion(left, right);
+        }
+
+        var leftResult = EvaluateExpression(context.Focus, expression.Left, context).ToList();
+        var rightResult = EvaluateExpression(context.Focus, expression.Right, context).ToList();
 
 #pragma warning disable CA1308 // Normalize strings to uppercase
         return expression.Operator.ToLowerInvariant() switch
 #pragma warning restore CA1308 // Normalize strings to uppercase
         {
-            "|" => EvaluateUnion(left, right),
+            "+" => EvaluateAddition(leftResult, rightResult),
+            "-" => EvaluateSubtraction(leftResult, rightResult),
+            "*" => EvaluateMultiplication(leftResult, rightResult),
+            "/" => EvaluateDivision(leftResult, rightResult),
+            "div" => EvaluateIntegerDivision(leftResult, rightResult),
+            "mod" => EvaluateModulo(leftResult, rightResult),
 
-            "+" => EvaluateAddition(left, right),
-            "-" => EvaluateSubtraction(left, right),
-            "*" => EvaluateMultiplication(left, right),
-            "/" => EvaluateDivision(left, right),
-            "div" => EvaluateIntegerDivision(left, right),
-            "mod" => EvaluateModulo(left, right),
+            "&" => EvaluateStringConcatenation(leftResult, rightResult),
 
-            "&" => EvaluateStringConcatenation(left, right),
+            "is" => EvaluateTypeIs(leftResult, expression.Right),
+            "as" => EvaluateTypeAs(leftResult, expression.Right),
 
-            "is" => EvaluateTypeIs(left, expression.Right),
-            "as" => EvaluateTypeAs(left, expression.Right),
+            "in" => FunctionHelpers.ReturnBoolean(EvaluateMembership(leftResult, rightResult, isIn: true)),
+            "contains" => FunctionHelpers.ReturnBoolean(EvaluateMembership(leftResult, rightResult, isIn: false)),
 
-            "in" => FunctionHelpers.ReturnBoolean(EvaluateMembership(left, right, isIn: true)),
-            "contains" => FunctionHelpers.ReturnBoolean(EvaluateMembership(left, right, isIn: false)),
+            "=" => FunctionHelpers.ReturnBoolean(CompareEquality(leftResult, rightResult, equals: true)),
+            "!=" => FunctionHelpers.ReturnBoolean(CompareEquality(leftResult, rightResult, equals: false)),
+            "~" => FunctionHelpers.ReturnBoolean(CompareEquivalence(leftResult, rightResult, equivalent: true)),
+            "!~" => FunctionHelpers.ReturnBoolean(CompareEquivalence(leftResult, rightResult, equivalent: false)),
+            ">" => FunctionHelpers.ReturnBoolean(CompareOrder(leftResult, rightResult, greater: true, orEqual: false)),
+            ">=" => FunctionHelpers.ReturnBoolean(CompareOrder(leftResult, rightResult, greater: true, orEqual: true)),
+            "<" => FunctionHelpers.ReturnBoolean(CompareOrder(leftResult, rightResult, greater: false, orEqual: false)),
+            "<=" => FunctionHelpers.ReturnBoolean(CompareOrder(leftResult, rightResult, greater: false, orEqual: true)),
 
-            "=" => FunctionHelpers.ReturnBoolean(CompareEquality(left, right, equals: true)),
-            "!=" => FunctionHelpers.ReturnBoolean(CompareEquality(left, right, equals: false)),
-            "~" => FunctionHelpers.ReturnBoolean(CompareEquivalence(left, right, equivalent: true)),
-            "!~" => FunctionHelpers.ReturnBoolean(CompareEquivalence(left, right, equivalent: false)),
-            ">" => FunctionHelpers.ReturnBoolean(CompareOrder(left, right, greater: true, orEqual: false)),
-            ">=" => FunctionHelpers.ReturnBoolean(CompareOrder(left, right, greater: true, orEqual: true)),
-            "<" => FunctionHelpers.ReturnBoolean(CompareOrder(left, right, greater: false, orEqual: false)),
-            "<=" => FunctionHelpers.ReturnBoolean(CompareOrder(left, right, greater: false, orEqual: true)),
-
-            "and" => EvaluateAnd(left, right),
-            "or" => EvaluateOr(left, right),
-            "xor" => EvaluateXor(left, right),
-            "implies" => EvaluateImplies(left, right),
+            "and" => EvaluateAnd(leftResult, rightResult),
+            "or" => EvaluateOr(leftResult, rightResult),
+            "xor" => EvaluateXor(leftResult, rightResult),
+            "implies" => EvaluateImplies(leftResult, rightResult),
 
             _ => throw new NotSupportedException($"Binary operator '{expression.Operator}' is not yet implemented")
         };
@@ -357,16 +371,16 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
         var leftValue = left[0].Value;
         var rightValue = right[0].Value;
 
-        // Date/DateTime + Quantity
+        // Date/DateTime/Time + Quantity
         if (leftValue is string leftDateStr && rightValue is Types.Quantity rightQty)
         {
-            return EvaluateDateTimeArithmetic(leftDateStr, rightQty, add: true);
+            return EvaluateDateTimeArithmetic(leftDateStr, rightQty, add: true, left[0].InstanceType);
         }
 
-        // Quantity + Date/DateTime
+        // Quantity + Date/DateTime/Time
         if (leftValue is Types.Quantity leftQty && rightValue is string rightDateStr)
         {
-            return EvaluateDateTimeArithmetic(rightDateStr, leftQty, add: true);
+            return EvaluateDateTimeArithmetic(rightDateStr, leftQty, add: true, right[0].InstanceType);
         }
 
         if (leftValue is Types.Quantity || rightValue is Types.Quantity)
@@ -399,10 +413,10 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
         var leftValue = left[0].Value;
         var rightValue = right[0].Value;
 
-        // Date/DateTime - Quantity
+        // Date/DateTime/Time - Quantity
         if (leftValue is string leftStr && rightValue is Types.Quantity qty)
         {
-            return EvaluateDateTimeArithmetic(leftStr, qty, add: false);
+            return EvaluateDateTimeArithmetic(leftStr, qty, add: false, left[0].InstanceType);
         }
 
         if (leftValue is Types.Quantity || rightValue is Types.Quantity)
@@ -883,15 +897,18 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
 
         if (dateTimeValue.StartsWith("T", StringComparison.Ordinal))
         {
-            return new PrimitiveElement(value, "time");
+            // Strip T prefix - it's FHIRPath syntax, not part of the value
+            // FHIR time format is HH:mm:ss, not THH:mm:ss
+            // This matches Firely SDK and fhirpath.js behavior
+            return new PrimitiveElement(dateTimeValue.Substring(1), "time");
         }
 
         if (dateTimeValue.Contains('T', StringComparison.Ordinal))
         {
-            return new PrimitiveElement(value, "dateTime");
+            return new PrimitiveElement(dateTimeValue, "dateTime");
         }
 
-        return new PrimitiveElement(value, "date");
+        return new PrimitiveElement(dateTimeValue, "date");
     }
 
     public IEnumerable<IElement> VisitIndexer(IndexerExpression expression, EvaluationContext context)
@@ -1209,7 +1226,7 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
             if ((leftType == "date" || leftType == "datetime" || leftType == "time") &&
                 (rightType == "date" || rightType == "datetime" || rightType == "time"))
             {
-                return CompareDateTimesWithPrecision(leftValue, rightValue, greater, orEqual);
+                return CompareDateTimesWithPrecision(leftValue, rightValue, leftType, rightType, greater, orEqual);
             }
     
                     if (leftValue is string leftStr && rightValue is string rightStr)
@@ -1219,7 +1236,7 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
                         if (IsDateTimeString(leftStr) && IsDateTimeString(rightStr))
                         {
                              // Date comparison - if result is null (uncertain), don't fall through to string comparison
-                             return CompareDateTimesWithPrecision(leftValue, rightValue, greater, orEqual);
+                             return CompareDateTimesWithPrecision(leftValue, rightValue, null, null, greater, orEqual);
                         }
             
                         var comparison = string.Compare(leftStr, rightStr, StringComparison.Ordinal);
@@ -1257,7 +1274,7 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
     
             return null;
         }
-    private bool? CompareDateTimesWithPrecision(object? leftValue, object? rightValue, bool greater, bool orEqual)
+    private bool? CompareDateTimesWithPrecision(object? leftValue, object? rightValue, string? leftType, string? rightType, bool greater, bool orEqual)
     {
         var leftStr = leftValue switch
         {
@@ -1280,6 +1297,12 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
 
         leftStr = leftStr.StartsWith("@", StringComparison.Ordinal) ? leftStr.Substring(1) : leftStr;
         rightStr = rightStr.StartsWith("@", StringComparison.Ordinal) ? rightStr.Substring(1) : rightStr;
+
+        // Prepend T for time values to normalize for parsing (time values stored as HH:mm:ss)
+        if (leftType == "time" && !leftStr.StartsWith("T", StringComparison.Ordinal))
+            leftStr = "T" + leftStr;
+        if (rightType == "time" && !rightStr.StartsWith("T", StringComparison.Ordinal))
+            rightStr = "T" + rightStr;
 
         // Normalize .0 millisecond suffixes for consistent precision detection
         leftStr = NormalizeMillisecondPrecision(leftStr);
@@ -1550,20 +1573,25 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
             }
         }
 
-    private IEnumerable<IElement> EvaluateDateTimeArithmetic(string dateTimeStr, Types.Quantity quantity, bool add)
+    private IEnumerable<IElement> EvaluateDateTimeArithmetic(string dateTimeStr, Types.Quantity quantity, bool add, string instanceType)
     {
         // Remove @ prefix if present
         dateTimeStr = dateTimeStr.StartsWith("@", StringComparison.Ordinal) ? dateTimeStr.Substring(1) : dateTimeStr;
 
-        // Determine if this is a date, dateTime, or time
-        var isTimeOnly = dateTimeStr.StartsWith("T", StringComparison.Ordinal);
-        var precision = GetDateTimePrecision(dateTimeStr);
+        // Determine if this is a date, dateTime, or time using InstanceType
+        var isTimeOnly = instanceType == "time";
+
+        // Prepend T for time values so GetDateTimePrecision can detect them correctly
+        // (time values are stored as HH:mm:ss without T prefix)
+        var parseStr = isTimeOnly && !dateTimeStr.StartsWith("T", StringComparison.Ordinal)
+            ? "T" + dateTimeStr
+            : dateTimeStr;
+
+        var precision = GetDateTimePrecision(parseStr);
 
         if (precision == DateTimePrecision.Invalid)
             return [];
-
-        // Parse the datetime
-        if (!TryParseFhirDateTime(dateTimeStr, out var dt))
+        if (!TryParseFhirDateTime(parseStr, out var dt))
             return [];
 
         // Apply the quantity arithmetic based on unit
@@ -1596,14 +1624,12 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
         }
 
         // Format result to match input precision
-        var resultStr = FormatDateTimeWithPrecision(result, precision, dateTimeStr);
-        return [new PrimitiveElement("@" + resultStr, isTimeOnly ? "time" : (dateTimeStr.Contains('T', StringComparison.Ordinal) ? "dateTime" : "date"))];
+        var resultStr = FormatDateTimeWithPrecision(result, precision, dateTimeStr, isTimeOnly);
+        return [new PrimitiveElement(resultStr, isTimeOnly ? "time" : (dateTimeStr.Contains('T', StringComparison.Ordinal) ? "dateTime" : "date"))];
     }
 
-    private string FormatDateTimeWithPrecision(DateTimeOffset dt, DateTimePrecision precision, string originalStr)
+    private string FormatDateTimeWithPrecision(DateTimeOffset dt, DateTimePrecision precision, string originalStr, bool isTimeOnly)
     {
-        var isTimeOnly = originalStr.StartsWith("T", StringComparison.Ordinal);
-        
         // Preserve timezone from original string
         var hasTimeZone = originalStr.Contains('+', StringComparison.Ordinal) ||
                           (originalStr.Contains('-', StringComparison.Ordinal) && originalStr.LastIndexOf('-') > 10) ||
@@ -1626,7 +1652,8 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
         if (isTimeOnly)
         {
             var tIndex = result.IndexOf('T', StringComparison.Ordinal);
-            result = result.Substring(tIndex);
+            // Strip T prefix - FHIR time format is HH:mm:ss, not THH:mm:ss
+            result = result.Substring(tIndex + 1);
         }
         else if (hasTimeZone && precision >= DateTimePrecision.Hour)
         {
