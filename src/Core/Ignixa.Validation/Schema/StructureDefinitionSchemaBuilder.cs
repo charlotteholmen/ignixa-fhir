@@ -366,6 +366,18 @@ public class StructureDefinitionSchemaBuilder
                 // BackboneElement: ResourceType.ElementName (e.g., "AuditEvent.Agent")
                 nestedTypeName = $"{typeDefinition.Info.Name}.{CapitalizeFirst(element.Info.Name)}";
             }
+            else if (typeName == "Element")
+            {
+                // Element type might be a BackboneElement in complex datatypes (e.g., Timing.repeat)
+                // Try to find a specific type like "Timing.Repeat" first
+                var potentialBackboneType = $"{typeDefinition.Info.Name}.{CapitalizeFirst(element.Info.Name)}";
+                if (schema.GetTypeDefinition(potentialBackboneType) == null)
+                {
+                    // No specific BackboneElement type found, skip Element type
+                    continue;
+                }
+                nestedTypeName = potentialBackboneType;
+            }
             else
             {
                 // Complex datatype: Use as-is (e.g., "Address", "HumanName")
