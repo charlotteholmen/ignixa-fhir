@@ -1,7 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Testing;
 using Microsoft.CodeAnalysis.Testing;
-using Microsoft.CodeAnalysis.Testing.Verifiers;
 
 namespace Ignixa.Analyzers.Tests;
 
@@ -39,7 +38,7 @@ public class ResourceJsonNodeDeserializeCodeFixTests
             """;
 
         var expected = new DiagnosticResult(ResourceJsonNodeDeserializeAnalyzer.DiagnosticId, DiagnosticSeverity.Error)
-            .WithSpan(9, 24, 9, 79)
+            .WithSpan(9, 24, 9, 74)
             .WithArguments("ResourceJsonNode");
 
         await VerifyCodeFixAsync(testCode, expected, fixedCode);
@@ -97,7 +96,7 @@ public class ResourceJsonNodeDeserializeCodeFixTests
             """;
 
         var expected = new DiagnosticResult(ResourceJsonNodeDeserializeAnalyzer.DiagnosticId, DiagnosticSeverity.Error)
-            .WithSpan(19, 24, 19, 77)
+            .WithSpan(19, 24, 19, 73)
             .WithArguments("PatientJsonNode");
 
         await VerifyCodeFixAsync(testCode, expected, fixedCode);
@@ -108,7 +107,7 @@ public class ResourceJsonNodeDeserializeCodeFixTests
         var test = new CSharpCodeFixTest<
             ResourceJsonNodeDeserializeAnalyzer,
             ResourceJsonNodeDeserializeCodeFixProvider,
-            XUnitVerifier>
+            DefaultVerifier>
         {
             TestCode = source,
             FixedCode = fixedSource,
