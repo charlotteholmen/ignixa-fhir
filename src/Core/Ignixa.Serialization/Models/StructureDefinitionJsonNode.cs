@@ -162,6 +162,37 @@ public sealed class StructureDefinitionJsonNode
         }
     }
 
+    /// <summary>
+    /// Gets differential.element[] array for element definitions.
+    /// Returns null if differential or elements are missing or not an array.
+    /// </summary>
+    public JsonArray? GetDifferentialElements()
+    {
+        try
+        {
+            var differential = _resourceNode.MutableNode["differential"];
+            if (differential == null)
+            {
+                _logger.LogDebug("No differential found in StructureDefinition");
+                return null;
+            }
+
+            var elements = differential["element"];
+            if (elements is not JsonArray arrayElements)
+            {
+                _logger.LogWarning("differential.element is not an array");
+                return null;
+            }
+
+            return arrayElements;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error extracting differential elements");
+            return null;
+        }
+    }
+
     // ============ Helper Methods ============
 
     private string? GetString(string propertyName)
