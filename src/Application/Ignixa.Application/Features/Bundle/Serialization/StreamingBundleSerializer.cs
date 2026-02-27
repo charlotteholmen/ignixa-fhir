@@ -90,6 +90,12 @@ public static class StreamingBundleSerializer
     }
 
     /// <summary>
+    /// Flush the writer to the output stream when its pending buffer exceeds this size.
+    /// Prevents unbounded memory growth for large result sets without flushing on every entry.
+    /// </summary>
+    private const int FlushThresholdBytes = 50 * 1024 * 1024; // 50 MB
+
+    /// <summary>
     /// Serializes a search result bundle with count-as-render pagination pattern.
     /// Streams entries from result set, counting as rendering, and generates pagination links at the end.
     /// Uses zero-copy serialization with SearchEntryResult (raw bytes from repository).
@@ -103,6 +109,7 @@ public static class StreamingBundleSerializer
     /// <param name="queryString">Original query string for link generation.</param>
     /// <param name="schemaProvider">Optional FHIR schema provider for element filtering (used by _elements parameter).</param>
     /// <param name="pretty">Whether to format JSON with indentation.</param>
+    /// <param name="flushThresholdBytes">Flush the writer when its pending buffer exceeds this size (bytes). Prevents unbounded memory growth without flushing on every entry.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Pagination result with hasMore flag and continuation token.</returns>
     public static async Task SerializeWithPaginationAsync(
@@ -115,6 +122,7 @@ public static class StreamingBundleSerializer
         string queryString,
         ISchema? schemaProvider = null,
         bool pretty = false,
+        int flushThresholdBytes = FlushThresholdBytes,
         CancellationToken cancellationToken = default)
     {
         EnsureArg.IsNotNull(outputStream, nameof(outputStream));
@@ -197,6 +205,14 @@ public static class StreamingBundleSerializer
 #pragma warning restore CA1308
 
             writer.WriteEndObject();
+
+            // Flush to the HTTP response stream once the buffer exceeds the threshold.
+            // This keeps memory bounded for large result sets while avoiding the overhead
+            // of flushing (a syscall + potential TCP segment) on every single entry.
+            if (writer.UnderlyingWriter.BytesPending >= flushThresholdBytes)
+            {
+                await writer.FlushAsync(cancellationToken);
+            }
         }
 
         writer.WriteEndArray();
