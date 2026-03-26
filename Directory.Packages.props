@@ -109,5 +109,8 @@
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp.Analyzer.Testing.XUnit" Version="1.1.2" />
     <PackageVersion Include="Microsoft.CodeAnalysis.CSharp.CodeFix.Testing.XUnit" Version="1.1.2" />
     <PackageVersion Include="Xunit.SkippableFact" Version="1.4.13" />
+    <!-- HotChocolate GraphQL -->
+    <PackageVersion Include="HotChocolate.AspNetCore" Version="15.1.12" />
+    <PackageVersion Include="HotChocolate.Execution" Version="15.1.12" />
   </ItemGroup>
 </Project>

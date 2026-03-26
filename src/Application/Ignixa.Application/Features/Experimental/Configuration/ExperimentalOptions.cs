@@ -3,6 +3,8 @@
 // Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
 // -------------------------------------------------------------------------------------------------
 
+using Ignixa.Abstractions;
+
 namespace Ignixa.Application.Features.Experimental.Configuration;
 
 /// <summary>
@@ -52,6 +54,11 @@ public class ExperimentalFeaturesOptions
     /// Future: $summary operation configuration.
     /// </summary>
     public SummaryExperimentalOptions Summary { get; set; } = new();
+
+    /// <summary>
+    /// FHIR $graphql operation configuration.
+    /// </summary>
+    public GraphQlExperimentalOptions GraphQl { get; set; } = new();
 }
 
 /// <summary>
@@ -122,4 +129,37 @@ public class SummaryExperimentalOptions
     /// Allowed resource types for summary.
     /// </summary>
     public ICollection<string> AllowedResourceTypes { get; } = [];
+}
+
+/// <summary>
+/// Configuration options for FHIR $graphql operation.
+/// </summary>
+public class GraphQlExperimentalOptions
+{
+    /// <summary>Whether $graphql operation is enabled.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Maximum allowed query nesting depth. Enforced by HotChocolate's depth rule.</summary>
+    public int MaxQueryDepth { get; set; } = 15;
+
+    /// <summary>Whether schema introspection (__schema, __type) is enabled. Disable in production.</summary>
+    public bool EnableIntrospection { get; set; } = true;
+
+    /// <summary>Maximum query complexity cost allowed per request.</summary>
+    public int MaxQueryComplexity { get; set; } = 500;
+
+    /// <summary>Maximum page size for list queries (hard cap; _count argument is clamped to this).</summary>
+    public int MaxPageSize { get; set; } = 1000;
+
+    /// <summary>Default page size when _count argument is not specified.</summary>
+    public int DefaultPageSize { get; set; } = 10;
+
+    /// <summary>Whether GET transport is enabled. Disable in production to prevent query strings in access logs.</summary>
+    public bool EnableGetRequests { get; set; } = true;
+
+    /// <summary>Per-request execution timeout in seconds.</summary>
+    public int ExecutionTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>FHIR versions to pre-build schemas for at startup. Empty collection disables warm-up.</summary>
+    public ICollection<FhirVersion> WarmupVersions { get; } = [FhirVersion.R4];
 }

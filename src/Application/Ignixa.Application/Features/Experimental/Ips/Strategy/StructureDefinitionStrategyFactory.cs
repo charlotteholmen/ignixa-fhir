@@ -5,6 +5,8 @@
 
 using System.Collections.Frozen;
 using Ignixa.Abstractions;
+using ISchema = Ignixa.Abstractions.ISchema;
+using IType = Ignixa.Abstractions.IType;
 using Ignixa.Application.Features.Experimental.Ips.Api;
 using Ignixa.Application.Features.Experimental.Ips.Common;
 using Ignixa.FhirPath.Evaluation;

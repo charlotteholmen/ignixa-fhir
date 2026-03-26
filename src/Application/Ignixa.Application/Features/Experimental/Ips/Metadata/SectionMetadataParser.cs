@@ -4,6 +4,8 @@
 // -------------------------------------------------------------------------------------------------
 
 using Ignixa.Abstractions;
+using ISchema = Ignixa.Abstractions.ISchema;
+using IType = Ignixa.Abstractions.IType;
 using Ignixa.Application.Features.Experimental.Ips.Api;
 using Ignixa.FhirPath.Evaluation;
 using Ignixa.Serialization.Models;

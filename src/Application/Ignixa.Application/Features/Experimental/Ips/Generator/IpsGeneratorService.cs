@@ -10,6 +10,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json.Nodes;
 using Ignixa.Abstractions;
+using ISchema = Ignixa.Abstractions.ISchema;
+using IType = Ignixa.Abstractions.IType;
 using Ignixa.Application.Features.Experimental.Ips.Api;
 using Ignixa.Application.Infrastructure;
 using Ignixa.Domain.Abstractions;

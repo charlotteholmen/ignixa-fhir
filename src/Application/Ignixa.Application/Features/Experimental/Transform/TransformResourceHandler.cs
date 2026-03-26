@@ -17,6 +17,8 @@ using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
 using Ignixa.Serialization.SourceNodes;
 using Ignixa.Abstractions;
+using ISchema = Ignixa.Abstractions.ISchema;
+using IType = Ignixa.Abstractions.IType;
 using Ignixa.Application.Features.Search;
 using Ignixa.Application.Infrastructure;
 using System.Text.Json.Nodes;

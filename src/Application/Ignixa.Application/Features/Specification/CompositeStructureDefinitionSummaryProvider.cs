@@ -7,6 +7,8 @@
 
 using System.Collections.Concurrent;
 using Ignixa.Abstractions;
+using ISchema = Ignixa.Abstractions.ISchema;
+using IType = Ignixa.Abstractions.IType;
 using Ignixa.Domain.Abstractions;
 using Ignixa.Specification;
 using Microsoft.Extensions.Logging;

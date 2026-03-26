@@ -17,6 +17,8 @@
 
   <ItemGroup>
     <PackageReference Include="Autofac" />
+    <PackageReference Include="HotChocolate.AspNetCore" />
+    <PackageReference Include="HotChocolate.Execution" />
     <PackageReference Include="Medino" />
     <PackageReference Include="Microsoft.AspNetCore.Http" />
     <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" />
@@ -36,4 +38,3 @@
   </PropertyGroup>
 
 </Project>
-

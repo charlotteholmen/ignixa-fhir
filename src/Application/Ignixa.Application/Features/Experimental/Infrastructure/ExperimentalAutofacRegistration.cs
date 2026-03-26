@@ -5,6 +5,8 @@
 
 using Autofac;
 using Ignixa.Abstractions;
+using ISchema = Ignixa.Abstractions.ISchema;
+using IType = Ignixa.Abstractions.IType;
 using Ignixa.Application.Events.Package;
 using Ignixa.Application.Features.Experimental.Configuration;
 using Ignixa.Application.Features.Experimental.Ips.Api;
