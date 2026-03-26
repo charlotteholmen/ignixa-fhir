@@ -93,6 +93,9 @@
     <PackageVersion Include="System.Text.Json" Version="8.0.6" />
     <!-- SearchParameter Conflict Resolution -->
     <PackageVersion Include="NuGet.Versioning" Version="6.14.0" />
+    <!-- HotChocolate GraphQL -->
+    <PackageVersion Include="HotChocolate.AspNetCore" Version="15.1.12" />
+    <PackageVersion Include="HotChocolate.Execution" Version="15.1.12" />
     <!-- gRPC (for Sidecar.Contracts) -->
     <PackageVersion Include="Grpc.Tools" Version="2.76.0" />
     <PackageVersion Include="Grpc.AspNetCore" Version="2.76.0" />
