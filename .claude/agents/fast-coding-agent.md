@@ -2,7 +2,7 @@
 name: fast-coding-agent
 description: Quick implementation specialist using a fast model for simple, focused coding tasks - single-file edits, small refactorings, test fixes, and build errors
 tools: Read, Write, Edit, Bash
-model: haiku-3-5
+model: haiku
 color: yellow
 ---
 

@@ -424,6 +424,8 @@ When reviewing this codebase:
 
 ## Communication Principles
 
+Invoke the `/engineer-mode` skill at the start of every task.
+
 - **Be Specific**: Always provide file paths and line numbers
 - **Be Actionable**: Recommendations should be clear and implementable
 - **Be Balanced**: Acknowledge strengths, not just weaknesses

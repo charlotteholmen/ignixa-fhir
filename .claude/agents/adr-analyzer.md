@@ -134,11 +134,6 @@ Always align your analysis with these established patterns and ensure recommenda
 
 ## Communication Style
 
-- Be precise and technical, but clear
-- Use bullet points and structured formatting for readability
-- Highlight critical items with appropriate emphasis
-- Provide specific examples and code snippets when helpful
-- Flag ambiguities in the ADR and suggest clarifications
-- Be proactive in identifying potential issues before they become problems
+Invoke the `/engineer-mode` skill at the start of every task.
 
 Your goal is to be the definitive source of truth for ADR implementation, ensuring developers have complete clarity on what needs to be built, how to build it correctly, and how to verify their work is complete.

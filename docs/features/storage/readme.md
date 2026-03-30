@@ -27,6 +27,8 @@ FHIR resource storage requires flexible backends supporting transactions, versio
 | [file-based-search](investigations/file-based-search.md) | Merged | File-based storage with search indexing |
 | [v2-design](investigations/v2-design.md) | Viable | Storage architecture v2 design |
 | [decoupled-indexing](investigations/decoupled-indexing.md) | Viable | Decoupled resource and index storage |
+| [fabric-datalake-backend](investigations/fabric-datalake-backend.md) | In Progress | Multi-tenant FHIR store on Microsoft Fabric / Delta Lake with eventual consistency |
+| [ignixa-healthlake-architecture](investigations/ignixa-healthlake-architecture.md) | In Progress | Product architecture for ignixa HealthLake on Azure |
 
 ## Decision
 
