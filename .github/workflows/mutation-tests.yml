@@ -9,6 +9,9 @@ on:
       - 'test/**'
       - '.github/workflows/mutation-tests.yml'
 
+permissions:
+  contents: read
+
 concurrency:
   group: mutation-${{ github.event.pull_request.number }}
   cancel-in-progress: true
