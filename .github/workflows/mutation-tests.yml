@@ -1,47 +1,62 @@
 name: Mutation Tests
 
 on:
-  pull_request:
-    branches: [ main ]
-    paths:
-      - 'src/Core/**'
-      - 'src/Application/**'
-      - 'test/**'
-      - '.github/workflows/mutation-tests.yml'
+  workflow_dispatch:
+    inputs:
+      projects:
+        description: >
+          Comma-separated project names to test (e.g. "FhirPath,Validation").
+          Leave empty to run all projects.
+        required: false
+        type: string
+        default: ''
+  schedule:
+    # Weekly on Sunday at 03:00 UTC
+    - cron: '0 3 * * 0'
 
 permissions:
   contents: read
 
 concurrency:
-  group: mutation-${{ github.event.pull_request.number }}
+  group: mutation-${{ github.run_id }}
   cancel-in-progress: true
 
 jobs:
+  # Build the matrix dynamically so workflow_dispatch can scope to specific projects
+  resolve-matrix:
+    name: Resolve project matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set.outputs.matrix }}
+    steps:
+      - id: set
+        run: |
+          all='[
+            {"test-project":"test/Ignixa.FhirPath.Tests","project-name":"FhirPath"},
+            {"test-project":"test/Ignixa.Validation.Tests","project-name":"Validation"},
+            {"test-project":"test/Ignixa.Serialization.Tests","project-name":"Serialization"},
+            {"test-project":"test/Ignixa.FhirMappingLanguage.Tests","project-name":"FhirMappingLanguage"},
+            {"test-project":"test/Ignixa.Anonymizer.Tests","project-name":"Anonymizer"},
+            {"test-project":"test/Ignixa.SqlOnFhir.Tests","project-name":"SqlOnFhir"},
+            {"test-project":"test/Ignixa.Application.Tests","project-name":"Application"},
+            {"test-project":"test/Ignixa.Api.Tests","project-name":"Api"}
+          ]'
+          filter='${{ inputs.projects }}'
+          if [ -z "$filter" ]; then
+            echo "matrix={\"include\":$(echo "$all" | jq -c '.')}" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix={\"include\":$(echo "$all" | jq -c --arg f "$filter" '[.[] | select(.["project-name"] as $n | ($f | split(",") | map(gsub("^\\s+|\\s+$";"")) | index($n)) != null)]')}" >> "$GITHUB_OUTPUT"
+          fi
+
   mutation-test:
     name: Mutation Tests (${{ matrix.project-name }})
+    needs: resolve-matrix
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - test-project: test/Ignixa.FhirPath.Tests
-            project-name: FhirPath
-          - test-project: test/Ignixa.Validation.Tests
-            project-name: Validation
-          - test-project: test/Ignixa.Serialization.Tests
-            project-name: Serialization
-          - test-project: test/Ignixa.FhirMappingLanguage.Tests
-            project-name: FhirMappingLanguage
-          - test-project: test/Ignixa.Anonymizer.Tests
-            project-name: Anonymizer
-          - test-project: test/Ignixa.SqlOnFhir.Tests
-            project-name: SqlOnFhir
-          - test-project: test/Ignixa.Application.Tests
-            project-name: Application
-          - test-project: test/Ignixa.Api.Tests
-            project-name: Api
+      matrix: ${{ fromJson(needs.resolve-matrix.outputs.matrix) }}
 
     steps:
       - name: Checkout code
