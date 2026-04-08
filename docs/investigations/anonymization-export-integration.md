@@ -1,6 +1,6 @@
-# Investigation: Anonymization Integration in Export Pipeline
+# Investigation: De-Identification (DeId) Integration in Export Pipeline
 
-**Feature**: export / anonymization
+**Feature**: export / de-identification
 **Status**: Proposed
 **Created**: 2026-04-08
 
@@ -8,13 +8,15 @@
 
 ## Executive Summary
 
-This investigation analyzes how to integrate the Ignixa.Anonymizer library into the bulk export pipeline (`$export` operation) using FHIR-native configuration management, avoiding the external blob storage dependency used in Microsoft's original FHIR server implementation.
+This investigation analyzes how to integrate the Ignixa.Anonymizer library (de-identification functionality) into the bulk export pipeline (`$export` operation) using FHIR-native configuration management, avoiding the external blob storage dependency used in Microsoft's original FHIR server implementation.
 
-**Key Finding**: The old Microsoft FHIR server approach stored anonymization configurations in Azure Blob Storage, requiring external infrastructure dependencies. By contrast, SQL-on-FHIR's ViewDefinition demonstrates a superior pattern: storing transformation configurations as first-class FHIR resources.
+**Terminology Note**: We use "de-identification" (DeId) as the primary term, as it's more accurate for HIPAA Safe Harbor compliance. The library namespace remains `Ignixa.Anonymizer` for backward compatibility, but user-facing resources and APIs use "DeIdentification".
 
-**Recommendation**: Create `AnonymizationConfig` as a custom FHIR resource (similar to ViewDefinition) that can be stored, versioned, and managed through standard FHIR REST APIs. This aligns with the ImplementationGuide loading pattern and leverages existing export infrastructure.
+**Key Finding**: The old Microsoft FHIR server approach stored de-identification configurations in Azure Blob Storage, requiring external infrastructure dependencies. By contrast, SQL-on-FHIR's ViewDefinition demonstrates a superior pattern: storing transformation configurations as first-class FHIR resources.
 
-**Estimated Effort**: 24-32 hours (3-4 days) over 3 phases
+**Recommendation**: Create `DeIdentificationConfig` as a custom FHIR resource (similar to ViewDefinition) that can be stored, versioned, and managed through standard FHIR REST APIs. Keys are stored encrypted within the resource using tenant-specific encryption, avoiding external key vault dependencies.
+
+**Estimated Effort**: 20-26 hours (2.5-3.25 days) over 3 phases
 
 ---
 
@@ -23,14 +25,14 @@ This investigation analyzes how to integrate the Ignixa.Anonymizer library into 
 ### Current State
 
 **What Works Today**:
-1. **Ignixa.Anonymizer Library** (ADR-2602): Standalone anonymization with FHIRPath-based rules
+1. **Ignixa.Anonymizer Library** (ADR-2602): Standalone de-identification with FHIRPath-based rules
 2. **Bulk Export Pipeline**: High-performance streaming export via DurableTask orchestration
 3. **ViewDefinition Integration**: SQL-on-FHIR transformations during export (Parquet output)
 
 **What's Missing**:
-- No integration between Anonymizer and `$export` operation
-- No FHIR-native way to store/manage anonymization configurations
-- No support for `$export?_anonymize=true` or similar parameter
+- No integration between Anonymizer (de-identification) and `$export` operation
+- No FHIR-native way to store/manage de-identification configurations
+- No support for `$export?_deid=true` or similar parameter
 
 ### Microsoft FHIR Server Approach (Legacy Pattern)
 
@@ -39,14 +41,14 @@ The Microsoft FHIR server's de-identified export relied on external blob storage
 ```
 Azure Data Factory Pipeline:
 1. Export FHIR data to Blob Storage (source container)
-2. Load anonymization config from Blob Storage
-3. Run anonymization tool (batch process)
+2. Load de-identification config from Blob Storage
+3. Run de-identification tool (batch process)
 4. Write anonymized data to Blob Storage (destination container)
 ```
 
 **Configuration Storage**:
 ```json
-// Stored in: https://mystorageaccount.blob.core.windows.net/configs/anonymization-config.json
+// Stored in: https://mystorageaccount.blob.core.windows.net/configs/de-identification-config.json
 {
   "fhirVersion": "R4",
   "fhirPathRules": [
@@ -73,27 +75,31 @@ Azure Data Factory Pipeline:
 
 **FHIR-Native Configuration Management**:
 ```bash
-# 1. Create anonymization configuration as a FHIR resource
-POST /AnonymizationConfig
+# 1. Create de-identification configuration as a FHIR resource
+POST /DeIdentificationConfig
 Content-Type: application/fhir+json
 {
-  "resourceType": "AnonymizationConfig",
+  "resourceType": "DeIdentificationConfig",
   "name": "hipaa-safe-harbor",
   "status": "active",
   "fhirPathRules": [
     {"path": "Patient.identifier", "method": "cryptoHash"},
     {"path": "Patient.birthDate", "method": "redact"}
-  ]
+  ],
+  "parameters": {
+    "cryptoHashKey": "base64-encrypted-key-here",
+    "dateShiftKey": "base64-encrypted-key-here"
+  }
 }
 
 # 2. Search for available configs
-GET /AnonymizationConfig?status=active
+GET /DeIdentificationConfig?status=active
 
 # 3. Reference in export request
-POST /$export?_anonymize=hipaa-safe-harbor
+POST /$export?_deid=hipaa-safe-harbor
 Prefer: respond-async
 
-# 4. Export pipeline streams through anonymizer
+# 4. Export pipeline streams through de-identification
 # (Same high-performance streaming as current export)
 ```
 
@@ -110,17 +116,17 @@ Prefer: respond-async
 
 ## Approach Analysis
 
-We analyzed three approaches for integrating anonymization into the export pipeline:
+We analyzed three approaches for integrating de-identification into the export pipeline:
 
 ### Approach A: External Configuration Files (Microsoft Pattern)
 
-**Description**: Store anonymization configs in external storage (filesystem or blob storage).
+**Description**: Store de-identification configs in external storage (filesystem or blob storage).
 
 **Architecture**:
 ```
-Export Request: POST /$export?_anonymize=true
+Export Request: POST /$export?_deid=true
     ↓
-Load config from: /configs/anonymization-config.json
+Load config from: /configs/de-identification-config.json
     ↓
 Export Pipeline → Anonymizer (inline) → Output
 ```
@@ -128,7 +134,7 @@ Export Pipeline → Anonymizer (inline) → Output
 **Implementation**:
 ```csharp
 // ExportWorkerActivity.cs
-var configPath = Path.Combine(_configDirectory, "anonymization-config.json");
+var configPath = Path.Combine(_configDirectory, "de-identification-config.json");
 var configJson = await File.ReadAllTextAsync(configPath, cancellationToken);
 var anonymizerOptions = AnonymizerOptionsLoader.Load(configJson);
 var anonymizerEngine = new AnonymizerEngine(anonymizerOptions, ...);
@@ -165,20 +171,20 @@ await foreach (var resource in searchService.SearchStreamAsync(...))
 
 ---
 
-### Approach B: AnonymizationConfig as Custom FHIR Resource ⭐ **RECOMMENDED**
+### Approach B: DeIdentificationConfig as Custom FHIR Resource ⭐ **RECOMMENDED**
 
-**Description**: Create `AnonymizationConfig` as a custom FHIR resource (similar to ViewDefinition from SQL-on-FHIR).
+**Description**: Create `DeIdentificationConfig` as a custom FHIR resource (similar to ViewDefinition from SQL-on-FHIR).
 
 **Architecture**:
 ```
-Admin: Create AnonymizationConfig resource
-POST /AnonymizationConfig → Store in FHIR repository
+Admin: Create DeIdentificationConfig resource
+POST /DeIdentificationConfig → Store in FHIR repository
     ↓
-User: Request export with anonymization
-POST /$export?_anonymize=hipaa-safe-harbor
+User: Request export with de-identification
+POST /$export?_deid=hipaa-safe-harbor
     ↓
 Export Pipeline:
-1. Load AnonymizationConfig from repository
+1. Load DeIdentificationConfig from repository
 2. Initialize AnonymizerEngine with config
 3. Stream resources through anonymizer
 4. Write anonymized output
@@ -187,13 +193,13 @@ Export Pipeline:
 **Resource Definition**:
 ```json
 {
-  "resourceType": "AnonymizationConfig",
+  "resourceType": "DeIdentificationConfig",
   "id": "hipaa-safe-harbor",
   "meta": {
     "versionId": "2",
     "lastUpdated": "2026-04-08T10:00:00Z"
   },
-  "url": "http://example.org/fhir/AnonymizationConfig/hipaa-safe-harbor",
+  "url": "http://example.org/fhir/DeIdentificationConfig/hipaa-safe-harbor",
   "name": "hipaa_safe_harbor",
   "title": "HIPAA Safe Harbor Configuration",
   "status": "active",
@@ -225,23 +231,21 @@ Export Pipeline:
     "enablePartialDatesForRedact": true,
     "enablePartialAgesForRedact": true,
     "enablePartialZipCodesForRedact": true,
-    "restrictedZipCodeTabulationAreas": ["036", "059", "102"]
-  },
-  "keyReference": {
-    "cryptoHashKey": "vault://keys/anonymization-hash-key",
-    "dateShiftKey": "vault://keys/anonymization-dateshift-key"
+    "restrictedZipCodeTabulationAreas": ["036", "059", "102"],
+    "cryptoHashKey": "ENC:AES256:base64-encrypted-value-here==",
+    "dateShiftKey": "ENC:AES256:base64-encrypted-value-here=="
   }
 }
 ```
 
 **Implementation**:
 
-**1. AnonymizationConfig Resource Model**:
+**1. DeIdentificationConfig Resource Model**:
 ```csharp
-// File: src/Ignixa.Domain/Models/AnonymizationConfig.cs
-public record AnonymizationConfig
+// File: src/Ignixa.Domain/Models/DeIdentificationConfig.cs
+public record DeIdentificationConfig
 {
-    public required string ResourceType { get; init; } = "AnonymizationConfig";
+    public required string ResourceType { get; init; } = "DeIdentificationConfig";
     public required string Id { get; init; }
     public required string Name { get; init; }
     public required string Status { get; init; } // active | draft | retired
@@ -249,7 +253,6 @@ public record AnonymizationConfig
     public List<string>? FhirVersion { get; init; }
     public required List<FhirPathRule> FhirPathRules { get; init; }
     public ParameterConfiguration? Parameters { get; init; }
-    public KeyReference? KeyReference { get; init; }
 }
 
 public record FhirPathRule
@@ -259,29 +262,26 @@ public record FhirPathRule
     public string? Description { get; init; }
 }
 
-public record KeyReference
-{
-    // Reference to external key vault (not stored directly in config)
-    public string? CryptoHashKey { get; init; }
-    public string? DateShiftKey { get; init; }
-    public string? EncryptKey { get; init; }
-}
+// Note: Keys are stored encrypted in ParameterConfiguration.CryptoHashKey/DateShiftKey
+// Format: "ENC:AES256:base64-encrypted-value"
+// Decryption uses tenant-specific encryption key (managed by server)
 ```
 
-**2. AnonymizationConfigLoader**:
+**2. DeIdentificationConfigLoader**:
 ```csharp
-// File: src/Ignixa.Application/Features/Export/AnonymizationConfigLoader.cs
-public class AnonymizationConfigLoader
+// File: src/Ignixa.Application/Features/Export/DeIdentificationConfigLoader.cs
+public class DeIdentificationConfigLoader
 {
     private readonly IFhirRepository _repository;
-    private readonly ILogger<AnonymizationConfigLoader> _logger;
+    private readonly ITenantEncryptionService _encryptionService;
+    private readonly ILogger<DeIdentificationConfigLoader> _logger;
 
-    public async Task<ISourceNode?> LoadAnonymizationConfigAsync(
+    public async Task<AnonymizerOptions?> LoadDeIdentificationConfigAsync(
         int tenantId,
         string configId,
         CancellationToken cancellationToken)
     {
-        var resourceKey = new ResourceKey("AnonymizationConfig", configId);
+        var resourceKey = new ResourceKey("DeIdentificationConfig", configId);
         var searchResult = await _repository.GetAsync(
             tenantId,
             resourceKey,
@@ -290,14 +290,61 @@ public class AnonymizationConfigLoader
         if (searchResult == null)
         {
             _logger.LogWarning(
-                "AnonymizationConfig not found: TenantId={TenantId}, ConfigId={ConfigId}",
+                "DeIdentificationConfig not found: TenantId={TenantId}, ConfigId={ConfigId}",
                 tenantId,
                 configId);
             return null;
         }
 
-        return searchResult.Resource;
+        // Parse config JSON into AnonymizerOptions
+        var configJson = searchResult.Resource.ToJson();
+        var anonymizerOptions = AnonymizerOptionsLoader.Load(configJson);
+
+        // Decrypt keys using tenant-specific encryption
+        await DecryptKeysAsync(anonymizerOptions.Parameters, tenantId, cancellationToken);
+
+        return anonymizerOptions;
     }
+
+    private async Task DecryptKeysAsync(
+        ParameterConfiguration parameters,
+        int tenantId,
+        CancellationToken cancellationToken)
+    {
+        // Decrypt cryptoHashKey if encrypted
+        if (parameters.CryptoHashKey?.StartsWith("ENC:") == true)
+        {
+            parameters.CryptoHashKey = await _encryptionService.DecryptAsync(
+                tenantId,
+                parameters.CryptoHashKey,
+                cancellationToken);
+        }
+
+        // Decrypt dateShiftKey if encrypted
+        if (parameters.DateShiftKey?.StartsWith("ENC:") == true)
+        {
+            parameters.DateShiftKey = await _encryptionService.DecryptAsync(
+                tenantId,
+                parameters.DateShiftKey,
+                cancellationToken);
+        }
+
+        // Decrypt encryptKey if encrypted
+        if (parameters.EncryptKey?.StartsWith("ENC:") == true)
+        {
+            parameters.EncryptKey = await _encryptionService.DecryptAsync(
+                tenantId,
+                parameters.EncryptKey,
+                cancellationToken);
+        }
+    }
+}
+
+// Tenant-specific encryption service (uses DPAPI or similar per-tenant keys)
+public interface ITenantEncryptionService
+{
+    Task<string> EncryptAsync(int tenantId, string plaintext, CancellationToken cancellationToken);
+    Task<string> DecryptAsync(int tenantId, string ciphertext, CancellationToken cancellationToken);
 }
 ```
 
@@ -308,31 +355,24 @@ public class AnonymizationConfigLoader
 // Add to ExecuteAsync method (after ViewDefinition check):
 IAnonymizerEngine? anonymizerEngine = null;
 
-if (!string.IsNullOrEmpty(input.AnonymizationConfigId))
+if (!string.IsNullOrEmpty(input.DeIdentificationConfigId))
 {
     _logger.LogInformation(
-        "Loading AnonymizationConfig: Job={JobId}, ConfigId={ConfigId}",
+        "Loading DeIdentificationConfig: Job={JobId}, ConfigId={ConfigId}",
         input.JobId,
-        input.AnonymizationConfigId);
+        input.DeIdentificationConfigId);
 
-    // Load config from repository
-    var configNode = await _anonymizationConfigLoader.LoadAnonymizationConfigAsync(
+    // Load config from repository (keys are decrypted automatically)
+    var anonymizerOptions = await _deIdentificationConfigLoader.LoadDeIdentificationConfigAsync(
         input.TenantId,
-        input.AnonymizationConfigId,
+        input.DeIdentificationConfigId,
         CancellationToken.None);
 
-    if (configNode == null)
+    if (anonymizerOptions == null)
     {
         throw new InvalidOperationException(
-            $"AnonymizationConfig '{input.AnonymizationConfigId}' not found");
+            $"DeIdentificationConfig '{input.DeIdentificationConfigId}' not found");
     }
-
-    // Parse config JSON into AnonymizerOptions
-    var configJson = configNode.ToJson();
-    var anonymizerOptions = AnonymizerOptionsLoader.Load(configJson);
-
-    // Resolve keys from vault (not stored in config)
-    await ResolveKeysFromVaultAsync(anonymizerOptions, input.TenantId, cancellationToken);
 
     // Initialize anonymizer engine
     var fhirVersion = FhirSpecificationExtensions.FromVersionString(tenantConfig.FhirVersion);
@@ -344,12 +384,12 @@ if (!string.IsNullOrEmpty(input.AnonymizationConfigId))
         _loggerFactory);
 }
 
-// Consumer: Process resources (add anonymization step)
+// Consumer: Process resources (add de-identification step)
 await foreach (var resource in channel.Reader.ReadAllAsync(CancellationToken.None))
 {
     SearchEntryResult processedResource = resource;
 
-    // Apply anonymization if configured
+    // Apply de-identification if configured
     if (anonymizerEngine != null)
     {
         var element = resource.Resource.ToElement(structureProvider);
@@ -377,18 +417,18 @@ await foreach (var resource in channel.Reader.ReadAllAsync(CancellationToken.Non
 ```csharp
 // File: src/Ignixa.Api/Endpoints/ExportEndpoints.cs
 
-// Add _anonymize parameter to $export
+// Add _deid parameter to $export
 endpoints.MapPost("/$export", async (
     HttpContext context,
     IMediator mediator,
     CancellationToken cancellationToken) =>
 {
     var queryParams = context.Request.Query;
-    var anonymizeConfigId = queryParams["_anonymize"].FirstOrDefault();
+    var anonymizeConfigId = queryParams["_deid"].FirstOrDefault();
 
     var command = new CreateExportJobCommand(
         // ... existing parameters ...
-        AnonymizationConfigId: anonymizeConfigId
+        DeIdentificationConfigId: anonymizeConfigId
     );
 
     var result = await mediator.SendAsync(command, cancellationToken);
@@ -424,13 +464,13 @@ endpoints.MapPost("/$export", async (
 
 ### Approach C: Built-in `$anonymize` Operation
 
-**Description**: Add a dedicated `$anonymize` operation for on-demand anonymization (separate from export).
+**Description**: Add a dedicated `$anonymize` operation for on-demand de-identification (separate from export).
 
 **Architecture**:
 ```
 POST /Patient/$anonymize?config=hipaa-safe-harbor
     ↓
-Load AnonymizationConfig
+Load DeIdentificationConfig
     ↓
 Search all Patient resources
     ↓
@@ -452,7 +492,7 @@ endpoints.MapPost("/{resourceType}/$anonymize", async (
 
     var command = new AnonymizeResourcesCommand(
         ResourceType: resourceType,
-        AnonymizationConfigId: configId
+        DeIdentificationConfigId: configId
     );
 
     var result = await mediator.SendAsync(command, cancellationToken);
@@ -463,14 +503,14 @@ endpoints.MapPost("/{resourceType}/$anonymize", async (
 **Feasibility**: ✅ Viable but lower priority
 
 **Pros**:
-- ✅ On-demand anonymization without export
+- ✅ On-demand de-identification without export
 - ✅ RESTful operation
 - ✅ Useful for testing/debugging configs
 
 **Cons**:
 - ❌ Not part of FHIR core spec (custom operation)
 - ❌ Requires additional implementation beyond export
-- ❌ Less common use case than export-time anonymization
+- ❌ Less common use case than export-time de-identification
 - ❌ May encourage storing de-identified data in server
 
 **Complexity**: 3/5 (moderate)
@@ -481,7 +521,7 @@ endpoints.MapPost("/{resourceType}/$anonymize", async (
 
 ---
 
-## Recommended Approach: AnonymizationConfig as FHIR Resource
+## Recommended Approach: DeIdentificationConfig as FHIR Resource
 
 ### Decision Rationale
 
@@ -536,21 +576,21 @@ endpoints.MapPost("/{resourceType}/$anonymize", async (
 
 ## Implementation Plan
 
-### Phase 1: AnonymizationConfig Resource Foundation (12-16 hours)
+### Phase 1: DeIdentificationConfig Resource Foundation (12-16 hours)
 
-**Goal**: Enable AnonymizationConfig as a FHIR resource with CRUD operations
+**Goal**: Enable DeIdentificationConfig as a FHIR resource with CRUD operations
 
 **Tasks**:
-1. **Create AnonymizationConfig Domain Model** (2-3 hours)
-   - Record types for AnonymizationConfig, FhirPathRule, KeyReference
+1. **Create DeIdentificationConfig Domain Model** (2-3 hours)
+   - Record types for DeIdentificationConfig, FhirPathRule, KeyReference
    - Serialization/deserialization support
 
-2. **Create AnonymizationConfigLoader** (3-4 hours)
+2. **Create DeIdentificationConfigLoader** (3-4 hours)
    - Load configs from repository
    - Parse JSON into AnonymizerOptions
    - Key resolution from vault
 
-3. **Create AnonymizationConfig StructureDefinition** (3-4 hours)
+3. **Create DeIdentificationConfig StructureDefinition** (3-4 hours)
    - Define resource structure
    - Validation rules
    - Register with IG loading (if available) or CompositeSchemaProvider
@@ -561,21 +601,21 @@ endpoints.MapPost("/{resourceType}/$anonymize", async (
    - Multi-tenant isolation
 
 **Deliverables**:
-- `src/Ignixa.Domain/Models/AnonymizationConfig.cs`
-- `src/Ignixa.Application/Features/Export/AnonymizationConfigLoader.cs`
-- `src/Ignixa.Application/Features/Export/KeyVaultResolver.cs`
-- `docs/rest/anonymization-config.http` (REST examples)
-- `test/Ignixa.Api.Tests/AnonymizationConfigCrudTests.cs`
+- `src/Ignixa.Domain/Models/DeIdentificationConfig.cs`
+- `src/Ignixa.Application/Features/Export/DeIdentificationConfigLoader.cs`
+- `src/Ignixa.Application/Features/Export/TenantEncryptionService.cs`
+- `docs/rest/de-identification-config.http` (REST examples)
+- `test/Ignixa.Api.Tests/DeIdentificationConfigCrudTests.cs`
 
 **Testing**:
 ```csharp
 [Fact]
-public async Task GivenAnonymizationConfig_WhenCreating_ThenStoresInRepository()
+public async Task GivenDeIdentificationConfig_WhenCreating_ThenStoresInRepository()
 {
     // Arrange
-    var config = new AnonymizationConfig
+    var config = new DeIdentificationConfig
     {
-        ResourceType = "AnonymizationConfig",
+        ResourceType = "DeIdentificationConfig",
         Id = "test-config",
         Name = "test_config",
         Status = "active",
@@ -585,7 +625,7 @@ public async Task GivenAnonymizationConfig_WhenCreating_ThenStoresInRepository()
     };
 
     // Act
-    var response = await _client.PostAsync("/AnonymizationConfig", JsonContent.Create(config));
+    var response = await _client.PostAsync("/DeIdentificationConfig", JsonContent.Create(config));
 
     // Assert
     response.StatusCode.Should().Be(HttpStatusCode.Created);
@@ -598,26 +638,26 @@ public async Task GivenAnonymizationConfig_WhenCreating_ThenStoresInRepository()
 
 ### Phase 2: Export Pipeline Integration (8-12 hours)
 
-**Goal**: Integrate anonymization into export worker activity
+**Goal**: Integrate de-identification into export worker activity
 
 **Tasks**:
 1. **Modify ExportWorkerInput** (1-2 hours)
-   - Add AnonymizationConfigId parameter
+   - Add DeIdentificationConfigId parameter
    - Update orchestration to pass config ID
 
 2. **Enhance ExportWorkerActivity** (4-6 hours)
-   - Load AnonymizationConfig from repository
+   - Load DeIdentificationConfig from repository
    - Initialize AnonymizerEngine with config
-   - Apply anonymization in streaming pipeline
+   - Apply de-identification in streaming pipeline
    - Handle errors and logging
 
 3. **Update Export Endpoint** (2-3 hours)
-   - Add `_anonymize` query parameter
+   - Add `_deid` query parameter
    - Pass config ID to CreateExportJobCommand
    - Validate config exists before starting job
 
 4. **E2E Export Tests** (2-3 hours)
-   - Test export with anonymization
+   - Test export with de-identification
    - Verify anonymized output
    - Test error handling
 
@@ -633,12 +673,12 @@ public async Task GivenAnonymizationConfig_WhenCreating_ThenStoresInRepository()
 public async Task GivenExportWithAnonymization_WhenExporting_ThenOutputIsAnonymized()
 {
     // Arrange
-    await CreateAnonymizationConfig("hipaa-safe-harbor");
+    await CreateDeIdentificationConfig("hipaa-safe-harbor");
     await CreateTestPatients(count: 100);
 
     // Act
     var response = await _client.PostAsync(
-        "/$export?_type=Patient&_anonymize=hipaa-safe-harbor",
+        "/$export?_type=Patient&_deid=hipaa-safe-harbor",
         null);
 
     // Wait for export to complete
@@ -649,7 +689,7 @@ public async Task GivenExportWithAnonymization_WhenExporting_ThenOutputIsAnonymi
     var exportedFiles = await GetExportedFiles(jobId);
     var patients = await ParseNdjsonFile<Patient>(exportedFiles["Patient"]);
 
-    // Verify anonymization was applied
+    // Verify de-identification was applied
     patients.Should().AllSatisfy(p =>
     {
         p.Identifier.Should().AllSatisfy(id =>
@@ -662,19 +702,19 @@ public async Task GivenExportWithAnonymization_WhenExporting_ThenOutputIsAnonymi
 
 ---
 
-### Phase 3: Key Management & Security (4-8 hours)
+### Phase 3: Key Encryption & Security (4-6 hours)
 
-**Goal**: Secure secret management for anonymization keys
+**Goal**: Implement tenant-specific key encryption (no external dependencies)
 
 **Tasks**:
-1. **Implement KeyVaultResolver** (3-4 hours)
-   - Resolve key references from Azure Key Vault
-   - Support multiple key types (hash, dateshift, encrypt)
-   - Caching and performance optimization
+1. **Implement TenantEncryptionService** (3-4 hours)
+   - Use .NET Data Protection API (DPAPI) or AES-256 with tenant-specific keys
+   - Keys derived from tenant ID + server secret (configured once at startup)
+   - Support encryption/decryption with "ENC:AES256:" prefix
 
-2. **Security Enhancements** (2-3 hours)
-   - Ensure keys never logged
-   - Validate key permissions
+2. **Security Enhancements** (1-2 hours)
+   - Ensure plaintext keys never logged
+   - Validate encrypted key format
    - Audit key usage
 
 3. **Documentation** (1-2 hours)
@@ -683,39 +723,91 @@ public async Task GivenExportWithAnonymization_WhenExporting_ThenOutputIsAnonymi
    - Example configurations
 
 **Deliverables**:
-- `src/Ignixa.Application/Features/Export/KeyVaultResolver.cs`
-- `docs/user-guides/anonymization-key-management.md`
-- `docs/rest/anonymization-config.http` (updated with key examples)
+- `src/Ignixa.Application/Features/Export/TenantEncryptionService.cs`
+- `docs/user-guides/deid-key-management.md`
+- `docs/rest/de-identification-config.http` (updated with encrypted key examples)
 
-**Key Vault Integration**:
+**Tenant Encryption Implementation**:
 ```csharp
-public class KeyVaultResolver
+public class TenantEncryptionService : ITenantEncryptionService
 {
-    private readonly SecretClient _secretClient;
-    private readonly ILogger<KeyVaultResolver> _logger;
+    private readonly byte[] _serverMasterKey; // Configured at startup from appsettings
+    private readonly ILogger<TenantEncryptionService> _logger;
 
-    public async Task ResolveKeysAsync(
-        AnonymizerOptions options,
+    public async Task<string> EncryptAsync(
         int tenantId,
+        string plaintext,
         CancellationToken cancellationToken)
     {
-        // Resolve cryptoHashKey reference
-        if (options.KeyReference?.CryptoHashKey?.StartsWith("vault://") == true)
+        // Derive tenant-specific key from master key + tenant ID
+        var tenantKey = DeriveKey(_serverMasterKey, tenantId);
+
+        // Encrypt using AES-256-GCM
+        using var aes = new AesGcm(tenantKey);
+        var nonce = RandomNumberGenerator.GetBytes(AesGcm.NonceByteSizes.MaxSize);
+        var ciphertext = new byte[plaintext.Length];
+        var tag = new byte[AesGcm.TagByteSizes.MaxSize];
+
+        aes.Encrypt(nonce, Encoding.UTF8.GetBytes(plaintext), ciphertext, tag);
+
+        // Format: ENC:AES256:base64(nonce||tag||ciphertext)
+        var combined = nonce.Concat(tag).Concat(ciphertext).ToArray();
+        return $"ENC:AES256:{Convert.ToBase64String(combined)}";
+    }
+
+    public async Task<string> DecryptAsync(
+        int tenantId,
+        string ciphertext,
+        CancellationToken cancellationToken)
+    {
+        if (!ciphertext.StartsWith("ENC:AES256:"))
         {
-            var keyName = ExtractKeyName(options.KeyReference.CryptoHashKey);
-            var secret = await _secretClient.GetSecretAsync(keyName, cancellationToken: cancellationToken);
-
-            options.Parameters.CryptoHashKey = secret.Value.Value;
-
-            _logger.LogInformation(
-                "Resolved cryptoHashKey from vault: TenantId={TenantId}, KeyName={KeyName}",
-                tenantId,
-                keyName);
+            throw new InvalidOperationException("Invalid encrypted key format");
         }
 
-        // Similar for dateShiftKey, encryptKey...
+        // Extract base64 payload
+        var payload = Convert.FromBase64String(ciphertext.Substring(11));
+
+        // Extract nonce, tag, ciphertext
+        var nonceSize = AesGcm.NonceByteSizes.MaxSize;
+        var tagSize = AesGcm.TagByteSizes.MaxSize;
+        var nonce = payload[..nonceSize];
+        var tag = payload.Skip(nonceSize).Take(tagSize).ToArray();
+        var encrypted = payload.Skip(nonceSize + tagSize).ToArray();
+
+        // Derive tenant-specific key
+        var tenantKey = DeriveKey(_serverMasterKey, tenantId);
+
+        // Decrypt using AES-256-GCM
+        using var aes = new AesGcm(tenantKey);
+        var plaintext = new byte[encrypted.Length];
+        aes.Decrypt(nonce, encrypted, tag, plaintext);
+
+        return Encoding.UTF8.GetString(plaintext);
+    }
+
+    private static byte[] DeriveKey(byte[] masterKey, int tenantId)
+    {
+        // Use HKDF to derive tenant-specific key
+        var info = Encoding.UTF8.GetBytes($"tenant:{tenantId}");
+        return HKDF.DeriveKey(HashAlgorithmName.SHA256, masterKey, 32, null, info);
     }
 }
+```
+
+**Configuration** (appsettings.json):
+```json
+{
+  "DeIdentification": {
+    "MasterEncryptionKey": "base64-encoded-256-bit-key-here"
+  }
+}
+```
+
+**Key Generation** (one-time setup):
+```bash
+# Generate a 256-bit master key
+dotnet user-secrets set "DeIdentification:MasterEncryptionKey" "$(openssl rand -base64 32)"
 ```
 
 ---
@@ -726,50 +818,54 @@ public class KeyVaultResolver
 
 **Application Layer** (~800 lines total):
 
-1. **AnonymizationConfig.cs** (~150 lines)
-   - Domain model for AnonymizationConfig resource
+1. **DeIdentificationConfig.cs** (~150 lines)
+   - Domain model for DeIdentificationConfig resource
 
-2. **AnonymizationConfigLoader.cs** (~200 lines)
+2. **DeIdentificationConfigLoader.cs** (~250 lines)
    - Load configs from repository
    - Parse into AnonymizerOptions
+   - Decrypt keys using TenantEncryptionService
 
-3. **KeyVaultResolver.cs** (~150 lines)
-   - Resolve key references from Azure Key Vault
+3. **TenantEncryptionService.cs** (~150 lines)
+   - Encrypt/decrypt keys using AES-256-GCM
+   - Derive tenant-specific keys from master key
 
-4. **AnonymizationConfigStructureDefinition.json** (~200 lines)
+4. **DeIdentificationConfigStructureDefinition.json** (~200 lines)
    - StructureDefinition for validation
 
 5. **ExportWithAnonymizationTests.cs** (~300 lines)
-   - E2E tests for export with anonymization
+   - E2E tests for export with de-identification
 
 **Documentation** (~600 lines total):
 
-6. **anonymization-config.http** (~200 lines)
+6. **de-identification-config.http** (~200 lines)
    - REST API examples
 
-7. **anonymization-key-management.md** (~400 lines)
+7. **de-identification-key-management.md** (~400 lines)
    - Key management guide
 
 ### Files to Modify
 
 1. **ExportWorkerInput.cs** (add ~10 lines)
-   - Add AnonymizationConfigId property
+   - Add DeIdentificationConfigId property
 
 2. **ExportWorkerActivity.cs** (add ~60 lines)
-   - Load and apply anonymization
+   - Load and apply de-identification
 
 3. **ExportEndpoints.cs** (add ~20 lines)
-   - Add _anonymize query parameter
+   - Add _deid query parameter
 
 4. **CreateExportJobCommand.cs** (add ~10 lines)
-   - Add AnonymizationConfigId property
+   - Add DeIdentificationConfigId property
 
 5. **ExportOrchestrationInput.cs** (add ~10 lines)
    - Pass config ID to workers
 
-**Total New Code**: ~1,400 lines
+**Total New Code**: ~1,450 lines
 **Total Modified Code**: ~110 lines
-**Total**: ~1,510 lines
+**Total**: ~1,560 lines
+
+**Reduced Complexity**: No external dependencies (Azure Key Vault, etc.)
 
 ---
 
@@ -777,27 +873,33 @@ public class KeyVaultResolver
 
 ### Secret Management
 
-**DO NOT store secrets in AnonymizationConfig resources**:
+**Store keys encrypted in DeIdentificationConfig resources**:
 ```json
 {
-  "resourceType": "AnonymizationConfig",
-  "keyReference": {
-    "cryptoHashKey": "vault://keys/tenant-1-hash-key",  // ✅ Reference only
-    "dateShiftKey": "vault://keys/tenant-1-dateshift-key"
+  "resourceType": "DeIdentificationConfig",
+  "parameters": {
+    "cryptoHashKey": "ENC:AES256:base64-encrypted-value",  // ✅ Encrypted at rest
+    "dateShiftKey": "ENC:AES256:base64-encrypted-value"
   }
 }
 ```
 
-**Key Resolution at Runtime**:
-1. Export worker loads AnonymizationConfig
-2. KeyVaultResolver resolves key references
-3. Keys injected into AnonymizerEngine (in-memory only)
-4. Keys never logged or persisted
+**Key Encryption at Runtime**:
+1. Admin creates DeIdentificationConfig with plaintext keys via API
+2. Server encrypts keys using tenant-specific encryption before storing
+3. Export worker loads DeIdentificationConfig and decrypts keys automatically
+4. Keys used in-memory only, never logged or persisted in plaintext
 
-**Key Rotation**:
-- **Challenge**: Anonymization requires determinism for linkage
-- **Solution**: Use versioned key names (`tenant-1-hash-key-v2`)
-- **Trade-off**: Old data can't be re-linked to new anonymizations
+**Key Derivation**:
+- **Master Key**: Single server-wide secret (configured once in appsettings/user-secrets)
+- **Tenant Keys**: Derived using HKDF(master_key, tenant_id)
+- **Rotation**: Change master key + re-encrypt all configs (or use versioned master keys)
+
+**No External Dependencies**:
+- ✅ No Azure Key Vault required
+- ✅ No external secret management service
+- ✅ Uses built-in .NET cryptography (AES-256-GCM + HKDF)
+- ✅ Tenant isolation via key derivation
 
 ### Access Control
 
@@ -806,7 +908,7 @@ public class KeyVaultResolver
 - Worker activity resolves tenant-specific keys
 - Multi-tenant isolation maintained
 
-**RBAC for AnonymizationConfig**:
+**RBAC for DeIdentificationConfig**:
 - Only admins can create/update configs
 - Users can read configs (metadata only, not keys)
 - Export operations require special permissions
@@ -817,8 +919,8 @@ public class KeyVaultResolver
 
 **Can Use Both Together**:
 ```bash
-# Export with both ViewDefinition transformation AND anonymization
-POST /$export?_type=Patient&_outputFormat=application/vnd.apache.parquet&_viewDefinition=patient-demographics&_anonymize=hipaa-safe-harbor
+# Export with both ViewDefinition transformation AND de-identification
+POST /$export?_type=Patient&_outputFormat=application/vnd.apache.parquet&_viewDefinition=patient-demographics&_deid=hipaa-safe-harbor
 ```
 
 **Processing Order**:
@@ -859,11 +961,11 @@ await foreach (var resource in channel.Reader.ReadAllAsync(...))
 
 | Aspect | Microsoft FHIR Server | Ignixa Recommendation |
 |--------|----------------------|----------------------|
-| **Config Storage** | Azure Blob Storage | FHIR repository (AnonymizationConfig resource) |
-| **Discoverability** | Not discoverable | REST API (GET /AnonymizationConfig) |
+| **Config Storage** | Azure Blob Storage | FHIR repository (DeIdentificationConfig resource) |
+| **Discoverability** | Not discoverable | REST API (GET /DeIdentificationConfig) |
 | **Versioning** | Manual file management | FHIR resource versioning |
 | **Multi-Tenancy** | Global configs | Per-tenant configs |
-| **Secret Management** | Secrets in config files | Key Vault references |
+| **Secret Management** | Secrets in config files | Keys encrypted in resource (tenant-specific encryption) |
 | **Integration** | Azure Data Factory (batch) | Streaming export pipeline |
 | **Performance** | Batch processing overhead | Streaming (no overhead) |
 | **FHIR Compliance** | External pattern | FHIR-native resources |
@@ -905,7 +1007,7 @@ ViewDefinition supports column transformations, but has limitations for de-ident
 - ❌ HIPAA Safe Harbor rules (restricted ZCTAs)
 - ❌ Security tagging (meta.security labels)
 
-**Conclusion**: ViewDefinition is for data transformation, not cryptographic anonymization. AnonymizationConfig is the right abstraction.
+**Conclusion**: ViewDefinition is for data transformation, not cryptographic de-identification. DeIdentificationConfig is the right abstraction.
 
 ---
 
@@ -915,9 +1017,9 @@ ViewDefinition supports column transformations, but has limitations for de-ident
 
 **Recommended ADR**:
 ```
-File: docs/adr/ADR-2603-anonymization-export-integration.md
+File: docs/adr/ADR-2603-de-identification-export-integration.md
 
-Title: ADR-2603: AnonymizationConfig Resource for Export Pipeline Integration
+Title: ADR-2603: DeIdentificationConfig Resource for Export Pipeline Integration
 
 Status: Proposed → Accepted (after implementation)
 
@@ -928,11 +1030,11 @@ Context:
 - SQL-on-FHIR ViewDefinition demonstrates custom resource pattern
 
 Decision:
-Create AnonymizationConfig as a custom FHIR resource to:
-1. Store anonymization configurations in FHIR repository
+Create DeIdentificationConfig as a custom FHIR resource to:
+1. Store de-identification configurations in FHIR repository
 2. Enable CRUD operations via REST API
-3. Integrate with export pipeline via _anonymize parameter
-4. Manage secrets via Key Vault references (not in config)
+3. Integrate with export pipeline via _deid parameter
+4. Manage secrets using tenant-specific encryption (no external dependencies)
 5. Support multi-tenant isolation and versioning
 
 Consequences:
@@ -940,19 +1042,22 @@ Positive:
 - FHIR-native resource management
 - Audit trail via resource history
 - Discoverable via CapabilityStatement
-- Secure secret management (Key Vault)
+- Secure key storage (encrypted at rest, tenant-specific)
 - Streaming integration (no batch overhead)
 - Consistent with ViewDefinition pattern
+- No external dependencies (Key Vault, blob storage, etc.)
 
 Negative:
-- Implementation complexity (3-4 days)
+- Implementation complexity (2.5-3.25 days)
 - Requires custom resource support
 - Requires StructureDefinition for validation
+- Requires server-side master encryption key management
 
 Implementation:
-- See docs/investigations/anonymization-export-integration.md
-- 3 phases over 24-32 hours
-- Leverages existing IG loading pattern
+- See docs/investigations/anonymization-export-integration.md (now using "de-identification" terminology)
+- 3 phases over 20-26 hours
+- Uses tenant-specific encryption (AES-256-GCM + HKDF)
+- No external dependencies required
 
 References:
 - ADR-2602: FHIR Anonymizer Library
@@ -986,24 +1091,24 @@ References:
 
 ## Conclusion
 
-**Recommended Approach**: AnonymizationConfig as Custom FHIR Resource
+**Recommended Approach**: DeIdentificationConfig as Custom FHIR Resource
 
 This approach:
 1. **Solves the core problem**: FHIR-native config management (no external blob storage)
 2. **Aligns with existing patterns**: Consistent with ViewDefinition and IG loading
-3. **Provides security**: Secrets managed via Key Vault, not in configs
+3. **Provides security**: Secrets encrypted at rest using tenant-specific keys (no external dependencies)
 4. **Enables streaming**: No batch overhead, integrates directly with export pipeline
 5. **Future-proof**: Works with IG loading pattern, supports FHIR R6
-6. **Reasonable effort**: 3-4 days (24-32 hours)
+6. **Reasonable effort**: 2.5-3.25 days (20-26 hours)
 
 **Next Steps**:
-1. Create ADR-2603-anonymization-export-integration.md
-2. Implement Phase 1 (AnonymizationConfig resource foundation)
+1. Create ADR-2603-de-identification-export-integration.md
+2. Implement Phase 1 (DeIdentificationConfig resource foundation)
 3. Implement Phase 2 (Export pipeline integration)
 4. Implement Phase 3 (Key management & security)
 5. Document and deploy
 
-**Decision**: Proceed with AnonymizationConfig as custom FHIR resource, integrated into export pipeline via `_anonymize` parameter.
+**Decision**: Proceed with DeIdentificationConfig as custom FHIR resource, integrated into export pipeline via `_deid` parameter.
 
 ---
 
