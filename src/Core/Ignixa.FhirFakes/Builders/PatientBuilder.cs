@@ -793,7 +793,7 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
         // Calculate birthYear from age if needed
         if (_birthYear == null && _age != null)
         {
-            _birthYear = DateTime.UtcNow.Year - _age.Value;
+            _birthYear = AgeHelper.BirthYearFromAge(_age.Value);
         }
 
         // Set default birthYear if neither age nor birthYear provided
@@ -811,8 +811,14 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
 
     private DateTime CalculateBirthDate()
     {
-        var year = _birthYear ?? DateTime.UtcNow.Year - 30;
-        return new DateTime(year, 1, 1);
+        if (_birthYear.HasValue)
+        {
+            return new DateTime(_birthYear.Value, 7, 1);
+        }
+
+        // Default: age 30, assuming mid-year birthday
+        var defaultBirthYear = AgeHelper.BirthYearFromAge(30);
+        return new DateTime(defaultBirthYear, 7, 1);
     }
 
     private JsonArray BuildName()
@@ -976,10 +982,11 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
 
     /// <summary>
     /// Calculates approximate age from year only.
+    /// Assumes mid-year birthday (July 1) to reduce off-by-one errors.
     /// </summary>
     private static int CalculateAge(int year)
     {
-        return DateTime.UtcNow.Year - year;
+        return AgeHelper.AgeFromBirthYear(year);
     }
 
     /// <summary>

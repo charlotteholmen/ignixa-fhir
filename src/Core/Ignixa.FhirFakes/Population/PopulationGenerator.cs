@@ -76,7 +76,7 @@ public class PopulationGenerator(IFhirSchemaProvider schemaProvider)
 
             // 3. Extract sampled demographics for lifecycle simulation
             var age = patientBuilder.Age!.Value;
-            var birthYear = DateTime.Now.Year - age;
+            var birthYear = AgeHelper.BirthYearFromAge(age);
 
             // 4. Configure lifecycle generator with sampled demographics
             var lifecycle = new PatientLifecycleGenerator(_schemaProvider)

@@ -4,6 +4,7 @@
 // -------------------------------------------------------------------------------------------------
 
 using Shouldly;
+using Ignixa.FhirFakes;
 using Ignixa.FhirFakes.Builders;
 using Ignixa.FhirFakes.Builders.Profiles;
 using Ignixa.FhirFakes.Population;
@@ -229,7 +230,7 @@ public class PatientBuilderTests
 
         // Assert
         var birthDate = patient.MutableNode["birthDate"]?.GetValue<string>();
-        var expectedYear = DateTime.UtcNow.Year - 45;
+        var expectedYear = AgeHelper.BirthYearFromAge(45);
         birthDate.ShouldStartWith(expectedYear.ToString());
     }
 
