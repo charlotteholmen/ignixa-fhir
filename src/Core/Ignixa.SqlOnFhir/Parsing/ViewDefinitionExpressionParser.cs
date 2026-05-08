@@ -228,11 +228,30 @@ public static class ViewDefinitionExpressionParser
             // Compile FHIRPath expression once during parsing
             var path = Parser.Parse(pathText);
 
+            var tagNodes = columnNode.Children("tag").ToList();
+            var tags = ImmutableArray<(string Name, string Value)>.Empty;
+            if (tagNodes.Count > 0)
+            {
+                var tagBuilder = ImmutableArray.CreateBuilder<(string Name, string Value)>(tagNodes.Count);
+                foreach (var tagNode in tagNodes)
+                {
+                    var tagName = tagNode.Children("name").FirstOrDefault()?.Text;
+                    if (string.IsNullOrEmpty(tagName))
+                        throw new InvalidOperationException("Column tag 'name' must be a non-empty string");
+                    var tagValue = tagNode.Children("value").FirstOrDefault()?.Text;
+                    if (tagValue is null)
+                        throw new InvalidOperationException("Column tag must have a 'value' property");
+                    tagBuilder.Add((tagName, tagValue));
+                }
+                tags = tagBuilder.ToImmutable();
+            }
+
             builder.Add(new ColumnExpression(
                 Name: name,
                 Path: path,
                 Type: type,
-                Collection: collection
+                Collection: collection,
+                Tags: tags
             ));
         }
 
@@ -435,10 +454,10 @@ public static class ViewDefinitionExpressionParser
         }
 
         // Find any referenced variables that are not defined constants
-        // Exclude special predefined variables like 'resource', 'rootResource', 'context', 'ucum', 'sct', 'loinc', 'vs-*'
+        // Exclude special predefined variables like 'resource', 'rootResource', 'context', 'ucum', 'sct', 'loinc', 'vs-*', 'rowIndex'
         var predefinedVariables = new HashSet<string>(StringComparer.Ordinal)
         {
-            "context", "resource", "rootResource", "ucum", "sct", "loinc"
+            "context", "resource", "rootResource", "ucum", "sct", "loinc", "rowIndex"
         };
 
         foreach (var varName in referencedVariables)
