@@ -31,19 +31,29 @@ internal class SqlOnFhirEvaluationVisitor
     /// <summary>
     /// Evaluates a ViewDefinition expression against a FHIR resource.
     /// </summary>
-    public IEnumerable<Dictionary<string, object?>> Evaluate(ViewDefinitionExpression viewDef, IElement resource)
+    public IEnumerable<Dictionary<string, object?>> Evaluate(
+        ViewDefinitionExpression viewDef,
+        IElement resource,
+        IReadOnlyDictionary<string, string>? variables = null)
     {
-        var context = CreateEvaluationContext(viewDef, resource);
+        var context = CreateEvaluationContext(viewDef, resource, variables);
         return EvaluateViewDefinition(viewDef, resource, context);
     }
 
-    private static EvaluationContext CreateEvaluationContext(ViewDefinitionExpression viewDef, IElement resource)
+    private static EvaluationContext CreateEvaluationContext(
+        ViewDefinitionExpression viewDef,
+        IElement resource,
+        IReadOnlyDictionary<string, string>? variables)
     {
         var context = new EvaluationContext() with { RootResource = resource };
         foreach (var constant in viewDef.Constants)
             if (constant.Value != null)
                 context = context.WithEnvironmentVariable(constant.Name, new PrimitiveValueElement(constant.Value));
-        // Inject after constants so %rowIndex cannot be shadowed by a user-defined constant
+        // Caller-supplied variables override ViewDefinition constants if names collide (caller wins).
+        if (variables != null)
+            foreach (var (name, value) in variables)
+                context = context.WithEnvironmentVariable(name, new PrimitiveValueElement(value));
+        // rowIndex injected last so it cannot be shadowed by user-defined constants or variables
         context = context.WithEnvironmentVariable("rowIndex", new PrimitiveValueElement(0));
         return context;
     }
@@ -110,7 +120,6 @@ internal class SqlOnFhirEvaluationVisitor
     private List<Dictionary<string, object?>> EvaluateSelect(
         SelectExpression node, IElement resource, EvaluationContext context)
     {
-        // No iteration: evaluate columns directly against current resource
         if (node.ForEach == null && node.ForEachOrNull == null && node.Repeat.IsEmpty)
         {
             var row = EvaluateColumns(node.Columns, resource, context);
@@ -118,7 +127,6 @@ internal class SqlOnFhirEvaluationVisitor
             return ProcessUnionAll(rows, node.UnionAll, resource, context);
         }
 
-        // repeat: recursively traverse paths and collect all items
         if (!node.Repeat.IsEmpty)
         {
             var allItems = RecursivelyCollectItems(resource, node.Repeat, context);
@@ -134,7 +142,6 @@ internal class SqlOnFhirEvaluationVisitor
             return repeatRows;
         }
 
-        // forEach / forEachOrNull: unnest collection
         var forEachExpr = node.ForEach ?? node.ForEachOrNull!;
         var items = _fhirPath.Evaluate(resource, forEachExpr, context).ToList();
         var forEachRows = new List<Dictionary<string, object?>>();

@@ -34,8 +34,6 @@ public class SqlOnFhirEvaluatorTests
     private static readonly IFhirSchemaProvider _schemaProvider =
         FhirSpecificationExtensions.FromVersionString("4.0.1").GetSchemaProvider();
 
-    #region Basic Column Evaluation Tests
-
     [Fact]
     public void GivenSimpleColumnPath_WhenEvaluated_ThenReturnsValue()
     {
@@ -141,10 +139,6 @@ public class SqlOnFhirEvaluatorTests
         Assert.Null(rows[0]["birthDate"]);
     }
 
-    #endregion
-
-    #region Type Conversion Tests
-
     [Fact]
     public void GivenBooleanColumn_WhenEvaluated_ThenConvertsCorrectly()
     {
@@ -214,10 +208,6 @@ public class SqlOnFhirEvaluatorTests
         Assert.IsType<int>(rows[0]["value"]);
         Assert.Equal(42, rows[0]["value"]);
     }
-
-    #endregion
-
-    #region WHERE Clause Tests
 
     [Fact]
     public void GivenWhereClause_WhenEvaluated_ThenIncludesMatchingResource()
@@ -295,10 +285,6 @@ public class SqlOnFhirEvaluatorTests
         // Assert
         Assert.Empty(rows);
     }
-
-    #endregion
-
-    #region ForEach Array Unnesting Tests
 
     [Fact]
     public void GivenForEach_WhenEvaluated_ThenCreatesRowPerArrayElement()
@@ -503,9 +489,112 @@ public class SqlOnFhirEvaluatorTests
         Assert.Empty(rows);
     }
 
-    #endregion
+    [Fact]
+    public void GivenVariable_WhenEvaluated_ThenAccessibleAsFhirPathPercent()
+    {
+        // Arrange: constant declared in ViewDefinition with a default; variable overrides it at runtime.
+        // %name references must always be declared as constants — variables override the value at evaluation time.
+        var patientJson = new Dictionary<string, object?>
+        {
+            { "resourceType", "Patient" },
+            { "id", "p1" }
+        };
+        var resource = CreateTypedElement(patientJson);
 
-    #region Helper Methods
+        var viewJson = """
+            {
+              "resource": "Patient",
+              "constant": [{ "name": "myTag", "valueString": "default" }],
+              "select": [{
+                "column": [
+                  { "name": "id", "path": "id" },
+                  { "name": "tag", "path": "%myTag" }
+                ]
+              }]
+            }
+            """;
+        var jsonNode = JsonNode.Parse(viewJson)!;
+        var sourceNode = JsonNodeSourceNode.Create(jsonNode, "ViewDefinition");
+        var variables = new Dictionary<string, string> { ["myTag"] = "hello" };
+
+        // Act
+        var rows = _evaluator.Evaluate(sourceNode, resource, variables).ToList();
+
+        // Assert
+        Assert.Single(rows);
+        Assert.Equal("p1", rows[0]["id"]);
+        Assert.Equal("hello", rows[0]["tag"]);
+    }
+
+    [Fact]
+    public void GivenVariableWithSameNameAsConstant_WhenEvaluated_ThenVariableTakesPrecedence()
+    {
+        // Arrange: ViewDefinition declares constant "myTag" = "from-constant",
+        // caller supplies variable "myTag" = "from-caller". Caller wins.
+        var patientJson = new Dictionary<string, object?>
+        {
+            { "resourceType", "Patient" },
+            { "id", "p2" }
+        };
+        var resource = CreateTypedElement(patientJson);
+
+        var viewJson = """
+            {
+              "resource": "Patient",
+              "constant": [{ "name": "myTag", "valueString": "from-constant" }],
+              "select": [{
+                "column": [
+                  { "name": "id", "path": "id" },
+                  { "name": "tag", "path": "%myTag" }
+                ]
+              }]
+            }
+            """;
+        var jsonNode = JsonNode.Parse(viewJson)!;
+        var sourceNode = JsonNodeSourceNode.Create(jsonNode, "ViewDefinition");
+        var variables = new Dictionary<string, string> { ["myTag"] = "from-caller" };
+
+        // Act
+        var rows = _evaluator.Evaluate(sourceNode, resource, variables).ToList();
+
+        // Assert
+        Assert.Single(rows);
+        Assert.Equal("from-caller", rows[0]["tag"]);
+    }
+
+    [Fact]
+    public void GivenNullVariables_WhenEvaluated_ThenNoRegression()
+    {
+        // Arrange: passing null variables should behave the same as omitting them
+        var patientJson = new Dictionary<string, object?>
+        {
+            { "resourceType", "Patient" },
+            { "id", "p3" }
+        };
+        var resource = CreateTypedElement(patientJson);
+
+        var viewDef = new ViewDefinition
+        {
+            Resource = "Patient",
+            Select = new List<SelectGroup>
+            {
+                new SelectGroup
+                {
+                    Column = new List<ViewColumnDefinition>
+                    {
+                        new ViewColumnDefinition { Name = "id", Path = "id", Type = "id" }
+                    }
+                }
+            }
+        };
+
+        // Act
+        var rows = _evaluator.Evaluate(ConvertToSourceNode(viewDef), resource, null).ToList();
+
+        // Assert
+        Assert.Single(rows);
+        Assert.Equal("p3", rows[0]["id"]);
+    }
 
     private static IElement CreateTypedElement(Dictionary<string, object?> data)
     {
@@ -523,6 +612,4 @@ public class SqlOnFhirEvaluatorTests
         var jsonNode = JsonNode.Parse(json)!;
         return JsonNodeSourceNode.Create(jsonNode, "ViewDefinition");
     }
-
-    #endregion
 }
