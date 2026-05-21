@@ -1483,6 +1483,31 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
         return DateTimePrecision.Invalid;
     }
 
+    private static DateTimePrecision MaxPrecision(DateTimePrecision left, DateTimePrecision right)
+        => left >= right ? left : right;
+
+    private static DateTimePrecision? GetDateTimeArithmeticUnitPrecision(string instanceType, string unit)
+        => (instanceType, unit) switch
+        {
+            ("date", "a" or "year" or "years") => DateTimePrecision.Year,
+            ("date", "mo" or "month" or "months") => DateTimePrecision.Month,
+            ("date", "wk" or "week" or "weeks") => DateTimePrecision.Day,
+            ("date", "d" or "day" or "days") => DateTimePrecision.Day,
+            ("dateTime", "a" or "year" or "years") => DateTimePrecision.Year,
+            ("dateTime", "mo" or "month" or "months") => DateTimePrecision.Month,
+            ("dateTime", "wk" or "week" or "weeks") => DateTimePrecision.Day,
+            ("dateTime", "d" or "day" or "days") => DateTimePrecision.Day,
+            ("dateTime", "h" or "hour" or "hours") => DateTimePrecision.Hour,
+            ("dateTime", "min" or "minute" or "minutes") => DateTimePrecision.Minute,
+            ("dateTime", "s" or "second" or "seconds") => DateTimePrecision.Second,
+            ("dateTime", "ms" or "millisecond" or "milliseconds") => DateTimePrecision.Millisecond,
+            ("time", "h" or "hour" or "hours") => DateTimePrecision.Hour,
+            ("time", "min" or "minute" or "minutes") => DateTimePrecision.Minute,
+            ("time", "s" or "second" or "seconds") => DateTimePrecision.Second,
+            ("time", "ms" or "millisecond" or "milliseconds") => DateTimePrecision.Millisecond,
+            _ => null
+        };
+
     private static string TruncateToDateTimePrecision(string value, DateTimePrecision precision)
     {
         if (string.IsNullOrEmpty(value) || precision == DateTimePrecision.Invalid)
@@ -1693,36 +1718,28 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
 
     private IEnumerable<IElement> EvaluateDateTimeArithmetic(string dateTimeStr, Types.Quantity quantity, bool add, string instanceType)
     {
-        // Remove @ prefix if present
         dateTimeStr = dateTimeStr.StartsWith("@", StringComparison.Ordinal) ? dateTimeStr.Substring(1) : dateTimeStr;
 
-        // Determine if this is a date, dateTime, or time using InstanceType
         var isTimeOnly = instanceType == "time";
-
-        // Prepend T for time values so GetDateTimePrecision can detect them correctly
-        // (time values are stored as HH:mm:ss without T prefix)
         var parseStr = isTimeOnly && !dateTimeStr.StartsWith("T", StringComparison.Ordinal)
             ? "T" + dateTimeStr
             : dateTimeStr;
 
         var precision = GetDateTimePrecision(parseStr);
-
         if (precision == DateTimePrecision.Invalid)
             return [];
         if (!TryParseFhirDateTime(parseStr, out var dt))
             return [];
 
-        // Apply the quantity arithmetic based on unit
-        // Calendar duration units (year, month, week, day) should be truncated to integers
-        // Time-based units (hour, min, s, ms) can use fractional values
+        var unitPrecision = GetDateTimeArithmeticUnitPrecision(instanceType, quantity.Unit);
+        if (unitPrecision is null)
+            return [];
+
         var value = (double)quantity.Value * (add ? 1 : -1);
         DateTimeOffset result;
 
         try
         {
-            // Calendar duration units (year, month, week, day) should be truncated to integers
-            // Time-based units (hour, min, s, ms) can use fractional values in R5+
-            // For R4/R4B, the spec truncates to integers, but this is a test data difference
             result = quantity.Unit switch
             {
                 "a" or "year" or "years" => dt.AddYears((int)Math.Truncate(value)),
@@ -1731,19 +1748,19 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
                 "d" or "day" or "days" => dt.AddDays(Math.Truncate(value)),
                 "h" or "hour" or "hours" => dt.AddHours(value),
                 "min" or "minute" or "minutes" => dt.AddMinutes(value),
-                "s" or "second" or "seconds" => dt.AddMilliseconds(value * 1000), // Convert to ms for precision
+                "s" or "second" or "seconds" => dt.AddMilliseconds(value * 1000),
                 "ms" or "millisecond" or "milliseconds" => dt.AddMilliseconds(value),
-                _ => dt // Unknown unit, return original
+                _ => throw new InvalidOperationException("Unsupported date/time arithmetic unit.")
             };
         }
         catch
         {
-            return []; // Overflow or invalid operation
+            return [];
         }
 
-        // Format result to match input precision
-        var resultStr = FormatDateTimeWithPrecision(result, precision, dateTimeStr, isTimeOnly);
-        return [new PrimitiveElement(resultStr, isTimeOnly ? "time" : (dateTimeStr.Contains('T', StringComparison.Ordinal) ? "dateTime" : "date"))];
+        var resultPrecision = MaxPrecision(precision, unitPrecision.Value);
+        var resultStr = FormatDateTimeWithPrecision(result, resultPrecision, dateTimeStr, isTimeOnly);
+        return [new PrimitiveElement(resultStr, instanceType)];
     }
 
     private string FormatDateTimeWithPrecision(DateTimeOffset dt, DateTimePrecision precision, string originalStr, bool isTimeOnly)
