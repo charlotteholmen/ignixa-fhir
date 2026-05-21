@@ -110,6 +110,17 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
 
     public IEnumerable<IElement> VisitFunctionCall(FunctionCallExpression expression, EvaluationContext context)
     {
+        if (IsPositionalFunction(expression.FunctionName))
+        {
+            var unorderedSource = GetUnorderedNavigationSource(expression.Focus);
+            if (unorderedSource != null)
+            {
+                // Result is undefined per FHIRPath spec. Return empty rather than throw;
+                // FhirPathAnalyzer surfaces this as a design-time error.
+                return [];
+            }
+        }
+
         var focusElements = expression.Focus != null
             ? EvaluateExpression(context.Focus, expression.Focus, context)
             : context.Focus;
@@ -966,6 +977,14 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
 
     public IEnumerable<IElement> VisitIndexer(IndexerExpression expression, EvaluationContext context)
     {
+        var unorderedSource = GetUnorderedNavigationSource(expression.Collection);
+        if (unorderedSource != null)
+        {
+            // Result is undefined per FHIRPath spec. Return empty rather than throw;
+            // FhirPathAnalyzer surfaces this as a design-time error.
+            return [];
+        }
+
         var collectionElements = EvaluateExpression(context.Focus, expression.Collection, context).ToList();
 
         // Optimization: Fast path for constant integer indexes
@@ -1832,6 +1851,15 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
             _ => "string"
         };
     }
+
+    private static bool IsOrderDependentFunction(string functionName) =>
+        UnorderedCollectionDetection.IsOrderDependentFunction(functionName);
+
+    private static bool IsPositionalFunction(string functionName) =>
+        UnorderedCollectionDetection.IsPositionalFunction(functionName);
+
+    private static string? GetUnorderedNavigationSource(Expression? focus) =>
+        UnorderedCollectionDetection.GetUnorderedNavigationSource(focus);
 
     /// <summary>
     /// Simple implementation of IElement for primitive values.
