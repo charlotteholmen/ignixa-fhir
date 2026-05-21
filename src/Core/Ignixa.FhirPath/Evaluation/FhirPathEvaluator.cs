@@ -998,31 +998,28 @@ public partial class FhirPathEvaluator : IFhirPathExpressionVisitor<EvaluationCo
     {
         var operand = EvaluateExpression(context.Focus, expression.Operand, context).ToList();
 
-        if (expression.Operator == "-" && operand.Count == 1)
-        {
-            var value = operand[0].Value;
-            try
-            {
-                if (value is int i)
-                {
-                    return [CreateInteger(-i)];
-                }
-                if (value is long l && l >= int.MinValue && l <= int.MaxValue)
-                {
-                    return [CreateInteger(-(int)l)];
-                }
-                if (value is IConvertible)
-                {
-                    var numeric = Convert.ToDecimal(value);
-                    return [CreateDecimal(-numeric)];
-                }
-            }
-            catch
-            {
-            }
-        }
+        if (expression.Operator != "-" || operand.Count != 1)
+            return operand;
 
-        return operand;
+        var value = operand[0].Value;
+        try
+        {
+            return value switch
+            {
+                int i => [CreateInteger(checked(-i))],
+                long l when l >= int.MinValue && l <= int.MaxValue => [CreateInteger(checked(-(int)l))],
+                long l => [CreateDecimal(-(decimal)l)],
+                decimal d => [CreateDecimal(-d)],
+                double d => [CreateDecimal(-(decimal)d)],
+                float f => [CreateDecimal(-(decimal)f)],
+                Types.Quantity q => [FunctionHelpers.CreateQuantity(new Types.Quantity(-q.Value, q.Unit))],
+                _ => [] // non-numeric operand: undefined per FHIRPath spec → empty
+            };
+        }
+        catch (OverflowException)
+        {
+            return [];
+        }
     }
 
 
