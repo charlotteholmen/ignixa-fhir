@@ -135,6 +135,29 @@ public class StructureDefinitionSchemaBuilder
         // Tier 2 (Spec): Schema-driven checks from StructureDefinition
         var specChecks = new List<IValidationCheck>();
 
+        // Extract structural-shape checks: enforce that the raw JSON shape of each declared
+        // element matches its definition (array-vs-scalar, null, ele-1 emptiness, primitive-vs-object).
+        // Choice elements are excluded: their value[x] shape and primitive value rules are handled
+        // by ChoiceElementCheck. xhtml is excluded for the same reason as the cardinality pass.
+        // "contained" is excluded: it has dedicated handling (ContainedResourceCheck) and an empty
+        // contained array is tolerated by established behavior.
+        var shapeChecks = elements
+            .Where(e => !e.Info.IsChoiceElement
+                && GetTypeName(e) != "xhtml"
+                && e.Info.Name != "contained")
+            .Select(e =>
+            {
+                var typeName = GetTypeName(e);
+                var isBackbone = typeName is "BackboneElement" or "Element";
+                return new StructuralShapeCheck(
+                    e.Info.Name,
+                    e.Info.IsPrimitive,
+                    IsCollectionElement(e),
+                    isBackbone,
+                    typeName);
+            });
+        specChecks.AddRange(shapeChecks);
+
         // Extract reference format checks - check the type name, not element name
         // Skip choice elements: their DefaultTypeName may be Reference but the actual type
         // depends on runtime data (e.g., medication[x] could be medicationCodeableConcept)
@@ -234,7 +257,7 @@ public class StructureDefinitionSchemaBuilder
         var addedToVisiting = visiting.Add(typeDefinition.Info.Name);
         try
         {
-            var nestedTypeChecks = ExtractNestedTypeChecks(elements, typeDefinition, schema, terminologyService, _logger);
+            var nestedTypeChecks = ExtractNestedTypeChecks(elements, typeDefinition, schema, terminologyService, _logger, _parser);
             specChecks.AddRange(nestedTypeChecks);
         }
         finally
@@ -281,7 +304,7 @@ public class StructureDefinitionSchemaBuilder
         // This includes constraints like ele-1, dom-1, resource-specific invariants
         // Moved to Profile tier to avoid false positives on minimal resources
         // Constraints are scoped to the current resource type (see ExtractInvariantChecks for filtering)
-        var invariantChecks = ExtractInvariantChecks(elements, typeDefinition, schema, _parser);
+        var invariantChecks = ExtractInvariantChecks(elements, typeDefinition, schema, _parser, _logger);
         profileChecks.AddRange(invariantChecks);
 
         // Build the canonical URL from the type name
@@ -335,7 +358,8 @@ public class StructureDefinitionSchemaBuilder
         IReadOnlyList<IType> elements,
         IType typeDefinition,
         ISchema schema,
-        FhirPathParser parser)
+        FhirPathParser parser,
+        ILogger? logger = null)
     {
         var checks = new List<IValidationCheck>();
 
@@ -380,7 +404,7 @@ public class StructureDefinitionSchemaBuilder
                 }
 
                 seenConstraints.Add(constraint.Key);
-                checks.Add(new FhirPathInvariantCheck(constraint, schema, parser, appliesTo));
+                checks.Add(new FhirPathInvariantCheck(constraint, schema, parser, appliesTo, logger));
             }
         }
 
@@ -401,7 +425,8 @@ public class StructureDefinitionSchemaBuilder
         IType typeDefinition,
         ISchema schema,
         ITerminologyService? terminologyService,
-        ILogger? logger = null)
+        ILogger<StructureDefinitionSchemaBuilder>? logger = null,
+        FhirPathParser? parser = null)
     {
         var checks = new List<IValidationCheck>();
 
@@ -463,7 +488,7 @@ public class StructureDefinitionSchemaBuilder
             var nestedTypeDefinition = schema.GetTypeDefinition(nestedTypeName);
             if (nestedTypeDefinition == null)
             {
-                logger?.LogDebug("Nested type '{NestedTypeName}' not found in schema - subtree will not be validated", nestedTypeName);
+                logger?.LogWarning("Nested type '{NestedTypeName}' not found in schema - subtree will not be validated", nestedTypeName);
                 continue;
             }
 
@@ -478,7 +503,7 @@ public class StructureDefinitionSchemaBuilder
             }
 
             // Build the nested schema
-            var nestedBuilder = new StructureDefinitionSchemaBuilder();
+            var nestedBuilder = new StructureDefinitionSchemaBuilder(parser, logger);
             var nestedSchema = nestedBuilder.BuildSchema(nestedTypeDefinition, schema, terminologyService);
 
             // Create the nested type check
@@ -502,6 +527,33 @@ public class StructureDefinitionSchemaBuilder
         }
 
         return char.ToUpperInvariant(str[0]) + str.Substring(1);
+    }
+
+    /// <summary>
+    /// Determines whether an element is a collection (max &gt; 1 / "*").
+    /// Prefers the explicit <see cref="ITypeExtended.Max"/> value, matching the cardinality pass,
+    /// and falls back to <see cref="IType.IsCollection"/> when extended metadata is unavailable.
+    /// </summary>
+    /// <param name="element">The element to inspect.</param>
+    /// <returns>True if the element accepts more than one occurrence.</returns>
+    private static bool IsCollectionElement(IType element)
+    {
+        if (element is ITypeExtended extended)
+        {
+            if (extended.Max == "*")
+            {
+                return true;
+            }
+
+            if (int.TryParse(extended.Max, out var parsedMax))
+            {
+                return parsedMax > 1;
+            }
+        }
+
+        // Fall back to IsCollection when Max is absent/unparseable, to avoid a false
+        // "scalar" verdict from incomplete extended metadata.
+        return element.IsCollection;
     }
 
     /// <summary>
