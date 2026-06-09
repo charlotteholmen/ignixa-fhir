@@ -1,9 +1,10 @@
-// <copyright file="ValidationSchema.cs" company="Microsoft Corporation">
-//     Copyright (c) Microsoft Corporation. All rights reserved.
-//     Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
-// </copyright>
+// -------------------------------------------------------------------------------------------------
+// Copyright (c) Ignixa Contributors. All rights reserved.
+// Licensed under the MIT License. See LICENSE in the repo root for license information.
+// -------------------------------------------------------------------------------------------------
 
 using Ignixa.Abstractions;
+using Ignixa.Validation.Checks;
 
 namespace Ignixa.Validation.Abstractions;
 
@@ -57,6 +58,103 @@ public sealed class ValidationSchema
     /// </summary>
     public IReadOnlyList<IValidationCheck> Checks =>
         _universalChecks.Concat(_specChecks).Concat(_profileChecks).ToList();
+
+    /// <summary>
+    /// Composes multiple <see cref="ValidationSchema"/> instances into a single schema.
+    /// Universal, spec, and profile check lists are concatenated in input order, preserving
+    /// the tier-aware execution semantics of <see cref="Validate"/>.
+    /// <para>
+    /// The first schema in <paramref name="schemas"/> donates its <c>CanonicalUrl</c> and
+    /// <c>ResourceType</c> to the composed result; this matches the convention of treating
+    /// the resource's base StructureDefinition as the primary schema with profiles layered
+    /// on top.
+    /// </para>
+    /// </summary>
+    /// <param name="schemas">Schemas to compose. Must not be empty.</param>
+    /// <returns>A new schema whose check lists are the union of the inputs.</returns>
+    public static ValidationSchema Compose(IReadOnlyList<ValidationSchema> schemas)
+    {
+        ArgumentNullException.ThrowIfNull(schemas);
+        if (schemas.Count == 0)
+        {
+            throw new ArgumentException("Cannot compose an empty list of schemas.", nameof(schemas));
+        }
+
+        if (schemas.Count == 1)
+        {
+            return schemas[0];
+        }
+
+        var primary = schemas[0];
+
+        // Universal checks: deduplicate stateless singleton checks (JsonStructureCheck,
+        // NarrativeCheck, ResourceTypeValidationCheck) that are per-resource and must run
+        // exactly once. Parameterized per-element checks (CardinalityCheck, TypeCheck) are
+        // concatenated normally — each carries distinct element metadata.
+        var seenSingletonTypes = new HashSet<Type>
+        {
+            typeof(JsonStructureCheck),
+            typeof(NarrativeCheck),
+            typeof(ResourceTypeValidationCheck),
+        };
+        var seenAdded = new HashSet<Type>();
+        var universal = new List<IValidationCheck>();
+        foreach (var s in schemas)
+        {
+            foreach (var c in s._universalChecks)
+            {
+                if (seenSingletonTypes.Contains(c.GetType()))
+                {
+                    if (seenAdded.Add(c.GetType()))
+                    {
+                        universal.Add(c);
+                    }
+                }
+                else
+                {
+                    universal.Add(c);
+                }
+            }
+        }
+
+        // Spec checks: concatenate normally (cardinality, binding, choice, reference checks are
+        // per-element and must all run), but deduplicate UnknownPropertyCheck by type (the first
+        // schema's list covers all known property names for the resource).
+        var hasUnknownPropertyCheck = false;
+        var spec = new List<IValidationCheck>();
+        foreach (var s in schemas)
+        {
+            foreach (var c in s._specChecks)
+            {
+                if (c is UnknownPropertyCheck)
+                {
+                    if (!hasUnknownPropertyCheck)
+                    {
+                        hasUnknownPropertyCheck = true;
+                        spec.Add(c);
+                    }
+                }
+                else
+                {
+                    spec.Add(c);
+                }
+            }
+        }
+
+        // Profile checks: no dedup — all profile-tier checks (invariants, slicing) are meaningful
+        var profile = new List<IValidationCheck>();
+        foreach (var s in schemas)
+        {
+            profile.AddRange(s._profileChecks);
+        }
+
+        return new ValidationSchema(
+            canonicalUrl: primary.CanonicalUrl,
+            resourceType: primary.ResourceType,
+            universalChecks: universal,
+            specChecks: spec,
+            profileChecks: profile);
+    }
 
     /// <summary>
     /// Validates an element using depth-appropriate checks.

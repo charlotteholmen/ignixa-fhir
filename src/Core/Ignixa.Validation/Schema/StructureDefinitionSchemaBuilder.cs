@@ -1,7 +1,7 @@
-// <copyright file="StructureDefinitionSchemaBuilder.cs" company="Microsoft Corporation">
-//     Copyright (c) Microsoft Corporation. All rights reserved.
-//     Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
-// </copyright>
+// -------------------------------------------------------------------------------------------------
+// Copyright (c) Ignixa Contributors. All rights reserved.
+// Licensed under the MIT License. See LICENSE in the repo root for license information.
+// -------------------------------------------------------------------------------------------------
 
 using Ignixa.FhirPath;
 using Ignixa.Abstractions;
@@ -9,6 +9,7 @@ using Ignixa.FhirPath.Parser;
 using Ignixa.Specification;
 using Ignixa.Validation.Abstractions;
 using Ignixa.Validation.Checks;
+using Microsoft.Extensions.Logging;
 
 namespace Ignixa.Validation.Schema;
 
@@ -20,14 +21,28 @@ namespace Ignixa.Validation.Schema;
 public class StructureDefinitionSchemaBuilder
 {
     private readonly FhirPathParser _parser;
+    private readonly ILogger<StructureDefinitionSchemaBuilder>? _logger;
+
+    /// <summary>
+    /// Per-call cycle guard for the recursive nested-type extraction. Tracks type names
+    /// currently being built so that a self-reference (Element->Element, or
+    /// BackboneElement->BackboneElement via contentReference) does not recurse forever.
+    /// AsyncLocal so concurrent BuildSchema invocations on different threads each get
+    /// their own visited set without locking.
+    /// </summary>
+    private static readonly System.Threading.AsyncLocal<HashSet<string>?> _activeTypeNames = new();
 
     /// <summary>
     /// Initializes a new instance of the <see cref="StructureDefinitionSchemaBuilder"/> class.
     /// </summary>
     /// <param name="compiler">Shared FhirPath compiler for parsing constraint expressions. If null, a new instance will be created.</param>
-    public StructureDefinitionSchemaBuilder(FhirPathParser? compiler = null)
+    /// <param name="logger">Optional logger for diagnostics during schema building.</param>
+    public StructureDefinitionSchemaBuilder(
+        FhirPathParser? compiler = null,
+        ILogger<StructureDefinitionSchemaBuilder>? logger = null)
     {
         _parser = compiler ?? new FhirPathParser();
+        _logger = logger;
     }
 
     /// <summary>
@@ -80,17 +95,28 @@ public class StructureDefinitionSchemaBuilder
             .Where(e => GetTypeName(e) != "xhtml") // Skip xhtml elements - they don't have .value children
             .Select(e =>
             {
+                // Choice elements are named "value[x]" in the schema, but instances carry
+                // concrete names (valueQuantity, valueString, ...). CardinalityCheck counts
+                // via IElement.Children, which only performs polymorphic [x] expansion when
+                // the requested name has no [x] suffix. Strip it so the check matches the
+                // concrete children instead of a literal "value[x]" that never exists.
+                var elementName = e.Info.IsChoiceElement && e.Info.Name.EndsWith("[x]", StringComparison.Ordinal)
+                    ? e.Info.Name[..^3]
+                    : e.Info.Name;
+
                 // Try to get explicit cardinality from extended metadata
                 if (e is ITypeExtended extended)
                 {
                     int min = extended.Min;
-                    int? max = extended.Max == "*" ? null : int.Parse(extended.Max);
-                    return new CardinalityCheck(e.Info.Name, min, max);
+                    int? max = extended.Max == "*" ? null
+                        : int.TryParse(extended.Max, out var parsedMax) ? parsedMax
+                        : (int?)null;
+                    return new CardinalityCheck(elementName, min, max);
                 }
 
                 // Fallback to inferred cardinality
                 return new CardinalityCheck(
-                    e.Info.Name,
+                    elementName,
                     min: e.IsRequired ? 1 : 0,
                     max: e.IsCollection ? (int?)null : 1);
             });
@@ -197,8 +223,31 @@ public class StructureDefinitionSchemaBuilder
         }
 
         // Extract nested complex type checks (BackboneElement, complex datatypes)
-        var nestedTypeChecks = ExtractNestedTypeChecks(elements, typeDefinition, schema, terminologyService);
-        specChecks.AddRange(nestedTypeChecks);
+        // Push the current type onto the cycle guard so any recursive Build via
+        // ExtractNestedTypeChecks short-circuits if it tries to re-enter this type.
+        var visiting = _activeTypeNames.Value ?? new HashSet<string>(StringComparer.Ordinal);
+        var ownsVisiting = _activeTypeNames.Value == null;
+        if (ownsVisiting)
+        {
+            _activeTypeNames.Value = visiting;
+        }
+        var addedToVisiting = visiting.Add(typeDefinition.Info.Name);
+        try
+        {
+            var nestedTypeChecks = ExtractNestedTypeChecks(elements, typeDefinition, schema, terminologyService, _logger);
+            specChecks.AddRange(nestedTypeChecks);
+        }
+        finally
+        {
+            if (addedToVisiting)
+            {
+                visiting.Remove(typeDefinition.Info.Name);
+            }
+            if (ownsVisiting)
+            {
+                _activeTypeNames.Value = null;
+            }
+        }
 
         // Extract unknown property check (only first-level elements)
         var allPropertyNames = elements
@@ -256,6 +305,32 @@ public class StructureDefinitionSchemaBuilder
     /// <param name="schema">The schema for FHIRPath evaluation.</param>
     /// <param name="parser">The FhirPath compiler for parsing constraint expressions.</param>
     /// <returns>A collection of FhirPathInvariantCheck instances.</returns>
+    /// <summary>
+    /// Well-known FHIR constraint keys to their AppliesTo scope. Used as a fallback when
+    /// the constraint source (e.g. codegen <see cref="Ignixa.Abstractions.ConstraintDefinition"/>)
+    /// doesn't carry scope metadata. Without this, ext-1 fires on every element that has
+    /// an Extension child, dom-* fires on every nested resource, etc.
+    /// Keys follow FHIR R4 invariant naming: ele-*, dom-*, ext-*, vs-*, etc.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> WellKnownConstraintScopes =
+        new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+        {
+            ["ext-1"] = new[] { "Extension" },
+        };
+
+    private static IReadOnlyList<string>? ResolveAppliesTo(IConstraint constraint)
+    {
+        // Source carries scope explicitly (the Specification.ConstraintDefinition path).
+        // Cast through object because IConstraint and Specification.ConstraintDefinition
+        // are not in the same hierarchy.
+        if ((object)constraint is Specification.ConstraintDefinition specConstraint)
+        {
+            return specConstraint.AppliesTo;
+        }
+
+        return WellKnownConstraintScopes.TryGetValue(constraint.Key, out var scope) ? scope : null;
+    }
+
     private static IEnumerable<IValidationCheck> ExtractInvariantChecks(
         IReadOnlyList<IType> elements,
         IType typeDefinition,
@@ -266,11 +341,16 @@ public class StructureDefinitionSchemaBuilder
 
         // Deduplicate constraints by key to avoid duplicate checks
         // Multiple elements may reference the same constraint (e.g., ele-1 on every element)
-        var seenConstraints = new HashSet<string>();
+        var seenConstraints = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var element in elements)
+        // Walk the root type AND each child element. Codegen typically duplicates root-level
+        // invariants (ele-1, dom-*) onto every child, but adapter-produced types may keep them
+        // only on the root - so we must inspect both to find them all.
+        var elementsToScan = new List<IType>(elements.Count + 1) { typeDefinition };
+        elementsToScan.AddRange(elements);
+
+        foreach (var element in elementsToScan)
         {
-            // Check if this element has extended metadata with constraints
             if (element is not ITypeExtended extendedMetadata)
             {
                 continue;
@@ -284,37 +364,23 @@ public class StructureDefinitionSchemaBuilder
 
             foreach (var constraint in constraints)
             {
-                // Skip constraints we've already seen
-                // FHIRPath invariants are evaluated at the resource root, not per-element
                 if (seenConstraints.Contains(constraint.Key))
                 {
                     continue;
                 }
 
-                // Cast to concrete ConstraintDefinition to access AppliesTo property
-                // The IConstraint interface doesn't have AppliesTo yet, but the concrete implementation does
-                // Note: We cast through object because IConstraint (Abstractions) and ConstraintDefinition (Specification)
-                // are not directly related in the type hierarchy, but the runtime type from codegen is ConstraintDefinition
-                var constraintObj = (object)constraint;
-                if (constraintObj is Specification.ConstraintDefinition constraintDef)
+                var appliesTo = ResolveAppliesTo(constraint);
+
+                // Pre-filter: when AppliesTo is explicitly set and excludes this type, skip
+                // entirely without consuming the dedup slot, so a later element can still
+                // surface the same constraint key if its scope matches.
+                if (appliesTo is { Count: > 0 } && !appliesTo.Contains(typeDefinition.Info.Name))
                 {
-                    // ✅ Filter constraints by AppliesTo scope
-                    // Only include constraints that either:
-                    // - Apply to all resources/types (AppliesTo is empty), OR
-                    // - Explicitly apply to this resource type
-                    // This prevents constraints like ext-1 (Extension-only) from being applied to MedicationRequest
-                    if (constraintDef.AppliesTo.Count > 0 && !constraintDef.AppliesTo.Contains(typeDefinition.Info.Name))
-                    {
-                        continue; // Constraint doesn't apply to this resource type
-                    }
-
-                    seenConstraints.Add(constraint.Key);
-
-                    // Create FhirPathInvariantCheck for this constraint
-                    // Compiler is passed in from builder instance (shared across all checks)
-                    var check = new FhirPathInvariantCheck(constraintDef, schema, parser);
-                    checks.Add(check);
+                    continue;
                 }
+
+                seenConstraints.Add(constraint.Key);
+                checks.Add(new FhirPathInvariantCheck(constraint, schema, parser, appliesTo));
             }
         }
 
@@ -334,7 +400,8 @@ public class StructureDefinitionSchemaBuilder
         IReadOnlyList<IType> elements,
         IType typeDefinition,
         ISchema schema,
-        ITerminologyService? terminologyService)
+        ITerminologyService? terminologyService,
+        ILogger? logger = null)
     {
         var checks = new List<IValidationCheck>();
 
@@ -396,8 +463,17 @@ public class StructureDefinitionSchemaBuilder
             var nestedTypeDefinition = schema.GetTypeDefinition(nestedTypeName);
             if (nestedTypeDefinition == null)
             {
-                // Nested type not found - may be older FHIR version or unsupported type
-                // Skip silently to avoid breaking existing validations
+                logger?.LogDebug("Nested type '{NestedTypeName}' not found in schema - subtree will not be validated", nestedTypeName);
+                continue;
+            }
+
+            // Cycle guard: if this nested type is already on the active-build stack
+            // (e.g. Element->Element via contentReference, or a profile that recurses
+            // through a layered schema provider), skip to avoid infinite recursion.
+            var visiting = _activeTypeNames.Value;
+            if (visiting != null && visiting.Contains(nestedTypeName))
+            {
+                logger?.LogDebug("Cycle detected building type '{NestedTypeName}' - skipping to prevent infinite recursion", nestedTypeName);
                 continue;
             }
 
