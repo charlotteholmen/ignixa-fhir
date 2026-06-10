@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>Ignixa.TestScript.XUnit</PackageId>
+    <Description>xUnit integration for FHIR TestScript execution - discover and run TestScript files as xUnit theories</Description>
+    <PackageTags>fhir;testscript;testing;xunit</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ignixa.TestScript\Ignixa.TestScript.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.extensibility.core" />
+    <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" />
+    <PackageReference Include="Shouldly" />
+  </ItemGroup>
+
+</Project>

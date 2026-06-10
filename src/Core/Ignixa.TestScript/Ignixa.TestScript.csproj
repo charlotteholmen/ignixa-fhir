@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>Ignixa.TestScript</PackageId>
+    <Description>FHIR TestScript execution engine - parse and evaluate TestScript resources against any FHIR server</Description>
+    <PackageTags>fhir;testscript;testing;healthcare;hl7;interoperability</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ignixa.TestScript.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ignixa.Abstractions\Ignixa.Abstractions.csproj" />
+    <ProjectReference Include="..\Ignixa.FhirPath\Ignixa.FhirPath.csproj" />
+    <ProjectReference Include="..\Ignixa.Serialization\Ignixa.Serialization.csproj" />
+    <ProjectReference Include="..\Ignixa.Specification\Ignixa.Specification.csproj" />
+  </ItemGroup>
+
+</Project>

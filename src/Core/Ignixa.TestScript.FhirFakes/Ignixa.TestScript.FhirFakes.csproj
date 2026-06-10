@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>Ignixa.TestScript.FhirFakes</PackageId>
+    <Description>FhirFakes integration for TestScript fixture generation - auto-generate test data from resource type</Description>
+    <PackageTags>fhir;testscript;testing;fake-data;test-generation</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ignixa.TestScript\Ignixa.TestScript.csproj" />
+    <ProjectReference Include="..\Ignixa.FhirFakes\Ignixa.FhirFakes.csproj" />
+  </ItemGroup>
+
+</Project>
