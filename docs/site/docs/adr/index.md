@@ -38,6 +38,12 @@ All architectural decisions support the **F5 Developer Experience**: a developer
 | [2510](https://github.com/brendankowitz/ignixa-fhir/blob/main/docs/adr/adr-2510-ndjson-storage.md) | NDJSON File-Based Storage | Accepted |
 | [2510](https://github.com/brendankowitz/ignixa-fhir/blob/main/docs/adr/adr-2510-caching-architecture.md) | Four-Scope Caching Architecture | Accepted |
 
+### Infrastructure & Deployment
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| [2606](https://github.com/brendankowitz/ignixa-fhir/blob/main/docs/adr/adr-2606-azure-container-apps.md) | Azure Container Apps Hosting | Proposed |
+
 ### Operations & Features
 
 | ADR | Title | Status |
