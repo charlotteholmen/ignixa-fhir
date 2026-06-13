@@ -32,12 +32,14 @@ public class PackageStabilityGuardTests
         var projects = LoadPackableProjects();
 
         var violations = projects.Values
+            .Where(project => project.IsPublicFeed)
             .SelectMany(project => FindStabilityViolations(project, projects))
             .ToList();
 
         violations.ShouldBeEmpty(
-            "A package must not be more stable than any package it depends on (ADR 2606). " +
-            "Either lower the package's PackageStability or graduate its dependencies first.");
+            "A public-feed package must not be more stable than any package it depends on (ADR 2606). " +
+            "Either lower the package's PackageStability or graduate its dependencies first. " +
+            "Internal Application/DataLayer packages publish stable and are exempt (ADR 2607).");
     }
 
     [Fact]

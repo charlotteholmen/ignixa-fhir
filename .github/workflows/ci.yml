@@ -77,12 +77,18 @@ jobs:
       - name: Pack Application projects (internal - GitHub Packages)
         if: "${{ !inputs.skip_nuget }}"
         run: |
-          # Sidecar.Contracts is packed in core-packages for public NuGet.org distribution
+          # Sidecar.Contracts is packed in core-packages for public NuGet.org distribution.
+          # Internal Application/DataLayer packages publish stable (see src/Application and
+          # src/DataLayer Directory.Build.props) and may carry prerelease dependencies (e.g. the
+          # preview ModelContextProtocol SDK, or beta Core packages via project references).
+          # NU5104 stays an error for the public Core feed but is demoted to a warning here, since
+          # the internal GitHub Packages feed is not bound by the public stability-purity rule.
           find src/Application src/DataLayer -name "*.csproj" -type f -not -path "*Ignixa.Sidecar.Contracts*" | sort | while read -r PROJECT; do
             echo "Packing: $PROJECT"
             dotnet pack "$PROJECT" --configuration Release --no-build --output ./internal-packages \
               -p:BasePackageVersion=${{ steps.build.outputs.nuget-version }} \
-              -p:UpdateVersionProperties=false
+              -p:UpdateVersionProperties=false \
+              -p:WarningsNotAsErrors=NU5104
           done
 
       - name: List Core packages
@@ -257,7 +263,9 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: |
+            9.0.x
+            10.0.x
 
       - name: Restore dependencies
         run: dotnet restore All.sln

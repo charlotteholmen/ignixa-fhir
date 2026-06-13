@@ -112,6 +112,8 @@ NuGet enforces only the stable→pre-release case, via warning `NU5104` at pack 
 
 The beta→alpha case is not enforced by NuGet; it is enforced by the classification table below (every edge was checked against the actual `ProjectReference` graph) and re-checked at review time when dependencies change.
 
+**Scope (ADR 2607 amendment):** this rule governs the **public** NuGet.org feed only — Core, tools, and `Ignixa.Sidecar.Contracts`. Internal Application/DataLayer packages publish as stable regardless of dependency stability (see §5), so the `PackageStabilityGuardTests` stability-comparison check filters to `IsPublicFeed` projects and the internal pack step demotes `NU5104` to a warning.
+
 ### 5. Package Classification
 
 Classification of **all** packable projects. "Forced" means the dependency rule dictates the value; others are maturity judgments.
@@ -157,7 +159,7 @@ All four tools hardcode `<Version>0.1.0-preview</Version>`; these must be remove
 
 The alpha tier is currently empty. It remains the **default** for any packable project that does not declare `PackageStability`, so new packages enter the catalog as alpha until explicitly classified.
 
-**Internal packages (Application/DataLayer):** unmarked projects default to `alpha`. Mark individual packages `beta`/`stable` deliberately if internal consumers need the signal. Note: flipping internal packages from `1.0.0` to `1.0.0-alpha` changes what internal consumers resolve — review pinned references before rollout.
+**Internal packages (Application/DataLayer):** publish as **stable** (ADR 2607 amendment). `src/Application/Directory.Build.props` and `src/DataLayer/Directory.Build.props` set `PackageStability=stable` as the default for those trees, so internal consumers resolve `1.0.0` rather than a pre-release. The internal GitHub Packages feed is decoupled from the public NuGet.org stability ladder: an internal stable package may carry pre-release dependencies (e.g. the preview `ModelContextProtocol` SDK, or beta Core packages pulled in via `ProjectReference`). Consequently the internal pack step demotes `NU5104` to a warning (`-p:WarningsNotAsErrors=NU5104`), and the dependency-stability guard (§4) applies only to public-feed packages. `Ignixa.Sidecar.Contracts` is the exception — it declares its own stability and packs to the public feed.
 
 ### 6. Graduation Criteria
 
