@@ -31,18 +31,15 @@ public static class ImportEndpoints
     {
         // POST /tenant/{tenantId}/$import - Start a new import job
         app.MapPost("/tenant/{tenantId:int}/$import", StartImportAsync)
-            .WithName("StartImport")
-            .WithOpenApi();
+            .WithName("StartImport");
 
         // GET /tenant/{tenantId}/_import/{jobId} - Poll import job status
         app.MapGet("/tenant/{tenantId:int}/_import/{jobId}", GetImportStatusAsync)
-            .WithName("GetImportStatus")
-            .WithOpenApi();
+            .WithName("GetImportStatus");
 
         // DELETE /tenant/{tenantId}/_import/{jobId} - Cancel import job
         app.MapDelete("/tenant/{tenantId:int}/_import/{jobId}", CancelImportAsync)
-            .WithName("CancelImport")
-            .WithOpenApi();
+            .WithName("CancelImport");
     }
 
     /// <summary>

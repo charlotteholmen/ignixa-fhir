@@ -108,7 +108,7 @@ public static class CoreServicesRegistration
             services.Configure<ForwardedHeadersOptions>(options =>
             {
                 options.ForwardedHeaders |= ForwardedHeaders.XForwardedHost | ForwardedHeaders.XForwardedPrefix;
-                options.KnownNetworks.Clear();
+                options.KnownIPNetworks.Clear();
                 options.KnownProxies.Clear();
             });
         }

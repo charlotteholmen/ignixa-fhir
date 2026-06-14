@@ -19,8 +19,7 @@ public static class HealthCheckEndpoints
         endpoints.MapGet("/health/check", HandleHealthCheck)
             .WithName("HealthCheck")
             .Produces(StatusCodes.Status200OK, contentType: "application/json")
-            .Produces(StatusCodes.Status503ServiceUnavailable, contentType: "application/json")
-            .WithOpenApi();
+            .Produces(StatusCodes.Status503ServiceUnavailable, contentType: "application/json");
 
         return endpoints;
     }

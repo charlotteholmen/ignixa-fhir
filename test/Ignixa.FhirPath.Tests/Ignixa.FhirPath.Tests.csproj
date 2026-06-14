@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFrameworks>net9.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -35,7 +35,9 @@
     <FhirTestCasesMarker>$(FhirTestCasesDir)\.downloaded</FhirTestCasesMarker>
   </PropertyGroup>
 
-  <Target Name="DownloadFhirTestCases" BeforeTargets="BeforeBuild" Condition="!Exists('$(FhirTestCasesMarker)')">
+  <!-- Runs once in the outer (multi-targeting) build via DispatchToInnerBuilds so the parallel
+       per-TFM inner builds don't race on the shared testcases.zip; BeforeBuild covers single-TFM builds. -->
+  <Target Name="DownloadFhirTestCases" BeforeTargets="DispatchToInnerBuilds;BeforeBuild" Condition="!Exists('$(FhirTestCasesMarker)')">
     <Message Text="Downloading FHIR test cases from $(FhirTestCasesUrl)..." Importance="high" />
     <MakeDir Directories="$(MSBuildProjectDirectory)\TestData" />
     <DownloadFile SourceUrl="$(FhirTestCasesUrl)" DestinationFolder="$(MSBuildProjectDirectory)\TestData" DestinationFileName="testcases.zip" SkipUnchangedFiles="true" />

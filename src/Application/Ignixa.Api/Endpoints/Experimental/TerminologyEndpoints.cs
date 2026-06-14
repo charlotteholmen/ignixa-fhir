@@ -63,12 +63,8 @@ public static class TerminologyEndpoints
             .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status404NotFound, KnownContentTypes.ApplicationFhirJson)
-            .WithOpenApi(operation =>
-            {
-                operation.Summary = "$expand - Expand a ValueSet to a list of codes (tenant-explicit)";
-                operation.Description = "Returns the expansion of a ValueSet (list of codes). Uses pre-computed expansions when available.";
-                return operation;
-            });
+            .WithSummary("$expand - Expand a ValueSet to a list of codes (tenant-explicit)")
+            .WithDescription("Returns the expansion of a ValueSet (list of codes). Uses pre-computed expansions when available.");
 
         // POST /tenant/{tenantId}/ConceptMap/$translate
         tenantGroup.MapPost("/ConceptMap/$translate", HandleTranslateCodeTenant)
@@ -77,12 +73,8 @@ public static class TerminologyEndpoints
             .Accepts<TranslateRequestDto>(KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson)
-            .WithOpenApi(operation =>
-            {
-                operation.Summary = "$translate - Translate code using ConceptMap (tenant-explicit)";
-                operation.Description = "Translates a code from one code system to another using ConceptMap resources.";
-                return operation;
-            });
+            .WithSummary("$translate - Translate code using ConceptMap (tenant-explicit)")
+            .WithDescription("Translates a code from one code system to another using ConceptMap resources.");
 
         // POST /tenant/{tenantId}/CodeSystem/$subsumes
         tenantGroup.MapPost("/CodeSystem/$subsumes", HandleSubsumesTenant)
@@ -91,12 +83,8 @@ public static class TerminologyEndpoints
             .Accepts<SubsumesRequestDto>(KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson)
-            .WithOpenApi(operation =>
-            {
-                operation.Summary = "$subsumes - Test subsumption relationship between codes (tenant-explicit)";
-                operation.Description = "Tests if codeA subsumes codeB, is subsumed by codeB, is equivalent, or has no relationship.";
-                return operation;
-            });
+            .WithSummary("$subsumes - Test subsumption relationship between codes (tenant-explicit)")
+            .WithDescription("Tests if codeA subsumes codeB, is subsumed by codeB, is equivalent, or has no relationship.");
 
         return endpoints;
     }
@@ -125,12 +113,8 @@ public static class TerminologyEndpoints
             .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status404NotFound, KnownContentTypes.ApplicationFhirJson)
-            .WithOpenApi(operation =>
-            {
-                operation.Summary = "$expand - Expand a ValueSet to a list of codes";
-                operation.Description = "Returns the expansion of a ValueSet (list of codes). Uses pre-computed expansions when available.";
-                return operation;
-            });
+            .WithSummary("$expand - Expand a ValueSet to a list of codes")
+            .WithDescription("Returns the expansion of a ValueSet (list of codes). Uses pre-computed expansions when available.");
     }
 
     private static async Task<IResult> HandleExpandValueSet(
@@ -221,12 +205,8 @@ public static class TerminologyEndpoints
             .Accepts<TranslateRequestDto>(KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson)
-            .WithOpenApi(operation =>
-            {
-                operation.Summary = "$translate - Translate code using ConceptMap";
-                operation.Description = "Translates a code from one code system to another using ConceptMap resources.";
-                return operation;
-            });
+            .WithSummary("$translate - Translate code using ConceptMap")
+            .WithDescription("Translates a code from one code system to another using ConceptMap resources.");
     }
 
     private static async Task<IResult> HandleTranslateCode(
@@ -309,12 +289,8 @@ public static class TerminologyEndpoints
             .Accepts<SubsumesRequestDto>(KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status200OK, KnownContentTypes.ApplicationFhirJson)
             .Produces<object>(StatusCodes.Status400BadRequest, KnownContentTypes.ApplicationFhirJson)
-            .WithOpenApi(operation =>
-            {
-                operation.Summary = "$subsumes - Test subsumption relationship between codes";
-                operation.Description = "Tests if codeA subsumes codeB, is subsumed by codeB, is equivalent, or has no relationship.";
-                return operation;
-            });
+            .WithSummary("$subsumes - Test subsumption relationship between codes")
+            .WithDescription("Tests if codeA subsumes codeB, is subsumed by codeB, is equivalent, or has no relationship.");
     }
 
     private static async Task<IResult> HandleSubsumes(

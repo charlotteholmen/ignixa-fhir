@@ -26,28 +26,23 @@ public static class ExportEndpoints
     {
         // POST /$export - System-level export (single-tenant or auto-detected tenant)
         app.MapPost("/$export", StartExportSystemLevelAsync)
-            .WithName("StartExportSystemLevel")
-            .WithOpenApi();
+            .WithName("StartExportSystemLevel");
 
         // POST /tenant/{tenantId}/$export - Start a new export job
         app.MapPost("/tenant/{tenantId:int}/$export", StartExportAsync)
-            .WithName("StartExport")
-            .WithOpenApi();
+            .WithName("StartExport");
 
         // POST /Group/{groupId}/$export - Group-scoped export
         app.MapPost("/Group/{groupId}/$export", StartGroupExportAsync)
-            .WithName("StartGroupExport")
-            .WithOpenApi();
+            .WithName("StartGroupExport");
 
         // GET /tenant/{tenantId}/_export/{jobId} - Poll export job status
         app.MapGet("/tenant/{tenantId:int}/_export/{jobId}", GetExportStatusAsync)
-            .WithName("GetExportStatus")
-            .WithOpenApi();
+            .WithName("GetExportStatus");
 
         // DELETE /tenant/{tenantId}/_export/{jobId} - Cancel export job
         app.MapDelete("/tenant/{tenantId:int}/_export/{jobId}", CancelExportAsync)
-            .WithName("CancelExport")
-            .WithOpenApi();
+            .WithName("CancelExport");
     }
 
     /// <summary>

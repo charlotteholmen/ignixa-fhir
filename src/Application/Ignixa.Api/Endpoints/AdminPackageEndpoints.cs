@@ -22,16 +22,14 @@ public static class AdminPackageEndpoints
             .Accepts<LoadPackageRequest>("application/json")
             .Produces<LoadPackageResult>(StatusCodes.Status200OK, contentType: "application/json")
             .Produces(StatusCodes.Status400BadRequest)
-            .Produces(StatusCodes.Status500InternalServerError)
-            .WithOpenApi();
+            .Produces(StatusCodes.Status500InternalServerError);
 
         // GET /tenant/{tenantId}/admin/packages - List packages loaded in tenant
         endpoints.MapGet("/tenant/{tenantId}/admin/packages", HandleListPackages)
             .WithName("ListPackages")
             .WithDescription("List all loaded FHIR packages for a specific tenant")
             .Produces<ListPackagesResponse>(StatusCodes.Status200OK, contentType: "application/json")
-            .Produces(StatusCodes.Status500InternalServerError)
-            .WithOpenApi();
+            .Produces(StatusCodes.Status500InternalServerError);
 
         // DELETE /tenant/{tenantId}/admin/packages/{packageId}/{version} - Unload package from tenant
         endpoints.MapDelete("/tenant/{tenantId}/admin/packages/{packageId}/{version}", HandleUnloadPackage)
@@ -40,8 +38,7 @@ public static class AdminPackageEndpoints
             .Produces<UnloadPackageResponse>(StatusCodes.Status200OK, contentType: "application/json")
             .Produces(StatusCodes.Status400BadRequest)
             .Produces(StatusCodes.Status404NotFound)
-            .Produces(StatusCodes.Status500InternalServerError)
-            .WithOpenApi();
+            .Produces(StatusCodes.Status500InternalServerError);
 
         return endpoints;
     }
