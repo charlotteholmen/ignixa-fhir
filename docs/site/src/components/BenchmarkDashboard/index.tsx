@@ -63,23 +63,54 @@ const CATEGORY_MAP: Record<string, string> = {
   IgnixaScalar: 'Execution-Scalar',
   FirelyScalar: 'Execution-Scalar',
   HybridScalar: 'Execution-Scalar',
+  SqlOnFhirParsePatientView: 'SqlOnFhir-Parse',
+  SqlOnFhirCompilePatientView: 'SqlOnFhir-Compile',
+  SqlOnFhirCompileObservationView: 'SqlOnFhir-Compile',
+  SqlOnFhirCompileFhirPathPathsOnly: 'SqlOnFhir-Compile',
+  SqlOnFhirEvaluatePatient: 'SqlOnFhir-Evaluate',
+  SqlOnFhirEvaluateObservation: 'SqlOnFhir-Evaluate',
+  SqlOnFhirEvaluatePatientWithWhere: 'SqlOnFhir-Evaluate',
+  SqlOnFhirEvaluateBatch: 'SqlOnFhir-Evaluate',
+  SqlOnFhirExportCsv: 'SqlOnFhir-Export',
+  SqlOnFhirExportObservationCsv: 'SqlOnFhir-Export',
+  SqlOnFhirExportNdjson: 'SqlOnFhir-Export',
+  SqlOnFhirExportObservationNdjson: 'SqlOnFhir-Export',
+  SqlOnFhirExportParquet: 'SqlOnFhir-Export',
+  SqlOnFhirExportObservationParquet: 'SqlOnFhir-Export',
+  SqlOnFhirEndToEndCsv: 'SqlOnFhir-EndToEnd',
+  SqlOnFhirEndToEndNdjson: 'SqlOnFhir-EndToEnd',
+  SqlOnFhirEndToEndParquet: 'SqlOnFhir-EndToEnd',
+  IgnixaEvalSimplePrecompiled: 'Eval-Simple',
+  FirelyEvalSimplePrecompiled: 'Eval-Simple',
+  IgnixaEvalComplexPrecompiled: 'Eval-Complex',
+  FirelyEvalComplexPrecompiled: 'Eval-Complex',
+  IgnixaEvalSearchParamPrecompiled: 'Eval-SearchParam',
+  FirelyEvalSearchParamPrecompiled: 'Eval-SearchParam',
 };
 
 const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   'Compilation': 'Parsing FHIRPath expressions and compiling them into executable form. Lower is better.',
-  'Execution-Simple': 'Basic property access like Patient.name.family. Tests simple navigation performance.',
-  'Execution-Array': 'Array indexing operations like Patient.name[0].given. Tests collection access patterns.',
-  'Execution-Complex': 'Complex navigation with where() and first() functions. Tests filtering and advanced queries.',
-  'Execution-SearchParam': 'Search parameter extraction from resources. Tests real-world FHIR search scenarios.',
-  'Execution-Scalar': 'Scalar value extraction like Patient.birthDate. Tests primitive value access.',
+  'Execution-Simple': 'Basic property access like Patient.name.family. NOTE: the Firely series calls ITypedElement.Select(string) on a source-backed element, which rebuilds a PocoNode on every call (a performance anti-pattern) — its cost is model bridging, not evaluation. See the Eval-* categories for the pre-compiled, apples-to-apples engine comparison.',
+  'Execution-Array': 'Array indexing like Patient.name[0].given. NOTE: the Firely series here is the source-backed ITypedElement.Select(string) anti-pattern (per-call PocoNode rebuild); use the Eval-* categories for the fair engine comparison.',
+  'Execution-Complex': 'Complex navigation with where() and first(). NOTE: the Firely series here is the source-backed ITypedElement.Select(string) anti-pattern (per-call PocoNode rebuild); use the Eval-* categories for the fair engine comparison.',
+  'Execution-SearchParam': 'Search parameter extraction from resources. NOTE: the Firely series here is the source-backed ITypedElement.Select(string) anti-pattern (per-call PocoNode rebuild); use the Eval-* categories for the fair engine comparison.',
+  'Execution-Scalar': 'Scalar value extraction like Patient.birthDate. NOTE: the Firely series here is the source-backed ITypedElement.Select(string) anti-pattern (per-call PocoNode rebuild); use the Eval-* categories for the fair engine comparison.',
   'Hybrid': 'Firely SDK parsing + Ignixa FHIRPath engine. Demonstrates drop-in FHIRPath performance improvement.',
+  'SqlOnFhir-Parse': 'Deserializing ViewDefinition JSON into a navigable source node (no FHIRPath compilation).',
+  'SqlOnFhir-Compile': 'Compiling a ViewDefinition into an expression tree, including FHIRPath compilation of every column/where/forEach path. Compare against "FHIRPath paths only" to isolate the wrapper overhead.',
+  'SqlOnFhir-Evaluate': 'Evaluating ViewDefinitions against FHIR resources to produce tabular rows (flatten, forEach, WHERE).',
+  'SqlOnFhir-Export': 'Writing pre-evaluated rows to output formats: CSV, NDJSON, and Parquet.',
+  'SqlOnFhir-EndToEnd': 'Full pipeline: evaluate ViewDefinition + write output (CSV/NDJSON/Parquet).',
+  'Eval-Simple': 'RECOMMENDED Ignixa-vs-Firely comparison. Apples-to-apples evaluation: both engines pre-compile the expression once and the PocoNode is built once, so the benchmark measures evaluation only (Patient.name.family).',
+  'Eval-Complex': 'Apples-to-apples evaluation of a where()+first() expression; both engines pre-compiled, eval only.',
+  'Eval-SearchParam': 'Apples-to-apples evaluation of an Observation.component search-parameter expression; both engines pre-compiled, eval only.',
 };
 
 function detectImplementation(method: string, displayInfo: string): 'Ignixa' | 'Firely' | 'Hybrid' {
   if (method.startsWith('Hybrid') || displayInfo.toLowerCase().includes('hybrid')) {
     return 'Hybrid';
   }
-  if (method.startsWith('Ignixa') || displayInfo.toLowerCase().includes('ignixa')) {
+  if (method.startsWith('Ignixa') || method.startsWith('SqlOnFhir') || displayInfo.toLowerCase().includes('ignixa') || displayInfo.toLowerCase().includes('sqlonfhir')) {
     return 'Ignixa';
   }
   return 'Firely';
@@ -228,7 +259,9 @@ export default function BenchmarkDashboard(): JSX.Element {
           const benchmarkTypes = [
             'FhirPathBenchmarks',
             'NavigationBenchmarks',
-            'SerializationBenchmarks'
+            'SerializationBenchmarks',
+            'SqlOnFhirBenchmarks',
+            'ValidationBenchmarks'
           ];
 
           for (const benchType of benchmarkTypes) {
@@ -396,13 +429,16 @@ export default function BenchmarkDashboard(): JSX.Element {
       return [];
     }
 
-    // Use FhirPath benchmarks for the summary (it has Ignixa vs Firely comparisons)
-    const latestFile = benchmarkFiles.find(f => f.filename.includes('FhirPathBenchmarks'))
+    // Use the NEWEST FhirPath run for the summary (benchmarkFiles is sorted oldest-first,
+    // so .find() would return the oldest baseline and miss newer categories like Eval-*).
+    const fhirPathFiles = benchmarkFiles.filter(f => f.filename.includes('FhirPathBenchmarks'));
+    const latestFile = fhirPathFiles[fhirPathFiles.length - 1]
       || benchmarkFiles[benchmarkFiles.length - 1];
     console.log('Latest file for comparison:', latestFile.filename);
 
     const comparisons: Array<{
       category: string;
+      isAntiPattern: boolean;
       ignixaMethod: string;
       firelyMethod: string;
       hybridMethod?: string;
@@ -437,6 +473,7 @@ export default function BenchmarkDashboard(): JSX.Element {
       if (ignixa && firely) {
         comparisons.push({
           category,
+          isAntiPattern: category.startsWith('Execution-'),
           ignixaMethod: ignixa.method,
           firelyMethod: firely.method,
           hybridMethod: hybrid?.method,
@@ -452,7 +489,12 @@ export default function BenchmarkDashboard(): JSX.Element {
     }
 
     console.log('Comparisons generated:', comparisons.length, comparisons);
-    return comparisons.sort((a, b) => b.speedup - a.speedup);
+    // Headline the apples-to-apples comparisons (Eval-*, Compilation) first; push the
+    // source-backed Execution-* anti-pattern cards to the end.
+    return comparisons.sort((a, b) => {
+      if (a.isAntiPattern !== b.isAntiPattern) return a.isAntiPattern ? 1 : -1;
+      return b.speedup - a.speedup;
+    });
   }, [processedData, benchmarkFiles]);
 
   function extractBaseName(displayInfo: string): string {
@@ -652,13 +694,23 @@ export default function BenchmarkDashboard(): JSX.Element {
       <section className={styles.summarySection}>
         <h2>Latest Run Summary</h2>
         <div className={styles.comparisonGrid}>
-          {latestComparison.map((comp) => (
+          {latestComparison.filter((comp) => !comp.isAntiPattern).map((comp) => (
             <div key={comp.category} className={styles.comparisonCard}>
               <h3>{comp.category}</h3>
               <div className={styles.speedupBadge}>
                 <span className={styles.speedupValue}>{formatMultiplier(comp.speedup)}</span>
                 <span className={styles.speedupLabel}>faster</span>
               </div>
+              {comp.isAntiPattern && (
+                <div style={{ fontSize: '0.75rem', color: '#e67e22', marginTop: '0.25rem', lineHeight: 1.3 }}>
+                  ⚠ Firely source-backed <code>Select(string)</code> anti-pattern — this gap is per-call model bridging, not evaluation. See the <strong>Eval-*</strong> cards for the apples-to-apples engine comparison.
+                </div>
+              )}
+              {comp.category.startsWith('Eval-') && (
+                <div style={{ fontSize: '0.75rem', color: '#27ae60', marginTop: '0.25rem', lineHeight: 1.3 }}>
+                  ✓ Apples-to-apples: both engines pre-compiled, evaluation only.
+                </div>
+              )}
               <div className={styles.comparisonDetails}>
                 <div className={styles.detailRow}>
                   <span className={styles.ignixa}>Ignixa:</span>
@@ -815,8 +867,10 @@ export default function BenchmarkDashboard(): JSX.Element {
             <tbody>
               {processedData
                 .filter((b) => {
-                  // Use same file as comparison summary (FhirPath benchmarks)
-                  const latestFile = benchmarkFiles.find(f => f.filename.includes('FhirPathBenchmarks'))
+                  // Use the NEWEST FhirPath run, same as the comparison summary
+                  // (benchmarkFiles is sorted oldest-first, so .find() returns the oldest baseline).
+                  const fhirPathFiles = benchmarkFiles.filter(f => f.filename.includes('FhirPathBenchmarks'));
+                  const latestFile = fhirPathFiles[fhirPathFiles.length - 1]
                     || benchmarkFiles[benchmarkFiles.length - 1];
                   return b.runId === latestFile?.filename;
                 })
