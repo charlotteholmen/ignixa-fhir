@@ -1,12 +1,19 @@
 // -------------------------------------------------------------------------------------------------
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License (MIT). See LICENSE in the repo root for license information.
+// Copyright (c) Ignixa Contributors. All rights reserved.
+// Licensed under the MIT License. See LICENSE in the repo root for license information.
 // -------------------------------------------------------------------------------------------------
 
 using Autofac;
 using Ignixa.Abstractions;
+using ISchema = Ignixa.Abstractions.ISchema;
 using Ignixa.Application.Events.Package;
 using Ignixa.Application.Features.Experimental.Configuration;
+using Ignixa.Application.Features.Experimental.GraphQl.Contracts;
+using Ignixa.Application.Features.Experimental.GraphQl.DataLoaders;
+using Ignixa.Application.Features.Experimental.GraphQl.Events;
+using Ignixa.Application.Features.Experimental.GraphQl.Execution;
+using Ignixa.Application.Features.Experimental.GraphQl.Resolvers;
+using Ignixa.Application.Features.Experimental.GraphQl.Schema;
 using Ignixa.Application.Features.Experimental.Ips.Api;
 using Ignixa.Application.Features.Experimental.Ips.Events;
 using Ignixa.Application.Features.Experimental.Ips.Generator;
@@ -16,6 +23,7 @@ using Ignixa.Application.Features.Experimental.Terminology.Expand;
 using Ignixa.Application.Features.Experimental.Terminology.Subsumes;
 using Ignixa.Application.Features.Experimental.Terminology.Translate;
 using Ignixa.Application.Features.Experimental.Transform;
+using Ignixa.Application.Features.Metadata;
 using Ignixa.Application.Features.Experimental.Transform.Events;
 using Ignixa.Application.Features.Search;
 using Ignixa.Application.Infrastructure;
@@ -29,6 +37,7 @@ using Ignixa.NarrativeGenerator;
 using Ignixa.Serialization.SourceNodes;
 using Medino;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Ignixa.Application.Features.Experimental.Infrastructure;
@@ -81,6 +90,17 @@ public static class ExperimentalAutofacRegistration
         if (options.Features.Summary.Enabled)
         {
             builder.RegisterIpsHandlers();
+        }
+
+        // Feature: GraphQL - $graphql operation
+        if (options.Features.GraphQl.Enabled)
+        {
+            builder.RegisterGraphQlHandlers();
+
+            // Advertise $graphql in CapabilityStatement when GraphQL is enabled
+            builder.RegisterType<GraphQlFeature>()
+                .As<IPackageFeature>()
+                .SingleInstance();
         }
 
         return builder;
@@ -212,6 +232,42 @@ public static class ExperimentalAutofacRegistration
 
         // Package loaded event handler to register IPS strategies
         builder.RegisterType<PackageInstalledStrategyRegistrationHandler>()
+            .As<INotificationHandler<PackageLoadedEvent>>()
+            .InstancePerDependency();
+    }
+
+    private static void RegisterGraphQlHandlers(this ContainerBuilder builder)
+    {
+        builder.RegisterType<ResourceResolver>()
+            .InstancePerLifetimeScope();
+
+        builder.RegisterType<MutationResolver>()
+            .InstancePerLifetimeScope();
+
+        builder.RegisterType<SearchResolver>()
+            .InstancePerLifetimeScope();
+
+        builder.RegisterType<ResourceDataLoader>()
+            .InstancePerLifetimeScope();
+
+        builder.RegisterType<GraphQlExecutionService>()
+            .As<IGraphQlExecutionService>()
+            .InstancePerLifetimeScope();
+
+        builder.Register(c =>
+        {
+            var sp = c.Resolve<IServiceProvider>();
+            var modules = new List<IFhirTypeModule>();
+            foreach (var version in GraphQlNamingHelper.SupportedVersions)
+            {
+                var module = sp.GetKeyedService<IFhirTypeModule>(version);
+                if (module is not null)
+                    modules.Add(module);
+            }
+            return (IReadOnlyList<IFhirTypeModule>)modules;
+        }).SingleInstance();
+
+        builder.RegisterType<PackageLoadedSchemaInvalidationHandler>()
             .As<INotificationHandler<PackageLoadedEvent>>()
             .InstancePerDependency();
     }
