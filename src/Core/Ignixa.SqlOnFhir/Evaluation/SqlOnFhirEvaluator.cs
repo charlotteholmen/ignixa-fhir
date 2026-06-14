@@ -39,28 +39,39 @@ public class SqlOnFhirEvaluator
         IElement resource,
         IReadOnlyDictionary<string, string>? variables = null)
     {
-        ArgumentNullException.ThrowIfNull(viewDefinitionNode);
         ArgumentNullException.ThrowIfNull(resource);
+        return EvaluateBatch(viewDefinitionNode, [resource], variables);
+    }
+
+    /// <summary>
+    /// Evaluates a ViewDefinition against multiple FHIR resources with correct UNION ALL ordering.
+    /// When a top-level select contains unionAll without forEach, results are ordered by branch
+    /// across all resources (SQL UNION ALL semantics) rather than per-resource interleaving.
+    /// </summary>
+    public IEnumerable<Dictionary<string, object?>> EvaluateBatch(
+        ISourceNavigator viewDefinitionNode,
+        IEnumerable<IElement> resources,
+        IReadOnlyDictionary<string, string>? variables = null)
+    {
+        ArgumentNullException.ThrowIfNull(viewDefinitionNode);
+        ArgumentNullException.ThrowIfNull(resources);
+
+        var resourceType = viewDefinitionNode.Children("resource").FirstOrDefault()?.Text ?? "Unknown";
 
         try
         {
-            // Use a cache key based on the resource type from the ViewDefinition
-            var resourceType = viewDefinitionNode.Children("resource").FirstOrDefault()?.Text ?? "Unknown";
             var cacheKey = $"{resourceType}_{viewDefinitionNode.GetHashCode()}";
 
-            // Get or compile the ViewDefinitionExpression
             if (!_compiledViewDefinitions.TryGetValue(cacheKey, out var viewExpr))
             {
                 viewExpr = ViewDefinitionExpressionParser.Parse(viewDefinitionNode);
                 _compiledViewDefinitions[cacheKey] = viewExpr;
             }
 
-            // Use the visitor to evaluate
-            return _visitor.Evaluate(viewExpr, resource, variables);
+            return _visitor.EvaluateBatch(viewExpr, resources, variables);
         }
         catch (Exception ex)
         {
-            var resourceType = viewDefinitionNode.Children("resource").FirstOrDefault()?.Text ?? "Unknown";
             throw new InvalidOperationException(
                 $"Failed to evaluate ViewDefinition for resource type '{resourceType}'",
                 ex);

@@ -40,6 +40,76 @@ internal class SqlOnFhirEvaluationVisitor
         return EvaluateViewDefinition(viewDef, resource, context);
     }
 
+    /// <summary>
+    /// Evaluates a ViewDefinition expression against multiple resources with correct UNION ALL ordering.
+    /// When a top-level select has unionAll without forEach, each branch is evaluated across all
+    /// resources before moving to the next branch (SQL UNION ALL semantics).
+    /// </summary>
+    public IEnumerable<Dictionary<string, object?>> EvaluateBatch(
+        ViewDefinitionExpression viewDef,
+        IEnumerable<IElement> resources,
+        IReadOnlyDictionary<string, string>? variables = null)
+    {
+        var resourceList = resources.ToList();
+        if (resourceList.Count == 0)
+            return [];
+
+        var unionAllIndex = IndexOfBatchOrderedUnionAllSelect(viewDef);
+        if (unionAllIndex < 0)
+            return resourceList.SelectMany(r => Evaluate(viewDef, r, variables)).ToList();
+
+        return EvaluateBatchWithUnionAllOrdering(viewDef, unionAllIndex, resourceList, variables);
+    }
+
+    private static int IndexOfBatchOrderedUnionAllSelect(ViewDefinitionExpression viewDef)
+    {
+        for (int i = 0; i < viewDef.Select.Length; i++)
+            if (IsBatchOrderedUnionAllSelect(viewDef.Select[i]))
+                return i;
+        return -1;
+    }
+
+    private static bool IsBatchOrderedUnionAllSelect(SelectExpression s)
+        => !s.UnionAll.IsEmpty
+           && s.ForEach == null
+           && s.ForEachOrNull == null
+           && s.Repeat.IsEmpty
+           && s.Columns.IsEmpty
+           && s.NestedSelect.IsEmpty
+           && s.UnionAll.All(branch =>
+                branch.ForEach == null
+                && branch.ForEachOrNull == null
+                && branch.Repeat.IsEmpty);
+
+    private IEnumerable<Dictionary<string, object?>> EvaluateBatchWithUnionAllOrdering(
+        ViewDefinitionExpression viewDef,
+        int selectIndex,
+        List<IElement> resources,
+        IReadOnlyDictionary<string, string>? variables)
+    {
+        var unionAllSelect = viewDef.Select[selectIndex];
+
+        var result = new List<Dictionary<string, object?>>();
+
+        // SQL UNION ALL semantics: evaluate every resource through one branch before the next.
+        // Each branch is evaluated as a standalone single-branch view so WHERE clauses, sibling
+        // selects, and nested selects keep their normal per-resource behaviour — only the branch
+        // dimension is reordered to the outer loop.
+        foreach (var branch in unionAllSelect.UnionAll)
+        {
+            var singleBranchSelect = unionAllSelect with { UnionAll = [branch] };
+            var branchView = viewDef with { Select = viewDef.Select.SetItem(selectIndex, singleBranchSelect) };
+
+            foreach (var resource in resources)
+            {
+                var context = CreateEvaluationContext(branchView, resource, variables);
+                result.AddRange(EvaluateViewDefinition(branchView, resource, context));
+            }
+        }
+
+        return result;
+    }
+
     private static EvaluationContext CreateEvaluationContext(
         ViewDefinitionExpression viewDef,
         IElement resource,
