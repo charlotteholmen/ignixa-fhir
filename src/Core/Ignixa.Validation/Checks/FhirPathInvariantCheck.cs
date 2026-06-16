@@ -32,6 +32,7 @@ public class FhirPathInvariantCheck : IValidationCheck
     private readonly IReadOnlyList<string> _appliesTo;
     private readonly ILogger? _logger;
     private readonly Lazy<FhirPathEvaluator> _evaluator;
+    private readonly Lazy<EvaluationContext> _evaluationContext;
     private readonly Lazy<FhirPath.Expressions.Expression?> _compiledExpression;
 
     /// <summary>
@@ -74,6 +75,11 @@ public class FhirPathInvariantCheck : IValidationCheck
 
         // Lazy compilation - parse FHIRPath expression only when first needed
         _evaluator = new Lazy<FhirPathEvaluator>(() => new FhirPathEvaluator());
+
+        // Instance selectors (Type { ... }) delegate object construction to a
+        // schema-backed factory so created instances are first-class nodes.
+        _evaluationContext = new Lazy<EvaluationContext>(() =>
+            new EvaluationContext().WithInstanceFactory(new SourceNodeInstanceFactory(_schema)));
         _compiledExpression = new Lazy<FhirPath.Expressions.Expression?>(() =>
         {
             try
@@ -165,7 +171,7 @@ public class FhirPathInvariantCheck : IValidationCheck
         try
         {
             // Evaluate the FHIRPath expression
-            var result = _evaluator.Value.Evaluate(element, expression);
+            var result = _evaluator.Value.Evaluate(element, expression, _evaluationContext.Value);
 
             // Convert result to boolean
             // Per FHIRPath spec: empty result = false, single boolean true = true, all else = false
