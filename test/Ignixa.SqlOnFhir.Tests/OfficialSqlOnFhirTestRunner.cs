@@ -90,11 +90,21 @@ public class OfficialSqlOnFhirTestRunner(SqlOnFhirReportCollector collector)
 
         if (sqlTestCase.ViewNode is null)
         {
-            _collector.Record(reportKey, sqlTestCase.Title, new SqlOnFhirTestCaseOutcome(false, "skipped"));
+            _collector.Record(reportKey, sqlTestCase.Title, SqlOnFhirTestCaseOutcome.Skipped());
             return;
         }
 
-        var outcome = SqlOnFhirTestCaseEvaluator.Run(testFile, sqlTestCase);
+        SqlOnFhirTestCaseOutcome outcome;
+        try
+        {
+            outcome = SqlOnFhirTestCaseEvaluator.Run(testFile, sqlTestCase);
+        }
+        catch (Exception ex)
+        {
+            _collector.Record(reportKey, sqlTestCase.Title, SqlOnFhirTestCaseOutcome.Fail($"Unhandled exception: {ex.Message}"));
+            throw;
+        }
+
         _collector.Record(reportKey, sqlTestCase.Title, outcome);
         Assert.True(outcome.Passed, outcome.Reason);
     }

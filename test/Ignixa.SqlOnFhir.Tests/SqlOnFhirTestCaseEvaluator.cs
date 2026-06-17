@@ -34,7 +34,7 @@ public static class SqlOnFhirTestCaseEvaluator
 
         if (testCase.ViewNode is null)
         {
-            return new SqlOnFhirTestCaseOutcome(false, "skipped");
+            return SqlOnFhirTestCaseOutcome.Skipped();
         }
 
         var evaluator = new SqlOnFhirEvaluator();
@@ -70,8 +70,8 @@ public static class SqlOnFhirTestCaseEvaluator
         }
 
         return exceptionThrown
-            ? new SqlOnFhirTestCaseOutcome(true, null)
-            : new SqlOnFhirTestCaseOutcome(false, "Expected an error but none was thrown");
+            ? SqlOnFhirTestCaseOutcome.Pass()
+            : SqlOnFhirTestCaseOutcome.Fail("Expected an error but none was thrown");
     }
 
     private static SqlOnFhirTestCaseOutcome EvaluateExpectRows(
@@ -92,7 +92,7 @@ public static class SqlOnFhirTestCaseEvaluator
             var schemaFailure = ValidateSchema(expectedColumns, actualColumnNames);
             if (schemaFailure is not null)
             {
-                return new SqlOnFhirTestCaseOutcome(false, schemaFailure);
+                return SqlOnFhirTestCaseOutcome.Fail(schemaFailure);
             }
         }
 
@@ -100,8 +100,8 @@ public static class SqlOnFhirTestCaseEvaluator
 
         var rowFailure = CompareRows(testCase.ExpectedRows, actualResults, testCase.ExpectedColumns);
         return rowFailure is null
-            ? new SqlOnFhirTestCaseOutcome(true, null)
-            : new SqlOnFhirTestCaseOutcome(false, rowFailure);
+            ? SqlOnFhirTestCaseOutcome.Pass()
+            : SqlOnFhirTestCaseOutcome.Fail(rowFailure);
     }
 
     private static string? ValidateSchema(List<string> expectedColumns, List<string> actualColumnNames)

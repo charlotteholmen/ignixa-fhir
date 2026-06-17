@@ -19,6 +19,7 @@ public sealed class SqlOnFhirReportCollector : IDisposable
 
     private readonly Lock _gate = new();
     private readonly Dictionary<string, SqlOnFhirFileReport> _reports = [];
+    private bool _written;
 
     /// <summary>
     /// Records the outcome of a single test case under its source file (keyed by file name
@@ -62,12 +63,32 @@ public sealed class SqlOnFhirReportCollector : IDisposable
 
     public void Dispose()
     {
-        var outputPath = ResolveOutputPath();
+        lock (_gate)
+        {
+            if (_written)
+            {
+                return;
+            }
+        }
 
+        WriteReport(ResolveOutputPath());
+    }
+
+    /// <summary>
+    /// Serializes a snapshot of the accumulated reports and writes them to <paramref name="outputPath"/>.
+    /// A failure to write is logged and swallowed so a report-write problem never throws out of
+    /// fixture disposal. Exposed (internal) so tests can drive the write path with an explicit path
+    /// without touching the <c>SOF_TEST_REPORT_PATH</c> environment variable or <see cref="Dispose"/>.
+    /// Once the report has been written, a subsequent <see cref="Dispose"/> is a no-op so an explicit
+    /// write is not clobbered.
+    /// </summary>
+    internal void WriteReport(string outputPath)
+    {
         Dictionary<string, SqlOnFhirFileReport> snapshot;
         lock (_gate)
         {
             snapshot = new Dictionary<string, SqlOnFhirFileReport>(_reports);
+            _written = true;
         }
 
         try
@@ -75,9 +96,10 @@ public sealed class SqlOnFhirReportCollector : IDisposable
             var json = JsonSerializer.Serialize(snapshot, SerializerOptions);
             File.WriteAllText(outputPath, json);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException
+            or ArgumentException or NotSupportedException or System.Security.SecurityException)
         {
-            Console.Error.WriteLine($"Failed to write SQL-on-FHIR test report to '{outputPath}': {ex.Message}");
+            Console.Error.WriteLine($"::error::Failed to write SQL-on-FHIR test report to '{outputPath}': {ex}");
         }
     }
 }

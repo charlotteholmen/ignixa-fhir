@@ -15,6 +15,6 @@ public class SqlOnFhirFileReport
 {
 #pragma warning disable CA1002, CA2227 // Serialization shape mirrors the sql-on-fhir.js report format.
     [JsonPropertyName("tests")]
-    public List<SqlOnFhirTestEntry> Tests { get; set; } = [];
+    public List<SqlOnFhirTestEntry> Tests { get; } = [];
 #pragma warning restore CA1002, CA2227
 }

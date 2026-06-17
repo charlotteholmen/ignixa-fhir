@@ -11,6 +11,8 @@ namespace Ignixa.SqlOnFhir.Tests;
 /// <summary>
 /// Verifies the serialized report has the sql-on-fhir.js shape:
 /// <c>tests</c>/<c>name</c>/<c>result</c>/<c>passed</c>, with <c>reason</c> omitted when null.
+/// Assertions navigate the parsed JSON structure rather than matching raw substrings so they
+/// are not coupled to serializer formatting.
 /// </summary>
 public class SqlOnFhirReportSerializationTests
 {
@@ -20,28 +22,31 @@ public class SqlOnFhirReportSerializationTests
     public void GivenPassingAndFailingEntries_WhenSerialized_ThenMatchesReportFormat()
     {
         // Arrange
-        var report = new Dictionary<string, SqlOnFhirFileReport>
-        {
-            ["logic.json"] = new()
-            {
-                Tests =
-                [
-                    new SqlOnFhirTestEntry("filtering with 'and'", new SqlOnFhirTestResult(true, null)),
-                    new SqlOnFhirTestEntry("filtering with 'or'", new SqlOnFhirTestResult(false, "skipped"))
-                ]
-            }
-        };
+        var fileReport = new SqlOnFhirFileReport();
+        fileReport.Tests.Add(new SqlOnFhirTestEntry("filtering with 'and'", new SqlOnFhirTestResult(true, null)));
+        fileReport.Tests.Add(new SqlOnFhirTestEntry("filtering with 'or'", new SqlOnFhirTestResult(false, "skipped")));
+
+        var report = new Dictionary<string, SqlOnFhirFileReport> { ["logic.json"] = fileReport };
 
         // Act
         var json = JsonSerializer.Serialize(report, SerializerOptions);
 
         // Assert
-        Assert.Contains("\"logic.json\"", json, StringComparison.Ordinal);
-        Assert.Contains("\"tests\"", json, StringComparison.Ordinal);
-        Assert.Contains("\"name\"", json, StringComparison.Ordinal);
-        Assert.Contains("\"result\"", json, StringComparison.Ordinal);
-        Assert.Contains("\"passed\"", json, StringComparison.Ordinal);
-        Assert.Contains("\"reason\": \"skipped\"", json, StringComparison.Ordinal);
+        using var document = JsonDocument.Parse(json);
+        var tests = document.RootElement.GetProperty("logic.json").GetProperty("tests");
+
+        var first = tests[0];
+        Assert.Equal("filtering with 'and'", first.GetProperty("name").GetString());
+        var firstResult = first.GetProperty("result");
+        Assert.True(firstResult.GetProperty("passed").GetBoolean());
+        Assert.False(firstResult.TryGetProperty("reason", out _));
+
+        var second = tests[1];
+        Assert.Equal("filtering with 'or'", second.GetProperty("name").GetString());
+        var secondResult = second.GetProperty("result");
+        Assert.False(secondResult.GetProperty("passed").GetBoolean());
+        Assert.True(secondResult.TryGetProperty("reason", out var reason));
+        Assert.Equal("skipped", reason.GetString());
     }
 
     [Fact]
@@ -54,8 +59,9 @@ public class SqlOnFhirReportSerializationTests
         var json = JsonSerializer.Serialize(result, SerializerOptions);
 
         // Assert
-        Assert.Contains("\"passed\"", json, StringComparison.Ordinal);
-        Assert.DoesNotContain("reason", json, StringComparison.Ordinal);
+        using var document = JsonDocument.Parse(json);
+        Assert.True(document.RootElement.GetProperty("passed").GetBoolean());
+        Assert.False(document.RootElement.TryGetProperty("reason", out _));
     }
 
     [Fact]
@@ -68,6 +74,9 @@ public class SqlOnFhirReportSerializationTests
         var json = JsonSerializer.Serialize(result, SerializerOptions);
 
         // Assert
-        Assert.Contains("\"reason\": \"row mismatch\"", json, StringComparison.Ordinal);
+        using var document = JsonDocument.Parse(json);
+        Assert.False(document.RootElement.GetProperty("passed").GetBoolean());
+        Assert.True(document.RootElement.TryGetProperty("reason", out var reason));
+        Assert.Equal("row mismatch", reason.GetString());
     }
 }
