@@ -142,6 +142,7 @@ docs/features/
 | [search](search/) | Partial | query-parsing, compartment-wildcard, +6 more |
 | [serialization](serialization/) | Viable | model-refactoring, viewdefinition-support |
 | [smart-on-fhir](smart-on-fhir/) | Research | identity-provider, v2-implementation |
+| [sql-on-fhir](sql-on-fhir/) | Partial | sqlquery-component, http-api-operations |
 | [status-reports](status-reports/) | Complete | october-2025-gaps, roadmap-gaps, legacy-analysis, +3 more |
 | [storage](storage/) | Partial | ndjson-storage, v2-design, decoupled-indexing, file-based-search |
 | [storage-cosmos](storage-cosmos/) | Research | petabyte-architecture, transaction-table, +2 more |
