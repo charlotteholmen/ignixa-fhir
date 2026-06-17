@@ -8,6 +8,7 @@ using System.Text.Json.Nodes;
 using Ignixa.Abstractions;
 using Bogus;
 using Ignixa.FhirFakes.Builders.Profiles;
+using Ignixa.FhirFakes.EdgeCases;
 using Ignixa.FhirFakes.Population;
 using Ignixa.Serialization;
 using Ignixa.Serialization.Models;
@@ -45,7 +46,7 @@ namespace Ignixa.FhirFakes.Builders;
 [SuppressMessage("Security", "CA5394:Do not use insecure randomness", Justification = "Random is used for test data generation only")]
 public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
 {
-    private readonly Faker _faker = new();
+    private Faker _faker = new();
     private readonly LocalBasedNameGenerator? _nameGenerator;
     private readonly DemographicsDataProvider? _demographics;
 
@@ -91,6 +92,12 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
     // Profile-specific configuration (Attributes Pattern)
     private IPatientProfile _profile = DefaultPatientProfile.Instance;
     private readonly Dictionary<string, object> _profileAttributes = new();
+
+    // Edge-case configuration
+    private bool _edgeCasesEnabled;
+    private IEnumerable<string>? _edgeCaseSelectors;
+    private int? _edgeCaseSeed;
+    private int? _baseSeed; // set by WithSeed for deriving edge-case seed
 
     // === Public Read-Only Access to Configured Values ===
     // These enable PopulationGenerator and other consumers to access sampled demographics
@@ -162,6 +169,54 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
 
         _demographics = demographics;
         _nameGenerator = nameGenerator;
+    }
+
+    /// <summary>
+    /// Seeds the builder's randomness so that <see cref="Build"/> is reproducible.
+    /// </summary>
+    /// <param name="seed">The seed value for the underlying randomizer.</param>
+    /// <returns>This builder for method chaining.</returns>
+    /// <remarks>
+    /// Seeding is opt-in. When set, the builder uses a single seeded <see cref="Bogus.Randomizer"/>
+    /// as the sole source of randomness (names, address, BMI, telecom, and the default id).
+    /// Given the same seed and the same explicit configuration, <see cref="Build"/> produces
+    /// byte-identical JSON except for the server-managed <c>meta.lastUpdated</c> wall-clock value.
+    /// </remarks>
+    public PatientBuilder WithSeed(int seed)
+    {
+        _faker = new Faker { Random = new Randomizer(seed) };
+        _baseSeed = seed;
+        return this;
+    }
+
+    /// <summary>
+    /// The mutation manifest from the most recent <see cref="Build"/> call that had edge cases enabled.
+    /// Null when edge cases were not enabled, or before the first Build().
+    /// </summary>
+    public MutationManifest? LastEdgeCaseManifest { get; private set; }
+
+    /// <summary>
+    /// Enables edge-case perturbation on the next <see cref="Build"/> call.
+    /// Edge cases are applied after the resource is fully constructed.
+    /// </summary>
+    /// <param name="seed">
+    /// Optional seed for the edge-case pipeline. When omitted, the seed is derived from
+    /// <see cref="WithSeed"/> if set (using the same base seed value), otherwise a random
+    /// seed is drawn from the builder's randomizer. Providing an explicit seed here or via
+    /// <see cref="WithSeed"/> makes the full build end-to-end reproducible.
+    /// </param>
+    /// <param name="selectors">
+    /// Optional family or category selectors (e.g., "temporal", "unicode.rtl").
+    /// When null or empty, all registered strategies are applied.
+    /// Matching is case-insensitive.
+    /// </param>
+    /// <returns>This builder for method chaining.</returns>
+    public PatientBuilder WithEdgeCases(int? seed = null, IEnumerable<string>? selectors = null)
+    {
+        _edgeCasesEnabled = true;
+        _edgeCaseSelectors = selectors;
+        _edgeCaseSeed = seed;
+        return this;
     }
 
     // === Demographic Configuration ===
@@ -651,17 +706,17 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
         _profile = city.GetProfile();
 
         // Sample profile-specific attributes
-        var sampledAttributes = _demographics.SampleProfileAttributes(city);
+        var sampledAttributes = _demographics.SampleProfileAttributes(city, _faker.Random);
         foreach (var (key, value) in sampledAttributes)
         {
             _profileAttributes[key] = value;
         }
 
         // Sample core demographics
-        _age = _demographics.SampleAge(city);
-        _gender = _demographics.SampleGender(city);
-        _zipCode = _demographics.SampleZipCode(city);
-        _areaCode = _demographics.SampleAreaCode(city);
+        _age = _demographics.SampleAge(city, _faker.Random);
+        _gender = _demographics.SampleGender(city, _faker.Random);
+        _zipCode = _demographics.SampleZipCode(city, _faker.Random);
+        _areaCode = _demographics.SampleAreaCode(city, _faker.Random);
         _city = city.Name;
         _state = city.State;
         _country = city.Country;
@@ -708,7 +763,8 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
         var (given, family) = _profile.NameGenerationStrategy.GenerateName(
             gender,
             _profileAttributes,
-            _profile.CountryCode);
+            _profile.CountryCode,
+            _faker.Random);
         _givenName = given;
         _familyName = family;
 
@@ -722,12 +778,12 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
     /// <returns>This builder for method chaining</returns>
     public PatientBuilder WithRealisticBMI()
     {
-        var random = Random.Shared.NextDouble();
+        var random = _faker.Random.Double();
         _bmi = random switch
         {
-            < 0.35 => (decimal)Random.Shared.Next(19, 25),  // Normal (35%)
-            < 0.69 => (decimal)Random.Shared.Next(25, 30),  // Overweight (34%)
-            _ => (decimal)Random.Shared.Next(30, 42)        // Obese (31%)
+            < 0.35 => (decimal)_faker.Random.Int(19, 24),  // Normal (35%)
+            < 0.69 => (decimal)_faker.Random.Int(25, 29),  // Overweight (34%)
+            _ => (decimal)_faker.Random.Int(30, 41)        // Obese (31%)
         };
         return this;
     }
@@ -745,7 +801,7 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
         var patientJson = new JsonObject
         {
             ["resourceType"] = "Patient",
-            ["id"] = Id ?? Guid.NewGuid().ToString(),
+            ["id"] = Id ?? _faker.Random.Guid().ToString(),
             ["meta"] = BuildMeta(),
             ["gender"] = _gender ?? PatientBuilderConstants.Gender.Unknown,
             ["birthDate"] = _birthDateString ?? CalculateBirthDate().ToString("yyyy-MM-dd"),
@@ -804,10 +860,26 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
             patientJson["identifier"] = BuildIdentifiers();
         }
 
-        return JsonSourceNodeFactory.Parse<ResourceJsonNode>(patientJson);
+        var resource = JsonSourceNodeFactory.Parse<ResourceJsonNode>(patientJson);
+        ApplyEdgeCasesIfEnabled(resource);
+        return resource;
     }
 
     // === Private Helper Methods ===
+
+    private void ApplyEdgeCasesIfEnabled(ResourceJsonNode resource)
+    {
+        if (!_edgeCasesEnabled)
+        {
+            return;
+        }
+
+        var effectiveSeed = _edgeCaseSeed ?? _baseSeed ?? _faker.Random.Int();
+        var catalog = EdgeCaseCatalog.CreateDefault();
+        var strategies = catalog.Resolve(_edgeCaseSelectors);
+        var pipeline = new EdgeCasePipeline(effectiveSeed, SchemaProvider);
+        LastEdgeCaseManifest = pipeline.Apply(resource, strategies);
+    }
 
     private void CalculateDerivedFields()
     {
@@ -821,7 +893,8 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
                 var (given, family) = _profile.NameGenerationStrategy.GenerateName(
                     gender,
                     _profileAttributes,
-                    _profile.CountryCode);
+                    _profile.CountryCode,
+                    _faker.Random);
                 _givenName ??= given;
                 _familyName ??= family;
             }
@@ -944,7 +1017,7 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
 
     private JsonArray BuildTelecom()
     {
-        var phoneNumber = $"{_areaCode}-{Random.Shared.Next(100, 1000)}-{Random.Shared.Next(1000, 10000)}";
+        var phoneNumber = $"{_areaCode}-{_faker.Random.Int(100, 999)}-{_faker.Random.Int(1000, 9999)}";
         var telecomJson = new JsonObject
         {
             ["system"] = "phone",
@@ -979,15 +1052,6 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
         }
 
         return extensions;
-    }
-
-    /// <summary>
-    /// Determines if the patient is from the US (for USCore extension eligibility).
-    /// </summary>
-    private bool IsUSPatient()
-    {
-        // Country defaults to "US" if not set, so treat null/empty as US
-        return string.IsNullOrEmpty(_country) || _country == "US";
     }
 
     // === Birth Date Validation and Calculation Methods ===

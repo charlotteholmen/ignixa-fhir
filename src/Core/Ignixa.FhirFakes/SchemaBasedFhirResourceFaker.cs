@@ -51,6 +51,7 @@ public class SchemaBasedFhirResourceFaker
     private readonly IFhirSchemaProvider _schemaProvider;
     private readonly Faker _faker;
     private readonly Random _random;
+    private readonly int? _seed;
     private string? _tag;
 
     /// <summary>
@@ -65,11 +66,41 @@ public class SchemaBasedFhirResourceFaker
     /// </summary>
     public string? Tag => _tag;
 
+    /// <summary>
+    /// Controls how densely generated resources are populated. Defaults to
+    /// <see cref="GenerationDensity.Minimal"/>, which preserves the required-only behavior.
+    /// </summary>
+    public GenerationDensity Density { get; set; } = GenerationDensity.Minimal;
+
     public SchemaBasedFhirResourceFaker(IFhirSchemaProvider schemaProvider)
     {
         _schemaProvider = schemaProvider;
         _faker = new Faker();
         _random = new Random();
+    }
+
+    /// <summary>
+    /// Creates a faker whose randomness is seeded for reproducible generation.
+    /// </summary>
+    /// <param name="schemaProvider">The FHIR schema provider for the desired FHIR version.</param>
+    /// <param name="seed">The seed applied to the internal randomizers and propagated to the Patient builder.</param>
+    /// <remarks>
+    /// The seed is propagated to the <see cref="PatientBuilder"/> created by
+    /// <see cref="CreatePatient"/> and <see cref="CreateSeattlePatient"/> so the base Patient
+    /// generation path is reproducible. The generic <see cref="Generate(string)"/> path is seeded
+    /// via the internal randomizers only.
+    /// <para>
+    /// Output is byte-reproducible from the seed EXCEPT <c>meta.lastUpdated</c>, which
+    /// <see cref="Generate(string)"/> stamps with wall-clock <see cref="DateTime.UtcNow"/>. A reader
+    /// must not infer byte-identical output from a seed alone.
+    /// </para>
+    /// </remarks>
+    public SchemaBasedFhirResourceFaker(IFhirSchemaProvider schemaProvider, int seed)
+    {
+        _schemaProvider = schemaProvider;
+        _faker = new Faker { Random = new Randomizer(seed) };
+        _random = new Random(seed);
+        _seed = seed;
     }
 
     /// <summary>
@@ -103,7 +134,7 @@ public class SchemaBasedFhirResourceFaker
     /// </example>
     public ResourceJsonNode CreatePatient(Action<PatientBuilder>? configure = null)
     {
-        var builder = PatientBuilderFactory.Create(_schemaProvider);
+        var builder = PatientBuilderFactory.Create(_schemaProvider, _seed);
 
         // Apply tag from faker if set
         if (_tag is not null)
@@ -132,7 +163,7 @@ public class SchemaBasedFhirResourceFaker
     /// </example>
     public ResourceJsonNode CreateSeattlePatient(Action<PatientBuilder>? configure = null)
     {
-        var builder = PatientBuilderFactory.Create(_schemaProvider)
+        var builder = PatientBuilderFactory.Create(_schemaProvider, _seed)
             .FromSeattle();
 
         // Apply tag from faker if set
@@ -150,8 +181,10 @@ public class SchemaBasedFhirResourceFaker
     #endregion
 
     /// <summary>
-    /// Generates a fake FHIR resource by resource type name.
-    /// Fills required elements and randomly includes some optional elements.
+    /// Generates a fake FHIR resource by resource type name. Population is governed by
+    /// <see cref="Density"/>: required elements only by default (Minimal/Realistic); under
+    /// <see cref="GenerationDensity.Maximal"/> every optional element is included as well. Inclusion
+    /// is deterministic for a given density — optionals are never sampled at random.
     /// </summary>
     public ResourceJsonNode Generate(string resourceType)
     {
@@ -197,27 +230,23 @@ public class SchemaBasedFhirResourceFaker
             // For choice elements, we need to pick a type and append it to the element name
             var (actualElementName, actualElement) = ResolveChoiceElement(child);
 
-            // Required elements: always add
-            if (child.IsRequired)
+            // Minimal/Realistic: required elements only. Maximal: required plus optional.
+            if (!ShouldPopulate(child))
             {
-                var value = GenerateElementValue(actualElement, resourceType, depth: 0);
-                if (value is not null)
-                {
-                    root[actualElementName] = value;
-                }
-                else
-                {
-                    // For required fields that failed to generate (e.g., BackboneElement with only optional children),
-                    // add a minimal placeholder to satisfy cardinality requirements
-                    if (!actualElement.Info.IsPrimitive)
-                    {
-                        root[actualElementName] = new JsonObject();
-                    }
-                }
+                continue;
             }
 
-            // Optional elements: never populate (deterministic behavior for test stability)
-            // If tests need optional fields, use PatientBuilder or manually set them after generation
+            var value = GenerateElementValue(actualElement, resourceType, depth: 0);
+            if (value is not null)
+            {
+                root[actualElementName] = value;
+            }
+            else if (child.IsRequired && !actualElement.Info.IsPrimitive)
+            {
+                // Placeholders satisfy required cardinality only; optional elements that
+                // cannot generate a value are simply skipped.
+                root[actualElementName] = new JsonObject();
+            }
         }
 
         var json = root.ToJsonString();
@@ -424,29 +453,26 @@ public class SchemaBasedFhirResourceFaker
             // Handle choice elements
             var (actualElementName, actualElement) = ResolveChoiceElement(child);
 
-            // Required elements: ALWAYS add, even at deep nesting levels
-            // This ensures BackboneElements in arrays have their required nested fields populated
-            if (child.IsRequired)
+            // Minimal/Realistic: required only. Maximal: required plus optional.
+            // The depth guard above bounds optional complex children too.
+            if (!ShouldPopulate(child))
             {
-                var value = GenerateElementValue(actualElement, currentTypeName, depth + 1);
-                if (value is not null)
-                {
-                    obj[actualElementName] = value;
-                    hasContent = true;
-                }
-                else
-                {
-                    // For required fields that failed to generate (e.g., unsupported complex types),
-                    // add a minimal placeholder to satisfy cardinality requirements
-                    if (!actualElement.Info.IsPrimitive)
-                    {
-                        obj[actualElementName] = new JsonObject();
-                        hasContent = true;
-                    }
-                }
+                continue;
             }
-            // Optional elements: never populate (deterministic behavior for test stability)
-            // If tests need optional fields, use PatientBuilder or manually set them after generation
+
+            var value = GenerateElementValue(actualElement, currentTypeName, depth + 1);
+            if (value is not null)
+            {
+                obj[actualElementName] = value;
+                hasContent = true;
+            }
+            else if (child.IsRequired && !actualElement.Info.IsPrimitive)
+            {
+                // Placeholders satisfy required cardinality only; optional elements that
+                // cannot generate a value are simply skipped.
+                obj[actualElementName] = new JsonObject();
+                hasContent = true;
+            }
         }
 
         return hasContent ? obj : null;
@@ -1014,6 +1040,12 @@ public class SchemaBasedFhirResourceFaker
     #endregion
 
     #region Helper Methods
+
+    /// <summary>
+    /// Determines whether an element should be populated for the current <see cref="Density"/>.
+    /// Required elements are always populated; optional elements only under <see cref="GenerationDensity.Maximal"/>.
+    /// </summary>
+    private bool ShouldPopulate(IType child) => child.IsRequired || Density == GenerationDensity.Maximal;
 
     /// <summary>
     /// Applies the configured tag to a resource's meta.tag array.
