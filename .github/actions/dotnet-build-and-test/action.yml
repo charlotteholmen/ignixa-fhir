@@ -88,6 +88,15 @@ runs:
         if-no-files-found: 'ignore'
         retention-days: 30
 
+    - name: Upload SQL-on-FHIR conformance report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: sql-on-fhir-test-report
+        path: '**/test_report.json'
+        if-no-files-found: 'ignore'
+        retention-days: 30
+
     - name: Publish test results
       if: always()
       uses: EnricoMi/publish-unit-test-result-action@v2
