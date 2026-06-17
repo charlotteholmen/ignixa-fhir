@@ -60,10 +60,8 @@ public class SqlOnFhirTestCaseEvaluatorTests
 
     private static SqlOnFhirTestFile BuildTestFile()
     {
-        var resources = new List<JsonElement>
-        {
-            JsonDocument.Parse(PatientResourceJson).RootElement.Clone()
-        };
+        using var document = JsonDocument.Parse(PatientResourceJson);
+        var resources = new List<JsonElement> { document.RootElement.Clone() };
 
         return new SqlOnFhirTestFile
         {

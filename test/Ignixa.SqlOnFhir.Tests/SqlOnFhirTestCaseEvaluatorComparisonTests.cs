@@ -76,13 +76,13 @@ public class SqlOnFhirTestCaseEvaluatorComparisonTests
     }
 
     [Fact]
-    public void GivenIntegerExpectedAndDecimalActual_WhenEvaluated_ThenPassesViaNumericNormalization()
+    public void GivenDecimalExpectedAndIntegerActual_WhenEvaluated_ThenPassesViaNumericNormalization()
     {
         // Arrange
         var testFile = BuildTestFile();
         var testCase = BuildTestCase(
             NumericViewJson,
-            expectedRows: [new Dictionary<string, object?> { ["births"] = 5 }]);
+            expectedRows: [new Dictionary<string, object?> { ["births"] = 5.0m }]);
 
         // Act
         var outcome = SqlOnFhirTestCaseEvaluator.Run(testFile, testCase);
@@ -93,10 +93,8 @@ public class SqlOnFhirTestCaseEvaluatorComparisonTests
 
     private static SqlOnFhirTestFile BuildTestFile()
     {
-        var resources = new List<JsonElement>
-        {
-            JsonDocument.Parse(PatientResourceJson).RootElement.Clone()
-        };
+        using var document = JsonDocument.Parse(PatientResourceJson);
+        var resources = new List<JsonElement> { document.RootElement.Clone() };
 
         return new SqlOnFhirTestFile
         {

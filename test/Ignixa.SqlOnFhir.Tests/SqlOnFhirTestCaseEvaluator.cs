@@ -12,6 +12,7 @@ using Ignixa.Serialization.SourceNodes;
 using Ignixa.Specification.Extensions;
 using Ignixa.SqlOnFhir.Evaluation;
 using Ignixa.SqlOnFhir.Parsing;
+using System.Globalization;
 using System.Text.Json;
 
 namespace Ignixa.SqlOnFhir.Tests;
@@ -64,7 +65,7 @@ public static class SqlOnFhirTestCaseEvaluator
                 _ = evaluator.Evaluate(testCase.ViewNode!, resource).ToList();
             }
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is not (NullReferenceException or OutOfMemoryException or StackOverflowException))
         {
             exceptionThrown = true;
         }
@@ -132,7 +133,7 @@ public static class SqlOnFhirTestCaseEvaluator
 
     private static List<string> GetExpectedColumns(SqlOnFhirTestCase testCase)
     {
-        if (testCase.ExpectedColumns.Count > 0)
+        if (testCase.ExpectedColumns is { Count: > 0 })
         {
             return testCase.ExpectedColumns;
         }
@@ -178,14 +179,14 @@ public static class SqlOnFhirTestCaseEvaluator
     private static string? CompareRows(
         List<Dictionary<string, object?>> expected,
         List<Dictionary<string, object?>> actual,
-        List<string> expectedColumns)
+        List<string>? expectedColumns)
     {
         if (expected.Count != actual.Count)
         {
             return $"Expected {expected.Count} rows but got {actual.Count}";
         }
 
-        if (expectedColumns.Count > 0)
+        if (expectedColumns is { Count: > 0 })
         {
             var actualKeys = actual.FirstOrDefault()?.Keys.ToList() ?? [];
             if (expectedColumns.Count != actualKeys.Count)
@@ -255,8 +256,12 @@ public static class SqlOnFhirTestCaseEvaluator
 
         if (expectedValue is decimal or int or long or double)
         {
-            var expectedNum = Convert.ToDecimal(expectedValue);
-            var actualNum = Convert.ToDecimal(actualValue);
+            var expectedNum = Convert.ToDecimal(expectedValue, CultureInfo.InvariantCulture);
+            if (!TryToInvariantDecimal(actualValue, out var actualNum))
+            {
+                return $"Row {rowIndex} column '{key}': expected numeric '{expectedNum}', got '{actualValue}'";
+            }
+
             return expectedNum == actualNum
                 ? null
                 : $"Row {rowIndex} column '{key}': expected '{expectedNum}', got '{actualNum}'";
@@ -273,6 +278,23 @@ public static class SqlOnFhirTestCaseEvaluator
         return expectedStr == actualStr
             ? null
             : $"Row {rowIndex} column '{key}': expected '{expectedStr}', got '{actualStr}'";
+    }
+
+    private static bool TryToInvariantDecimal(object value, out decimal result)
+    {
+        switch (value)
+        {
+            case decimal d: result = d; return true;
+            case int i: result = i; return true;
+            case long l: result = l; return true;
+            case double db: result = (decimal)db; return true;
+            case string s when decimal.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed):
+                result = parsed;
+                return true;
+            default:
+                result = 0m;
+                return false;
+        }
     }
 
     private static bool IsDateOnly(string value)

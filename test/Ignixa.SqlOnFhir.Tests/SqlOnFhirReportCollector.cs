@@ -61,21 +61,11 @@ public sealed class SqlOnFhirReportCollector : IDisposable
         return Path.Combine(assemblyDir, "test_report.json");
     }
 
-    public void Dispose()
-    {
-        lock (_gate)
-        {
-            if (_written)
-            {
-                return;
-            }
-        }
-
-        WriteReport(ResolveOutputPath());
-    }
+    public void Dispose() => WriteReport(ResolveOutputPath());
 
     /// <summary>
-    /// Serializes a snapshot of the accumulated reports and writes them to <paramref name="outputPath"/>.
+    /// Serializes the accumulated reports under the lock (so a concurrent <see cref="Record"/> cannot
+    /// mutate a nested list mid-serialization) and writes them to <paramref name="outputPath"/>.
     /// A failure to write is logged and swallowed so a report-write problem never throws out of
     /// fixture disposal. Exposed (internal) so tests can drive the write path with an explicit path
     /// without touching the <c>SOF_TEST_REPORT_PATH</c> environment variable or <see cref="Dispose"/>.
@@ -84,19 +74,23 @@ public sealed class SqlOnFhirReportCollector : IDisposable
     /// </summary>
     internal void WriteReport(string outputPath)
     {
-        Dictionary<string, SqlOnFhirFileReport> snapshot;
+        string json;
         lock (_gate)
         {
-            snapshot = new Dictionary<string, SqlOnFhirFileReport>(_reports);
+            if (_written)
+            {
+                return;
+            }
+
             _written = true;
+            json = JsonSerializer.Serialize(_reports, SerializerOptions);
         }
 
         try
         {
-            var json = JsonSerializer.Serialize(snapshot, SerializerOptions);
             File.WriteAllText(outputPath, json);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
             or ArgumentException or NotSupportedException or System.Security.SecurityException)
         {
             Console.Error.WriteLine($"::error::Failed to write SQL-on-FHIR test report to '{outputPath}': {ex}");
