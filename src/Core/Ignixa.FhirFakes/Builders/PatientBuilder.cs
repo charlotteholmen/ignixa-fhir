@@ -910,14 +910,9 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
             }
         }
 
-        // Calculate birthYear from age if needed
-        if (_birthYear == null && _age != null)
-        {
-            _birthYear = AgeHelper.BirthYearFromAge(_age.Value);
-        }
-
-        // Set default birthYear if neither age nor birthYear provided
-        _birthYear ??= DateTime.UtcNow.Year - 30; // Default age 30
+        // Birth year is resolved lazily in CalculateBirthDate: an explicit WithBirthYear is honored
+        // exactly, otherwise the year is solved from the randomized month/day so age is exact. Do not
+        // pre-derive _birthYear here (it would re-anchor on July 1 and defeat exact-age generation).
 
         // Auto-generate street address if any address component is provided but no street
         if (_streetAddress == null && (_city != null || _zipCode != null))
@@ -931,14 +926,26 @@ public sealed class PatientBuilder : FhirResourceBuilder<PatientBuilder>
 
     private DateTime CalculateBirthDate()
     {
+        // Randomize the calendar month/day so a generated population doesn't all share one birthday
+        // (previously every patient was pinned to July 1). Randomness routes through _faker, so results
+        // are reproducible when a seed is supplied via WithSeed (generation is non-deterministic by default).
+        var month = _faker.Random.Int(1, 12);
+
+        // Honor an explicitly supplied birth year (WithBirthYear); randomize the day within it.
         if (_birthYear.HasValue)
         {
-            return new DateTime(_birthYear.Value, 7, 1);
+            var explicitYearDay = _faker.Random.Int(1, DateTime.DaysInMonth(_birthYear.Value, month));
+            return new DateTime(_birthYear.Value, month, explicitYearDay);
         }
 
-        // Default: age 30, assuming mid-year birthday
-        var defaultBirthYear = AgeHelper.BirthYearFromAge(30);
-        return new DateTime(defaultBirthYear, 7, 1);
+        // Age-driven: pick the day first, then solve the birth year from that actual month/day so the
+        // patient is exactly the requested age (default 30) as of today.
+        var age = _age ?? 30;
+        var approxYear = DateTime.UtcNow.Year - age;
+        var day = _faker.Random.Int(1, DateTime.DaysInMonth(approxYear, month));
+        var year = AgeHelper.BirthYearFromAge(age, month, day);
+        day = Math.Min(day, DateTime.DaysInMonth(year, month)); // clamp Feb 29 -> 28 if resolved year isn't a leap year
+        return new DateTime(year, month, day);
     }
 
     private JsonArray BuildName()
