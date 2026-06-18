@@ -1,8 +1,9 @@
 # Investigation: SQL-on-FHIR v2.1 conformance — 13 failing tests
 
 **Feature**: sql-on-fhir
-**Status**: In Progress
+**Status**: Resolved
 **Created**: 2026-06-17
+**Resolved**: 2026-06-17 — all 13 fixed; conformance 131/144 → 144/144; allowlist emptied.
 
 ## Context
 
@@ -95,6 +96,20 @@ fails the build if a fixed case is left listed, keeping the allowlist honest.
 
 ## Verdict
 
-*Pending evaluation* — scoping complete; the 13 are well-understood and partitioned into 3
-independent fixes. Recommend starting with `join`/`highBoundary` (4 tests, low risk) to validate the
-workflow, then tackling `repeat`.
+**Resolved — 144/144.** All three gaps fixed:
+
+1. **`join()`-empty → null** (3): `StringFunctions.Join` always emitted a string element; now returns
+   empty (`{}`) for an empty input collection, per FHIRPath.
+2. **`highBoundary()` time precision** (1): `FormatTimeHighBoundary` hardcoded `:59.999`; now fills
+   only components below the input precision (`@T12:34:00` → `12:34:00.999`).
+3. **`repeat`** (9): two causes — (a) a real evaluator bug in `ProcessNestedSelects` that kept a row
+   when a nested collapsing select (`repeat`/`forEach`) produced zero rows, inflating cross-join
+   cardinality; an empty nested result now zeroes the product and drops the row. (b) the conformance
+   comparator (`CompareRows`) compared rows positionally, but the SoF contract is order-insensitive —
+   the upstream harness (`sof-js/tests/compliance.test.js` `arraysMatch`) canonicalizes/sorts both
+   sides. `repeat.json` and `foreach.json` require opposite sibling orderings, so positional
+   comparison could never satisfy both; the comparator is now an order-insensitive multiset match.
+
+The `KnownConformanceFailures` allowlist is now empty (kept as the xfail mechanism for future suite
+bumps). Note: the comparator change makes all SoF row comparisons order-insensitive — the correct
+contract, but a behavior change beyond `repeat`.

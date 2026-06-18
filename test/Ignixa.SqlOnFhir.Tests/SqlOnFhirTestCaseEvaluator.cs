@@ -203,13 +203,21 @@ public static class SqlOnFhirTestCaseEvaluator
             }
         }
 
+        // The SQL on FHIR conformance suite compares result rows as an unordered multiset:
+        // the upstream harness canonicalizes (sorts) both sides before comparing, so a
+        // ViewDefinition's row order is not part of the contract. Match each expected row to a
+        // distinct actual row regardless of position.
+        var unmatchedActual = new List<Dictionary<string, object?>>(actual);
         for (var i = 0; i < expected.Count; i++)
         {
-            var rowFailure = CompareRow(expected[i], actual[i], i);
-            if (rowFailure is not null)
+            var matchIndex = unmatchedActual.FindIndex(a => CompareRow(expected[i], a, i) is null);
+            if (matchIndex < 0)
             {
-                return rowFailure;
+                return CompareRow(expected[i], unmatchedActual.Count > 0 ? unmatchedActual[0] : [], i)
+                    ?? $"Row {i}: no matching row found in actual results";
             }
+
+            unmatchedActual.RemoveAt(matchIndex);
         }
 
         return null;

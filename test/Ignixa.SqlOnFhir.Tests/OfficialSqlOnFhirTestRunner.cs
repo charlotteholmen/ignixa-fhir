@@ -32,15 +32,6 @@ public class OfficialSqlOnFhirTestRunner(SqlOnFhirReportCollector collector)
     /// </summary>
     private static readonly HashSet<(string File, string Title)> KnownConformanceFailures =
     [
-        ("repeat.json", "repeat inside forEach"),
-        ("repeat.json", "repeat inside repeat"),
-        ("repeat.json", "repeat inside forEachOrNull"),
-        ("repeat.json", "sibling repeats at top level"),
-        ("repeat.json", "sibling repeats inside forEach"),
-        ("repeat.json", "top-level repeat with sibling forEach containing repeat"),
-        ("repeat.json", "forEach with repeat with forEach (triple nesting)"),
-        ("repeat.json", "repeat inside repeat inside repeat"),
-        ("repeat.json", "multi-path repeat inside forEach"),
     ];
 
     /// <summary>
