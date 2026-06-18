@@ -33,9 +33,6 @@ public class OfficialSqlOnFhirTestRunner(SqlOnFhirReportCollector collector)
     private static readonly HashSet<(string File, string Title)> KnownConformanceFailures =
     [
         ("fn_boundary.json", "time highBoundary"),
-        ("fn_join.json", "join with comma"),
-        ("fn_join.json", "join with empty value"),
-        ("fn_join.json", "join with no value - default to no separator"),
         ("repeat.json", "repeat inside forEach"),
         ("repeat.json", "repeat inside repeat"),
         ("repeat.json", "repeat inside forEachOrNull"),
