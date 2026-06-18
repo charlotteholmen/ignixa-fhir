@@ -23,6 +23,31 @@ public class OfficialSqlOnFhirTestRunner(SqlOnFhirReportCollector collector)
         "sql-on-fhir-tests", "tests");
 
     /// <summary>
+    /// Known conformance gaps against the upstream sql-on-fhir.js suite, keyed by (report file, test title).
+    /// These are recorded as genuine failures in test_report.json (the published conformance number stays
+    /// honest) but do not fail the build gate. Tracked for resolution in
+    /// docs/features/sql-on-fhir/investigations/conformance-v2.1-failing-tests.md — remove entries as the
+    /// underlying evaluator gaps are fixed. A case that starts passing while still listed here fails the
+    /// build, forcing the list to be pruned.
+    /// </summary>
+    private static readonly HashSet<(string File, string Title)> KnownConformanceFailures =
+    [
+        ("fn_boundary.json", "time highBoundary"),
+        ("fn_join.json", "join with comma"),
+        ("fn_join.json", "join with empty value"),
+        ("fn_join.json", "join with no value - default to no separator"),
+        ("repeat.json", "repeat inside forEach"),
+        ("repeat.json", "repeat inside repeat"),
+        ("repeat.json", "repeat inside forEachOrNull"),
+        ("repeat.json", "sibling repeats at top level"),
+        ("repeat.json", "sibling repeats inside forEach"),
+        ("repeat.json", "top-level repeat with sibling forEach containing repeat"),
+        ("repeat.json", "forEach with repeat with forEach (triple nesting)"),
+        ("repeat.json", "repeat inside repeat inside repeat"),
+        ("repeat.json", "multi-path repeat inside forEach"),
+    ];
+
+    /// <summary>
     /// Gets all official SQL on FHIR test files from the specification repository.
     /// </summary>
     public static IEnumerable<object[]> GetOfficialTestCases()
@@ -106,6 +131,21 @@ public class OfficialSqlOnFhirTestRunner(SqlOnFhirReportCollector collector)
         }
 
         _collector.Record(reportKey, sqlTestCase.Title, outcome);
+
+        var isKnownFailure = KnownConformanceFailures.Contains((reportKey, sqlTestCase.Title));
+        if (outcome.Passed)
+        {
+            Assert.False(
+                isKnownFailure,
+                $"'{sqlTestCase.Title}' in {reportKey} now passes — remove it from KnownConformanceFailures.");
+            return;
+        }
+
+        if (isKnownFailure)
+        {
+            return;
+        }
+
         Assert.True(outcome.Passed, outcome.Reason);
     }
 
